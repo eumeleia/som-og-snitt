@@ -689,24 +689,31 @@ export default function Home() {
 
       {/* Header */}
       <header className="border-b border-stone-200 bg-white/80 backdrop-blur-sm sticky top-0 z-10">
-        <div className="max-w-6xl mx-auto px-6 py-5 flex items-center justify-between">
-          <div>
-            <h1 className="font-serif text-4xl font-light text-stone-800 tracking-wide leading-none">
-              Søm &amp; Snitt
-            </h1>
-            <p className="text-xs tracking-widest text-stone-400 mt-1 uppercase font-sans">
-              Din sydagbok
-            </p>
-          </div>
-          <button onClick={openNew}
-            className="flex items-center gap-2 px-5 py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors font-medium shadow-sm">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
-            Nytt prosjekt
-          </button>
-        </div>
-      </header>
+  <div className="max-w-6xl mx-auto px-6 py-5 flex items-center justify-between">
+    <div>
+      <h1 className="font-serif text-4xl font-light text-stone-800 tracking-wide leading-none">
+        Søm &amp; Snitt
+      </h1>
+      <p className="text-xs tracking-widest text-stone-400 mt-1 uppercase font-sans">
+        Din sydagbok
+      </p>
+    </div>
+    <div className="flex items-center gap-3">
+      <button onClick={openNew}
+        className="flex items-center gap-2 px-5 py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors font-medium shadow-sm">
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+        </svg>
+        Nytt prosjekt
+      </button>
+      <button
+        onClick={() => supabase.auth.signOut().then(() => window.location.href = '/login')}
+        className="px-4 py-2.5 text-sm text-stone-500 hover:bg-stone-100 rounded-xl transition-colors">
+        Logg ut
+      </button>
+    </div>
+  </div>
+</header>
 
       {/* Filters */}
       <div className="max-w-6xl mx-auto px-6 py-4 flex flex-wrap items-center gap-3">
