@@ -689,22 +689,21 @@ export default function Home() {
 
       {/* Header */}
       <header className="border-b border-stone-200 bg-white/80 backdrop-blur-sm sticky top-0 z-10">
-  <div className="max-w-6xl mx-auto px-6 py-5 flex items-center justify-between">
+  <div className="px-8 pt-8 pb-6 flex items-start justify-between">
     <div>
-      <h1 className="font-serif text-4xl font-light text-stone-800 tracking-wide leading-none">
+      <h1 className="font-serif text-6xl text-[#3E2E2A] leading-none">
         Søm &amp; Snitt
       </h1>
-      <p className="text-xs tracking-widest text-stone-400 mt-1 uppercase font-sans">
+      <p className="italic text-[#C9A57A] text-2xl mt-3">
         Din sydagbok
       </p>
     </div>
     <div className="flex items-center gap-3">
       <button onClick={openNew}
-        className="flex items-center gap-2 px-5 py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors font-medium shadow-sm">
+         className="w-24 h-24 rounded-[32px] bg-[#C9A57A] text-white flex items-center justify-center">
         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
         </svg>
-        Nytt prosjekt
       </button>
       <button
         onClick={() => supabase.auth.signOut().then(() => window.location.href = '/login')}
