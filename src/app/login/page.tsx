@@ -19,7 +19,8 @@ export default function Login() {
       setError('Feil e-post eller passord.')
       setLoading(false)
     } else {
-      window.location.href = '/'
+      router.push('/dashboard')
+      router.refresh()
     }
   }
 
