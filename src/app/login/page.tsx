@@ -11,18 +11,35 @@ export default function Login() {
   const [error, setError]       = useState('')
   const [loading, setLoading]   = useState(false)
 
-  async function handleLogin() {
-    setLoading(true)
-    setError('')
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
+async function handleLogin() {
+  setLoading(true)
+  setError('')
+
+  try {
+    console.log('Starter login...')
+
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    })
+
+    console.log('Login data:', data)
+    console.log('Login error:', error)
+
     if (error) {
       setError('Feil e-post eller passord.')
-      setLoading(false)
-    } else {
-      router.push('/dashboard')
-      router.refresh()
+      return
     }
+
+    router.push('/dashboard')
+    router.refresh()
+  } catch (err) {
+    console.error('Uventet login-feil:', err)
+    setError('Noe gikk galt med innloggingen.')
+  } finally {
+    setLoading(false)
   }
+}
 
   return (
     <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: '#FAF7F4' }}>
