@@ -689,30 +689,30 @@ export default function Home() {
 
       {/* Header */}
       <header className="border-b border-stone-200 bg-white/80 backdrop-blur-sm sticky top-0 z-10">
-  <div className="px-8 pt-8 pb-6 flex items-start justify-between">
-    <div>
-      <h1 className="font-serif text-6xl text-[#3E2E2A] leading-none">
-        Søm &amp; Snitt
-      </h1>
-      <p className="italic text-[#C9A57A] text-2xl mt-3">
-        Din sydagbok
-      </p>
-    </div>
-    <div className="flex items-center gap-3">
-      <button onClick={openNew}
-         className="w-24 h-24 rounded-[32px] bg-[#C9A57A] text-white flex items-center justify-center">
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-        </svg>
-      </button>
-      <button
-        onClick={() => supabase.auth.signOut().then(() => window.location.href = '/login')}
-        className="px-4 py-2.5 text-sm text-stone-500 hover:bg-stone-100 rounded-xl transition-colors">
-        Logg ut
-      </button>
-    </div>
-  </div>
-</header>
+        <div className="px-4 pt-4 pb-3 sm:px-8 sm:pt-8 sm:pb-6 flex items-center sm:items-start justify-between">
+          <div>
+            <h1 className="font-serif text-3xl sm:text-6xl text-[#3E2E2A] leading-none">
+              Søm &amp; Snitt
+            </h1>
+            <p className="italic text-[#C9A57A] text-base sm:text-2xl mt-1 sm:mt-3">
+              Din sydagbok
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <button onClick={openNew}
+              className="w-12 h-12 rounded-2xl sm:w-24 sm:h-24 sm:rounded-[32px] bg-[#C9A57A] text-white flex items-center justify-center">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+            </button>
+            <button
+              onClick={() => supabase.auth.signOut().then(() => window.location.href = '/login')}
+              className="px-4 py-2.5 text-sm text-stone-500 hover:bg-stone-100 rounded-xl transition-colors">
+              Logg ut
+            </button>
+          </div>
+        </div>
+      </header>
 
       {/* Filters */}
       <div className="max-w-6xl mx-auto px-6 py-4 flex flex-wrap items-center gap-3">
