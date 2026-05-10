@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
+import { useState, useEffect, useCallback, useRef, type ReactNode, type ChangeEvent } from 'react'
 import { supabase } from '@/lib/supabase'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -185,6 +185,123 @@ function ProjectCard({ project, onEdit, onDelete }: {
   )
 }
 
+// ── ImageUploadModal ──────────────────────────────────────────────────────────
+
+function ImageUploadModal({ onAdd, onClose }: {
+  onAdd: (url: string) => void
+  onClose: () => void
+}) {
+  const [tab, setTab]         = useState<'file' | 'url'>('file')
+  const [url, setUrl]         = useState('')
+  const [file, setFile]       = useState<File | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const [error, setError]     = useState('')
+  const fileInputRef          = useRef<HTMLInputElement>(null)
+
+  function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
+    setFile(e.target.files?.[0] ?? null)
+    setError('')
+  }
+
+  async function handleUpload() {
+    if (!file) return
+    setUploading(true)
+    setError('')
+    try {
+      const ext = file.name.split('.').pop() ?? 'jpg'
+      const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`
+      const { error: uploadErr } = await supabase.storage
+        .from('project-images')
+        .upload(filename, file, { contentType: file.type })
+      if (uploadErr) throw uploadErr
+      const { data } = supabase.storage.from('project-images').getPublicUrl(filename)
+      onAdd(data.publicUrl)
+      onClose()
+    } catch {
+      setError('Opplasting feilet. Prøv igjen.')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  function handleUrl() {
+    if (!url.trim()) return
+    onAdd(url.trim())
+    onClose()
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/30 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden">
+
+        {/* Tabs */}
+        <div className="flex border-b border-stone-100">
+          {(['file', 'url'] as const).map(t => (
+            <button key={t} onClick={() => setTab(t)}
+              className={`flex-1 py-3.5 text-sm font-medium transition-colors border-b-2 ${
+                tab === t
+                  ? 'text-stone-800 border-stone-800'
+                  : 'text-stone-400 border-transparent hover:text-stone-600'
+              }`}>
+              {t === 'file' ? 'Last opp fil' : 'Lim inn URL'}
+            </button>
+          ))}
+        </div>
+
+        <div className="p-5 space-y-4">
+          {tab === 'file' ? (
+            <>
+              <div
+                onClick={() => fileInputRef.current?.click()}
+                className="border-2 border-dashed border-stone-200 rounded-xl p-8 text-center cursor-pointer hover:border-stone-300 hover:bg-stone-50 transition-colors">
+                {file ? (
+                  <p className="text-sm text-stone-700 font-medium truncate">{file.name}</p>
+                ) : (
+                  <>
+                    <svg className="w-10 h-10 text-stone-300 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                        d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
+                    <p className="text-sm text-stone-400">Trykk for å velge bilde</p>
+                    <p className="text-xs text-stone-300 mt-1">JPG, PNG, WEBP</p>
+                  </>
+                )}
+              </div>
+              <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/webp"
+                className="hidden" onChange={handleFileChange} />
+              {error && <p className="text-xs text-red-500">{error}</p>}
+              <button onClick={handleUpload} disabled={!file || uploading}
+                className="w-full py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                {uploading && <Spinner />}
+                {uploading ? 'Laster opp…' : 'Last opp'}
+              </button>
+            </>
+          ) : (
+            <>
+              <div>
+                <label className={labelCls}>Bilde-URL</label>
+                <input className={inputCls} value={url} autoFocus
+                  onChange={e => setUrl(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleUrl()}
+                  placeholder="https://…" />
+              </div>
+              <button onClick={handleUrl} disabled={!url.trim()}
+                className="w-full py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                Legg til
+              </button>
+            </>
+          )}
+          <button onClick={onClose}
+            className="w-full py-2 text-sm text-stone-400 hover:text-stone-600 transition-colors">
+            Avbryt
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── ProjectDetail ─────────────────────────────────────────────────────────────
 
 function ProjectDetail({ project, onBack, onSaved, onDelete }: {
@@ -196,9 +313,9 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
   const [form, setForm]             = useState<ProjectData>(() =>
     project ? structuredClone(project.data) : structuredClone(EMPTY)
   )
-  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
-  const [imgUrl, setImgUrl]         = useState('')
-  const [pdfUrl, setPdfUrl]         = useState('')
+  const [saveStatus, setSaveStatus]   = useState<SaveStatus>('idle')
+  const [showImgModal, setShowImgModal] = useState(false)
+  const [pdfUrl, setPdfUrl]           = useState('')
   const [pdfName, setPdfName]       = useState('')
   const [toast, setToast]           = useState('')
 
@@ -264,10 +381,8 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
     onBack()
   }
 
-  function addImage() {
-    if (!imgUrl.trim()) return
-    upd({ images: [...form.images, { id: uid(), url: imgUrl.trim() }] })
-    setImgUrl('')
+  function addImage(url: string) {
+    upd({ images: [...form.images, { id: uid(), url }] })
   }
   function removeImage(id: string) { upd({ images: form.images.filter(i => i.id !== id) }) }
 
@@ -398,7 +513,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
 
         {/* Forsidebilde */}
         <SectionHeading>Forsidebilde</SectionHeading>
-        <div className="space-y-4">
+        <div className="space-y-3">
           {cover ? (
             <div className="relative group rounded-2xl overflow-hidden bg-stone-100" style={{ aspectRatio: '16/9' }}>
               <img src={cover.url} alt="" className="w-full h-full object-cover" />
@@ -408,15 +523,24 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </button>
+              <button onClick={() => setShowImgModal(true)}
+                className="absolute bottom-3 right-3 p-2 bg-white/90 rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity hover:bg-stone-50">
+                <svg className="w-4 h-4 text-stone-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+              </button>
             </div>
           ) : (
-            <div className="rounded-2xl bg-stone-100 flex items-center justify-center text-stone-300"
+            <button
+              onClick={() => setShowImgModal(true)}
+              className="w-full rounded-2xl bg-stone-100 hover:bg-stone-150 transition-colors flex flex-col items-center justify-center gap-3 text-stone-300 hover:text-stone-400"
               style={{ aspectRatio: '16/9' }}>
               <svg className="w-12 h-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1}
                   d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
               </svg>
-            </div>
+              <span className="text-sm font-medium text-stone-400">Legg til bilde</span>
+            </button>
           )}
           {form.images.length > 1 && (
             <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
@@ -431,21 +555,14 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
                   </button>
                 </div>
               ))}
-            </div>
-          )}
-          <div>
-            <label className={labelCls}>Legg til bilde (URL)</label>
-            <div className="flex gap-2">
-              <input className={`${inputCls} flex-1`} value={imgUrl}
-                onChange={e => setImgUrl(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && addImage()}
-                placeholder="https://…" />
-              <button onClick={addImage}
-                className="px-4 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors whitespace-nowrap">
-                Legg til
+              <button onClick={() => setShowImgModal(true)}
+                className="aspect-square rounded-xl border-2 border-dashed border-stone-200 hover:border-stone-300 hover:bg-stone-50 transition-colors flex items-center justify-center text-stone-300 hover:text-stone-400">
+                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" />
+                </svg>
               </button>
             </div>
-          </div>
+          )}
         </div>
 
         {/* Notater & Justeringer */}
@@ -589,6 +706,13 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
           </div>
         </div>
       </div>
+
+      {showImgModal && (
+        <ImageUploadModal
+          onAdd={addImage}
+          onClose={() => setShowImgModal(false)}
+        />
+      )}
 
       {toast && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-red-600 text-white text-sm px-4 py-2 rounded-lg shadow-lg whitespace-nowrap z-50">
