@@ -1,13 +1,13 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { supabase } from '@/lib/supabase'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type Status   = 'Aktiv' | 'Planlagt' | 'Fullført'
-type Category = 'Klær' | 'Interiør' | 'Tilbehør' | 'Reparasjoner'
-type ModalTab = 'info' | 'notater' | 'bilder' | 'pdfs' | 'stoff' | 'pleie'
+type Status    = 'Aktiv' | 'Planlagt' | 'Fullført'
+type Category  = 'Klær' | 'Interiør' | 'Tilbehør' | 'Reparasjoner'
+type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
 interface ImageItem { id: string; url: string }
 interface PdfItem   { id: string; name: string; url: string }
@@ -40,15 +40,6 @@ const CATEGORY_STYLE: Record<Category, string> = {
   Reparasjoner: 'bg-orange-50 text-orange-700 border-orange-200',
 }
 
-const MODAL_TABS: { id: ModalTab; label: string }[] = [
-  { id: 'info',    label: 'Info' },
-  { id: 'notater', label: 'Notater' },
-  { id: 'bilder',  label: 'Bilder' },
-  { id: 'pdfs',    label: 'PDF-arkiv' },
-  { id: 'stoff',   label: 'Stoffberegner' },
-  { id: 'pleie',   label: 'Pleie & Vedlikehold' },
-]
-
 const EMPTY: ProjectData = {
   name: '', status: 'Planlagt', category: 'Klær', date: '', notes: '',
   images: [], pdfs: [],
@@ -58,8 +49,8 @@ const EMPTY: ProjectData = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function uid()     { return Math.random().toString(36).slice(2, 10) }
-function toDay()   { return new Date().toISOString().split('T')[0] }
+function uid()   { return Math.random().toString(36).slice(2, 10) }
+function toDay() { return new Date().toISOString().split('T')[0] }
 function fmtDate(d: string) {
   if (!d) return ''
   const [y, m, day] = d.split('-')
@@ -109,6 +100,15 @@ function Badge({ label, cls }: { label: string; cls: string }) {
 
 function Spinner() {
   return <span className="inline-block w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin opacity-70" />
+}
+
+function SectionHeading({ children, first = false }: { children: ReactNode; first?: boolean }) {
+  return (
+    <div className={`flex items-center gap-4 mb-5 ${first ? '' : 'mt-12'}`}>
+      <h2 className="font-serif text-xl text-stone-600 whitespace-nowrap">{children}</h2>
+      <div className="flex-1 border-t border-stone-200" />
+    </div>
+  )
 }
 
 // ── ProjectCard ───────────────────────────────────────────────────────────────
@@ -185,40 +185,85 @@ function ProjectCard({ project, onEdit, onDelete }: {
   )
 }
 
-// ── ProjectModal ──────────────────────────────────────────────────────────────
+// ── ProjectDetail ─────────────────────────────────────────────────────────────
 
-function ProjectModal({ project, onSave, onClose, onDelete }: {
+function ProjectDetail({ project, onBack, onSaved, onDelete }: {
   project: Project | null
-  onSave: (data: ProjectData) => Promise<void>
-  onClose: () => void
+  onBack: () => void
+  onSaved: () => void
   onDelete?: () => void
 }) {
-  const [form, setForm]       = useState<ProjectData>(() =>
+  const [form, setForm]             = useState<ProjectData>(() =>
     project ? structuredClone(project.data) : structuredClone(EMPTY)
   )
-  const [tab, setTab]         = useState<ModalTab>('info')
-  const [saving, setSaving]   = useState(false)
-  const [imgUrl, setImgUrl]   = useState('')
-  const [pdfUrl, setPdfUrl]   = useState('')
-  const [pdfName, setPdfName] = useState('')
-  const [toast, setToast]     = useState('')
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
+  const [imgUrl, setImgUrl]         = useState('')
+  const [pdfUrl, setPdfUrl]         = useState('')
+  const [pdfName, setPdfName]       = useState('')
+  const [toast, setToast]           = useState('')
 
-  function upd(patch: Partial<ProjectData>) { setForm(f => ({ ...f, ...patch })) }
+  const projectIdRef = useRef<string | null>(project?.id ?? null)
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingRef   = useRef<ProjectData>(form)
+
+  function upd(patch: Partial<ProjectData>) {
+    setForm(f => {
+      const next = { ...f, ...patch }
+      pendingRef.current = next
+      return next
+    })
+  }
 
   function showToast(msg: string) {
     setToast(msg)
     setTimeout(() => setToast(''), 3500)
   }
 
-  async function handleSave() {
-    if (!form.name.trim()) return
-    setSaving(true)
-    try { await onSave(form) }
-    catch { showToast('Kunne ikke lagre. Prøv igjen.') }
-    finally { setSaving(false) }
+  async function doSave(data: ProjectData, id: string | null) {
+    if (!data.name.trim()) { setSaveStatus('idle'); return }
+    setSaveStatus('saving')
+    try {
+      if (id) {
+        const { error } = await supabase.from('projects').update({ data }).eq('id', id)
+        if (error) throw error
+      } else {
+        const { data: rows, error } = await supabase.from('projects').insert({ data }).select()
+        if (error) throw error
+        const newId = (rows as Project[])?.[0]?.id
+        if (newId) projectIdRef.current = newId
+      }
+      setSaveStatus('saved')
+      onSaved()
+      setTimeout(() => setSaveStatus(s => s === 'saved' ? 'idle' : s), 2000)
+    } catch {
+      setSaveStatus('error')
+      showToast('Kunne ikke lagre. Prøv igjen.')
+    }
   }
 
-  // Images
+  // Debounced autosave
+  useEffect(() => {
+    if (!form.name.trim()) return
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    setSaveStatus('saving')
+    saveTimerRef.current = setTimeout(() => {
+      doSave(pendingRef.current, projectIdRef.current)
+    }, 1500)
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form])
+
+  async function handleBack() {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current)
+      saveTimerRef.current = null
+      await doSave(pendingRef.current, projectIdRef.current)
+    }
+    onBack()
+  }
+
   function addImage() {
     if (!imgUrl.trim()) return
     upd({ images: [...form.images, { id: uid(), url: imgUrl.trim() }] })
@@ -226,7 +271,6 @@ function ProjectModal({ project, onSave, onClose, onDelete }: {
   }
   function removeImage(id: string) { upd({ images: form.images.filter(i => i.id !== id) }) }
 
-  // PDFs
   function addPdf() {
     if (!pdfUrl.trim()) return
     upd({ pdfs: [...form.pdfs, { id: uid(), name: pdfName.trim() || 'PDF', url: pdfUrl.trim() }] })
@@ -234,7 +278,6 @@ function ProjectModal({ project, onSave, onClose, onDelete }: {
   }
   function removePdf(id: string) { upd({ pdfs: form.pdfs.filter(p => p.id !== id) }) }
 
-  // Fabric calculator
   async function runFabricCalc() {
     const pdf = form.pdfs.find(p => p.id === form.fabricCalc.pdfId)
     if (!pdf || !form.fabricCalc.size) return
@@ -253,7 +296,6 @@ function ProjectModal({ project, onSave, onClose, onDelete }: {
     }
   }
 
-  // Care import
   async function runCareImport() {
     if (!form.care.sourceUrl) return
     upd({ care: { ...form.care, loading: true } })
@@ -272,327 +314,287 @@ function ProjectModal({ project, onSave, onClose, onDelete }: {
     }
   }
 
+  const cover = form.images[0]
+
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
-      <div className="fixed inset-0 bg-black/30 backdrop-blur-sm" onClick={onClose} />
+    <div className="min-h-screen" style={{ backgroundColor: '#FAF7F4' }}>
 
-      <div className="flex min-h-full items-center justify-center p-4">
-        <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col" style={{ maxHeight: '92vh' }}>
+      {/* Sticky header */}
+      <header className="border-b border-stone-200 bg-white/80 backdrop-blur-sm sticky top-0 z-10">
+        <div className="max-w-2xl mx-auto px-4 sm:px-6 py-3 flex items-center gap-3">
+          <button onClick={handleBack}
+            className="p-2 -ml-1 rounded-xl hover:bg-stone-100 transition-colors text-stone-500 flex-shrink-0">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
 
-          {/* Header */}
-          <div className="flex items-start justify-between px-7 pt-6 pb-4 border-b border-stone-100">
+          <h1 className="font-serif text-xl sm:text-2xl text-stone-800 flex-1 truncate">
+            {form.name || <span className="text-stone-300 font-light italic">Nytt prosjekt</span>}
+          </h1>
+
+          <div className="flex items-center gap-3 flex-shrink-0">
+            {saveStatus === 'saving' && (
+              <span className="text-xs text-stone-400 flex items-center gap-1.5">
+                <Spinner /> Lagrer…
+              </span>
+            )}
+            {saveStatus === 'saved' && (
+              <span className="text-xs text-emerald-500 font-medium">Lagret ✓</span>
+            )}
+            {saveStatus === 'error' && (
+              <span className="text-xs text-red-400">Feil ved lagring</span>
+            )}
+            {onDelete && (
+              <button onClick={onDelete}
+                className="text-sm text-stone-400 hover:text-red-500 transition-colors">
+                Slett
+              </button>
+            )}
+          </div>
+        </div>
+      </header>
+
+      {/* Scrollable content */}
+      <div className="max-w-2xl mx-auto px-4 sm:px-6 py-8 pb-24">
+
+        {/* Detaljer */}
+        <SectionHeading first>Detaljer</SectionHeading>
+        <div className="space-y-5">
+          <div>
+            <label className={labelCls}>Prosjektnavn</label>
+            <input className={inputCls} value={form.name} autoFocus
+              onChange={e => upd({ name: e.target.value })}
+              placeholder="Gi prosjektet et navn…" />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
             <div>
-              <h2 className="font-serif text-3xl font-light text-stone-800 leading-tight">
-                {project ? (form.name || 'Prosjekt') : 'Nytt prosjekt'}
-              </h2>
-              {project && (
-                <p className="text-xs text-stone-400 mt-0.5">
-                  Opprettet {fmtDate(project.created_at.slice(0, 10))}
-                </p>
-              )}
+              <label className={labelCls}>Status</label>
+              <select className={inputCls} value={form.status}
+                onChange={e => upd({ status: e.target.value as Status })}>
+                {STATUSES.map(s => <option key={s}>{s}</option>)}
+              </select>
             </div>
-            <button onClick={onClose} className="mt-1 p-2 rounded-xl hover:bg-stone-100 transition-colors text-stone-400">
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            <div>
+              <label className={labelCls}>Kategori</label>
+              <select className={inputCls} value={form.category}
+                onChange={e => upd({ category: e.target.value as Category })}>
+                {CATEGORIES.map(c => <option key={c}>{c}</option>)}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className={labelCls}>Dato</label>
+            <div className="flex gap-2">
+              <input type="date" className={`${inputCls} flex-1`} value={form.date}
+                onChange={e => upd({ date: e.target.value })} />
+              <button onClick={() => upd({ date: toDay() })}
+                className="px-4 py-2 text-sm border border-stone-200 rounded-lg bg-white hover:bg-stone-50 text-stone-600 transition-colors">
+                I dag
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Forsidebilde */}
+        <SectionHeading>Forsidebilde</SectionHeading>
+        <div className="space-y-4">
+          {cover ? (
+            <div className="relative group rounded-2xl overflow-hidden bg-stone-100" style={{ aspectRatio: '16/9' }}>
+              <img src={cover.url} alt="" className="w-full h-full object-cover" />
+              <button onClick={() => removeImage(cover.id)}
+                className="absolute top-3 right-3 p-2 bg-white/90 rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-50">
+                <svg className="w-4 h-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          ) : (
+            <div className="rounded-2xl bg-stone-100 flex items-center justify-center text-stone-300"
+              style={{ aspectRatio: '16/9' }}>
+              <svg className="w-12 h-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1}
+                  d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
               </svg>
-            </button>
-          </div>
-
-          {/* Tabs */}
-          <div className="flex overflow-x-auto border-b border-stone-100 px-7 gap-0.5 flex-shrink-0">
-            {MODAL_TABS.map(t => (
-              <button key={t.id} onClick={() => setTab(t.id)}
-                className={`px-3 py-3 text-sm whitespace-nowrap transition-colors border-b-2 -mb-px ${
-                  tab === t.id
-                    ? 'border-stone-700 text-stone-800 font-medium'
-                    : 'border-transparent text-stone-400 hover:text-stone-600'
-                }`}>
-                {t.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Tab content */}
-          <div className="flex-1 overflow-y-auto px-7 py-6 min-h-0">
-
-            {/* ── Info ── */}
-            {tab === 'info' && (
-              <div className="space-y-5">
-                <div>
-                  <label className={labelCls}>Prosjektnavn</label>
-                  <input className={inputCls} value={form.name} autoFocus
-                    onChange={e => upd({ name: e.target.value })}
-                    placeholder="Gi prosjektet et navn…" />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className={labelCls}>Status</label>
-                    <select className={inputCls} value={form.status}
-                      onChange={e => upd({ status: e.target.value as Status })}>
-                      {STATUSES.map(s => <option key={s}>{s}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className={labelCls}>Kategori</label>
-                    <select className={inputCls} value={form.category}
-                      onChange={e => upd({ category: e.target.value as Category })}>
-                      {CATEGORIES.map(c => <option key={c}>{c}</option>)}
-                    </select>
-                  </div>
-                </div>
-                <div>
-                  <label className={labelCls}>Dato</label>
-                  <div className="flex gap-2">
-                    <input type="date" className={`${inputCls} flex-1`} value={form.date}
-                      onChange={e => upd({ date: e.target.value })} />
-                    <button onClick={() => upd({ date: toDay() })}
-                      className="px-4 py-2 text-sm border border-stone-200 rounded-lg bg-white hover:bg-stone-50 text-stone-600 transition-colors">
-                      I dag
-                    </button>
-                  </div>
-                </div>
-                {project && (
-                  <div className="grid grid-cols-3 gap-3 pt-1">
-                    {[
-                      { label: 'Bilder',    val: form.images.length || '–' },
-                      { label: 'PDF-er',    val: form.pdfs.length   || '–' },
-                      { label: 'Pleieinfo', val: form.care.details ? '✓' : '–' },
-                    ].map(s => (
-                      <div key={s.label} className="bg-stone-50 rounded-xl p-3 text-center border border-stone-100">
-                        <p className="font-serif text-2xl text-stone-700">{s.val}</p>
-                        <p className="text-xs text-stone-400 mt-0.5">{s.label}</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* ── Notater ── */}
-            {tab === 'notater' && (
-              <div>
-                <label className={labelCls}>Notater</label>
-                <textarea className={`${inputCls} resize-y`} style={{ minHeight: 260 }}
-                  value={form.notes}
-                  onChange={e => upd({ notes: e.target.value })}
-                  placeholder="Stoff, teknikker, endringer, observasjoner…" />
-              </div>
-            )}
-
-            {/* ── Bilder ── */}
-            {tab === 'bilder' && (
-              <div className="space-y-4">
-                <div>
-                  <label className={labelCls}>Legg til bilde (URL)</label>
-                  <div className="flex gap-2">
-                    <input className={`${inputCls} flex-1`} value={imgUrl}
-                      onChange={e => setImgUrl(e.target.value)}
-                      onKeyDown={e => e.key === 'Enter' && addImage()}
-                      placeholder="https://…" />
-                    <button onClick={addImage}
-                      className="px-4 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors">
-                      Legg til
-                    </button>
-                  </div>
-                </div>
-                {form.images.length > 0 ? (
-                  <div className="grid grid-cols-2 gap-3">
-                    {form.images.map(img => (
-                      <div key={img.id} className="relative group aspect-square rounded-xl overflow-hidden bg-stone-100">
-                        <img src={img.url} alt="" className="w-full h-full object-cover" />
-                        <button onClick={() => removeImage(img.id)}
-                          className="absolute top-2 right-2 p-1.5 bg-white/90 rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-50">
-                          <svg className="w-3.5 h-3.5 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                          </svg>
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="text-center py-16 text-stone-300">
-                    <svg className="w-10 h-10 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1}
-                        d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </div>
+          )}
+          {form.images.length > 1 && (
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+              {form.images.slice(1).map(img => (
+                <div key={img.id} className="relative group aspect-square rounded-xl overflow-hidden bg-stone-100">
+                  <img src={img.url} alt="" className="w-full h-full object-cover" />
+                  <button onClick={() => removeImage(img.id)}
+                    className="absolute top-1.5 right-1.5 p-1.5 bg-white/90 rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-50">
+                    <svg className="w-3 h-3 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                     </svg>
-                    <p className="text-sm">Ingen bilder ennå</p>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* ── PDF-arkiv ── */}
-            {tab === 'pdfs' && (
-              <div className="space-y-4">
-                <div className="space-y-3 p-4 bg-stone-50 rounded-xl border border-stone-100">
-                  <div>
-                    <label className={labelCls}>PDF-navn</label>
-                    <input className={inputCls} value={pdfName}
-                      onChange={e => setPdfName(e.target.value)}
-                      placeholder="Navn på mønster eller fil…" />
-                  </div>
-                  <div>
-                    <label className={labelCls}>URL (Google Drive, direkte lenke…)</label>
-                    <div className="flex gap-2">
-                      <input className={`${inputCls} flex-1`} value={pdfUrl}
-                        onChange={e => setPdfUrl(e.target.value)}
-                        onKeyDown={e => e.key === 'Enter' && addPdf()}
-                        placeholder="https://…" />
-                      <button onClick={addPdf}
-                        className="px-4 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors">
-                        Legg til
-                      </button>
-                    </div>
-                  </div>
+                  </button>
                 </div>
-                {form.pdfs.length > 0 ? (
-                  <ul className="divide-y divide-stone-100">
-                    {form.pdfs.map(pdf => (
-                      <li key={pdf.id} className="flex items-center justify-between py-3">
-                        <div className="flex items-center gap-3 min-w-0">
-                          <div className="w-9 h-9 bg-red-50 rounded-lg flex items-center justify-center flex-shrink-0">
-                            <svg className="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414A1 1 0 0119 9.414V19a2 2 0 01-2 2z" />
-                            </svg>
-                          </div>
-                          <div className="min-w-0">
-                            <p className="text-sm font-medium text-stone-700 truncate">{pdf.name}</p>
-                            <a href={pdf.url} target="_blank" rel="noopener noreferrer"
-                              onClick={e => e.stopPropagation()}
-                              className="text-xs text-sky-500 hover:underline">
-                              Åpne PDF ↗
-                            </a>
-                          </div>
-                        </div>
-                        <button onClick={() => removePdf(pdf.id)}
-                          className="ml-3 p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors flex-shrink-0">
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                          </svg>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="text-center py-10 text-sm text-stone-300">Ingen PDF-er ennå</p>
-                )}
-              </div>
-            )}
-
-            {/* ── Stoffberegner ── */}
-            {tab === 'stoff' && (
-              <div className="space-y-5">
-                <p className="text-sm text-stone-500 leading-relaxed">
-                  Velg et mønster fra PDF-arkivet og oppgi størrelse. Claude leser mønsteret og
-                  beregner nødvendig stoff automatisk.
-                </p>
-                <div>
-                  <label className={labelCls}>PDF-mønster</label>
-                  {form.pdfs.length === 0 ? (
-                    <p className="text-sm text-stone-400 italic">
-                      Legg til PDF-er i «PDF-arkiv»-fanen først.
-                    </p>
-                  ) : (
-                    <select className={inputCls} value={form.fabricCalc.pdfId}
-                      onChange={e => upd({ fabricCalc: { ...form.fabricCalc, pdfId: e.target.value } })}>
-                      <option value="">Velg mønster…</option>
-                      {form.pdfs.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                    </select>
-                  )}
-                </div>
-                <div>
-                  <label className={labelCls}>Størrelse</label>
-                  <div className="flex gap-2">
-                    <input className={`${inputCls} flex-1`}
-                      value={form.fabricCalc.size}
-                      onChange={e => upd({ fabricCalc: { ...form.fabricCalc, size: e.target.value } })}
-                      placeholder="F.eks. 38, M, 36/38…" />
-                    <button onClick={runFabricCalc}
-                      disabled={!form.fabricCalc.pdfId || !form.fabricCalc.size || form.fabricCalc.loading}
-                      className="flex items-center gap-2 px-5 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap">
-                      {form.fabricCalc.loading && <Spinner />}
-                      {form.fabricCalc.loading ? 'Analyserer…' : 'Beregn stoff'}
-                    </button>
-                  </div>
-                </div>
-                {form.fabricCalc.result && (
-                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-                    <p className="text-xs font-semibold tracking-widest uppercase text-amber-600 mb-2">
-                      Stoffbehov — størrelse {form.fabricCalc.size}
-                    </p>
-                    <div className="text-sm text-stone-700 whitespace-pre-wrap leading-relaxed">
-                      {form.fabricCalc.result}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* ── Pleie & Vedlikehold ── */}
-            {tab === 'pleie' && (
-              <div className="space-y-5">
-                <div>
-                  <label className={labelCls}>Importer fra produktside (URL)</label>
-                  <div className="flex gap-2">
-                    <input className={`${inputCls} flex-1`}
-                      value={form.care.sourceUrl}
-                      onChange={e => upd({ care: { ...form.care, sourceUrl: e.target.value } })}
-                      placeholder="URL til stoffets produktside…" />
-                    <button onClick={runCareImport}
-                      disabled={!form.care.sourceUrl || form.care.loading}
-                      className="flex items-center gap-2 px-4 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap">
-                      {form.care.loading && <Spinner />}
-                      {form.care.loading ? 'Henter…' : 'Importer'}
-                    </button>
-                  </div>
-                  <p className="text-xs text-stone-400 mt-1.5">
-                    F.eks. stoffbutikk, Ryer, Stoff &amp; Stil – Claude henter pleieinfo automatisk.
-                  </p>
-                </div>
-                <div>
-                  <label className={labelCls}>Pleie &amp; Vedlikehold</label>
-                  <textarea className={`${inputCls} resize-y`} style={{ minHeight: 200 }}
-                    value={form.care.details}
-                    onChange={e => upd({ care: { ...form.care, details: e.target.value } })}
-                    placeholder="Pleieinstruksjoner… (skriv manuelt eller importer fra URL)" />
-                </div>
-              </div>
-            )}
+              ))}
+            </div>
+          )}
+          <div>
+            <label className={labelCls}>Legg til bilde (URL)</label>
+            <div className="flex gap-2">
+              <input className={`${inputCls} flex-1`} value={imgUrl}
+                onChange={e => setImgUrl(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && addImage()}
+                placeholder="https://…" />
+              <button onClick={addImage}
+                className="px-4 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors whitespace-nowrap">
+                Legg til
+              </button>
+            </div>
           </div>
+        </div>
 
-          {/* Footer */}
-          <div className="flex items-center justify-between px-7 py-4 border-t border-stone-100 flex-shrink-0">
+        {/* Notater & Justeringer */}
+        <SectionHeading>Notater &amp; Justeringer</SectionHeading>
+        <textarea className={`${inputCls} resize-y`} style={{ minHeight: 180 }}
+          value={form.notes}
+          onChange={e => upd({ notes: e.target.value })}
+          placeholder="Stoff, teknikker, endringer, observasjoner…" />
+
+        {/* PDF-arkiv */}
+        <SectionHeading>PDF-arkiv</SectionHeading>
+        <div className="space-y-4">
+          <div className="space-y-3 p-4 bg-stone-50 rounded-xl border border-stone-100">
             <div>
-              {project && onDelete && (
-                <button onClick={onDelete} className="text-sm text-red-400 hover:text-red-600 transition-colors">
-                  Slett prosjekt
-                </button>
-              )}
+              <label className={labelCls}>PDF-navn</label>
+              <input className={inputCls} value={pdfName}
+                onChange={e => setPdfName(e.target.value)}
+                placeholder="Navn på mønster eller fil…" />
             </div>
-            <div className="flex gap-3">
-              <button onClick={onClose}
-                className="px-4 py-2 text-sm text-stone-500 hover:bg-stone-100 rounded-lg transition-colors">
-                Avbryt
-              </button>
-              <button onClick={handleSave}
-                disabled={saving || !form.name.trim()}
-                className="flex items-center gap-2 px-6 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed font-medium">
-                {saving && <Spinner />}
-                {saving ? 'Lagrer…' : 'Lagre'}
+            <div>
+              <label className={labelCls}>URL (Google Drive, direkte lenke…)</label>
+              <div className="flex gap-2">
+                <input className={`${inputCls} flex-1`} value={pdfUrl}
+                  onChange={e => setPdfUrl(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && addPdf()}
+                  placeholder="https://…" />
+                <button onClick={addPdf}
+                  className="px-4 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors whitespace-nowrap">
+                  Legg til
+                </button>
+              </div>
+            </div>
+          </div>
+          {form.pdfs.length > 0 ? (
+            <ul className="divide-y divide-stone-100">
+              {form.pdfs.map(pdf => (
+                <li key={pdf.id} className="flex items-center justify-between py-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-9 h-9 bg-red-50 rounded-lg flex items-center justify-center flex-shrink-0">
+                      <svg className="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414A1 1 0 0119 9.414V19a2 2 0 01-2 2z" />
+                      </svg>
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-stone-700 truncate">{pdf.name}</p>
+                      <a href={pdf.url} target="_blank" rel="noopener noreferrer"
+                        className="text-xs text-sky-500 hover:underline">
+                        Åpne PDF ↗
+                      </a>
+                    </div>
+                  </div>
+                  <button onClick={() => removePdf(pdf.id)}
+                    className="ml-3 p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors flex-shrink-0">
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-center py-8 text-sm text-stone-300">Ingen PDF-er ennå</p>
+          )}
+        </div>
+
+        {/* Stoffberegner */}
+        <SectionHeading>Stoffberegner</SectionHeading>
+        <div className="space-y-5">
+          <p className="text-sm text-stone-500 leading-relaxed">
+            Velg et mønster fra PDF-arkivet og oppgi størrelse. Claude leser mønsteret og
+            beregner nødvendig stoff automatisk.
+          </p>
+          <div>
+            <label className={labelCls}>PDF-mønster</label>
+            {form.pdfs.length === 0 ? (
+              <p className="text-sm text-stone-400 italic">Legg til PDF-er i PDF-arkivet først.</p>
+            ) : (
+              <select className={inputCls} value={form.fabricCalc.pdfId}
+                onChange={e => upd({ fabricCalc: { ...form.fabricCalc, pdfId: e.target.value } })}>
+                <option value="">Velg mønster…</option>
+                {form.pdfs.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            )}
+          </div>
+          <div>
+            <label className={labelCls}>Størrelse</label>
+            <div className="flex gap-2">
+              <input className={`${inputCls} flex-1`}
+                value={form.fabricCalc.size}
+                onChange={e => upd({ fabricCalc: { ...form.fabricCalc, size: e.target.value } })}
+                placeholder="F.eks. 38, M, 36/38…" />
+              <button onClick={runFabricCalc}
+                disabled={!form.fabricCalc.pdfId || !form.fabricCalc.size || form.fabricCalc.loading}
+                className="flex items-center gap-2 px-5 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap">
+                {form.fabricCalc.loading && <Spinner />}
+                {form.fabricCalc.loading ? 'Analyserer…' : 'Beregn stoff'}
               </button>
             </div>
           </div>
-
-          {/* Toast notification */}
-          {toast && (
-            <div className="absolute bottom-20 left-1/2 -translate-x-1/2 bg-red-600 text-white text-sm px-4 py-2 rounded-lg shadow-lg whitespace-nowrap z-10">
-              {toast}
+          {form.fabricCalc.result && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+              <p className="text-xs font-semibold tracking-widest uppercase text-amber-600 mb-2">
+                Stoffbehov — størrelse {form.fabricCalc.size}
+              </p>
+              <div className="text-sm text-stone-700 whitespace-pre-wrap leading-relaxed">
+                {form.fabricCalc.result}
+              </div>
             </div>
           )}
         </div>
+
+        {/* Vedlikehold & Pleie */}
+        <SectionHeading>Vedlikehold &amp; Pleie</SectionHeading>
+        <div className="space-y-5">
+          <div>
+            <label className={labelCls}>Importer fra produktside (URL)</label>
+            <div className="flex gap-2">
+              <input className={`${inputCls} flex-1`}
+                value={form.care.sourceUrl}
+                onChange={e => upd({ care: { ...form.care, sourceUrl: e.target.value } })}
+                placeholder="URL til stoffets produktside…" />
+              <button onClick={runCareImport}
+                disabled={!form.care.sourceUrl || form.care.loading}
+                className="flex items-center gap-2 px-4 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap">
+                {form.care.loading && <Spinner />}
+                {form.care.loading ? 'Henter…' : 'Importer'}
+              </button>
+            </div>
+            <p className="text-xs text-stone-400 mt-1.5">
+              F.eks. stoffbutikk, Ryer, Stoff &amp; Stil – Claude henter pleieinfo automatisk.
+            </p>
+          </div>
+          <div>
+            <label className={labelCls}>Pleie &amp; Vedlikehold</label>
+            <textarea className={`${inputCls} resize-y`} style={{ minHeight: 180 }}
+              value={form.care.details}
+              onChange={e => upd({ care: { ...form.care, details: e.target.value } })}
+              placeholder="Pleieinstruksjoner… (skriv manuelt eller importer fra URL)" />
+          </div>
+        </div>
       </div>
+
+      {toast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-red-600 text-white text-sm px-4 py-2 rounded-lg shadow-lg whitespace-nowrap z-50">
+          {toast}
+        </div>
+      )}
     </div>
   )
 }
@@ -624,13 +626,13 @@ function DeleteDialog({ onConfirm, onCancel }: { onConfirm: () => void; onCancel
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
-  const [projects, setProjects]         = useState<Project[]>([])
-  const [loading, setLoading]           = useState(true)
-  const [isModalOpen, setIsModalOpen]   = useState(false)
-  const [editing, setEditing]           = useState<Project | null>(null)
-  const [deleteId, setDeleteId]         = useState<string | null>(null)
-  const [statusFilter, setStatusFilter] = useState<Status | 'Alle'>('Alle')
-  const [catFilter, setCatFilter]       = useState<Category | 'Alle'>('Alle')
+  const [projects, setProjects]             = useState<Project[]>([])
+  const [loading, setLoading]               = useState(true)
+  const [showDetail, setShowDetail]         = useState(false)
+  const [currentProject, setCurrentProject] = useState<Project | null>(null)
+  const [deleteId, setDeleteId]             = useState<string | null>(null)
+  const [statusFilter, setStatusFilter]     = useState<Status | 'Alle'>('Alle')
+  const [catFilter, setCatFilter]           = useState<Category | 'Alle'>('Alle')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -648,29 +650,18 @@ export default function Home() {
 
   useEffect(() => { load() }, [load])
 
-  async function saveProject(projectData: ProjectData) {
-    if (editing) {
-      const { error } = await supabase.from('projects').update({ data: projectData }).eq('id', editing.id)
-      if (error) throw error
-    } else {
-      const { error } = await supabase.from('projects').insert({ data: projectData })
-      if (error) throw error
-    }
-    await load()
-    closeModal()
-  }
-
   async function deleteProject(id: string) {
     const { error } = await supabase.from('projects').delete().eq('id', id)
     if (error) throw error
     await load()
-    closeModal()
     setDeleteId(null)
+    setShowDetail(false)
+    setCurrentProject(null)
   }
 
-  function openNew()            { setEditing(null); setIsModalOpen(true) }
-  function openEdit(p: Project) { setEditing(p);    setIsModalOpen(true) }
-  function closeModal()         { setIsModalOpen(false); setEditing(null) }
+  function openNew()            { setCurrentProject(null); setShowDetail(true) }
+  function openEdit(p: Project) { setCurrentProject(p);    setShowDetail(true) }
+  function handleBack()         { setShowDetail(false); setCurrentProject(null); load() }
 
   const filtered = projects.filter(p =>
     (statusFilter === 'Alle' || p.data.status   === statusFilter) &&
@@ -682,6 +673,25 @@ export default function Home() {
     Aktiv:    projects.filter(p => p.data.status === 'Aktiv').length,
     Planlagt: projects.filter(p => p.data.status === 'Planlagt').length,
     Fullført: projects.filter(p => p.data.status === 'Fullført').length,
+  }
+
+  if (showDetail) {
+    return (
+      <>
+        <ProjectDetail
+          project={currentProject}
+          onBack={handleBack}
+          onSaved={load}
+          onDelete={currentProject ? () => setDeleteId(currentProject.id) : undefined}
+        />
+        {deleteId && (
+          <DeleteDialog
+            onConfirm={() => deleteProject(deleteId)}
+            onCancel={() => setDeleteId(null)}
+          />
+        )}
+      </>
+    )
   }
 
   return (
@@ -781,16 +791,6 @@ export default function Home() {
           </div>
         )}
       </main>
-
-      {/* Modals */}
-      {isModalOpen && (
-        <ProjectModal
-          project={editing}
-          onSave={saveProject}
-          onClose={closeModal}
-          onDelete={editing ? () => setDeleteId(editing.id) : undefined}
-        />
-      )}
 
       {deleteId && (
         <DeleteDialog
