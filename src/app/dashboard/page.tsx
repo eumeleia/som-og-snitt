@@ -19,10 +19,19 @@ interface PdfItem   { id: string; name: string; url: string; type: PdfType; sour
 interface FabricCalcState { pdfId: string; size: string; result: string }
 interface CareState       { sourceUrl: string; details: string; loading: boolean }
 
+type FabricType = 'Hovedstoff' | 'Fôr' | 'Mellomlegg' | 'Annet'
+
+interface FabricItem {
+  id: string; sourceUrl: string
+  navn: string; materiale: string; bredde: string; vekt: string
+  vask: string; bilde: string; mengde: string; type: FabricType
+}
+
 interface ProjectData {
   name: string; status: Status; category: Category; date: string; notes: string
   images: ImageItem[]; pdfs: PdfItem[]
   fabricCalc: FabricCalcState; care: CareState
+  stoffer: FabricItem[]
   focalX: number; focalY: number
 }
 
@@ -51,11 +60,14 @@ const PDF_TYPE_STYLE: Record<PdfType, string> = {
   Annet:     'bg-stone-50 text-stone-500 border-stone-200',
 }
 
+const FABRIC_TYPES: FabricType[] = ['Hovedstoff', 'Fôr', 'Mellomlegg', 'Annet']
+
 const EMPTY: ProjectData = {
   name: '', status: 'Planlagt', category: 'Klær', date: '', notes: '',
   images: [], pdfs: [],
   fabricCalc: { pdfId: '', size: '', result: '' },
   care:        { sourceUrl: '', details: '', loading: false },
+  stoffer:     [],
   focalX: 50, focalY: 50,
 }
 
@@ -111,6 +123,21 @@ async function apiFetchUrl(url: string): Promise<string> {
   const j = await r.json()
   if (j.error) throw new Error(j.error)
   return j.content
+}
+
+interface FabricImportResult {
+  navn: string; materiale: string; bredde: string
+  vekt: string; vask: string; bilde: string
+}
+
+async function apiImportFabric(url: string): Promise<FabricImportResult> {
+  const r = await fetch('/api/import-fabric', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  })
+  const j = await r.json()
+  if (!r.ok || j.error) throw new Error(j.error ?? `HTTP ${r.status}`)
+  return j.fabric as FabricImportResult
 }
 
 async function extractPdfText(
@@ -443,7 +470,9 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
   onDelete?: () => void
 }) {
   const [form, setForm] = useState<ProjectData>(() =>
-    project ? structuredClone(project.data) : structuredClone(EMPTY)
+    project
+      ? { ...structuredClone(EMPTY), ...structuredClone(project.data) }
+      : structuredClone(EMPTY)
   )
   const [saveStatus, setSaveStatus]       = useState<SaveStatus>('idle')
   const [showImgModal, setShowImgModal]   = useState(false)
@@ -465,6 +494,12 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
   const [calcError, setCalcError]                   = useState('')
   const [calcProgress, setCalcProgress]             = useState('')
   const pdfTextCacheRef = useRef<Record<string, string>>({})
+
+  // Stoff-import ephemeral state
+  const [stoffImportUrl, setStoffImportUrl]   = useState('')
+  const [stoffImporting, setStoffImporting]   = useState(false)
+  const [stoffImportError, setStoffImportError] = useState('')
+  const [stoffImportNote, setStoffImportNote] = useState('')
 
   const projectIdRef = useRef<string | null>(project?.id ?? null)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -705,6 +740,58 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
       upd({ care: { ...form.care, loading: false } })
       showToast('Kunne ikke hente siden – sjekk URL og prøv igjen.')
     }
+  }
+
+  async function importStoff() {
+    const trimmedUrl = stoffImportUrl.trim()
+    if (!trimmedUrl) return
+    setStoffImporting(true)
+    setStoffImportError('')
+    setStoffImportNote('')
+    try {
+      const result = await apiImportFabric(trimmedUrl)
+      const missingFields = (Object.entries(result) as [string, string][])
+        .filter(([, v]) => !v)
+        .map(([k]) => k)
+      const foundFields = (Object.entries(result) as [string, string][])
+        .filter(([, v]) => !!v)
+        .map(([k]) => k)
+
+      upd({
+        stoffer: [...form.stoffer, {
+          id: uid(),
+          sourceUrl: trimmedUrl,
+          navn:      result.navn,
+          materiale: result.materiale,
+          bredde:    result.bredde,
+          vekt:      result.vekt,
+          vask:      result.vask,
+          bilde:     result.bilde,
+          mengde:    '',
+          type:      'Hovedstoff',
+        }],
+      })
+      setStoffImportUrl('')
+
+      if (missingFields.length > 0) {
+        setStoffImportNote(
+          `Lagt til. Fant: ${foundFields.join(', ') || 'ingen'} · Mangler: ${missingFields.join(', ')}`
+        )
+      }
+    } catch (err) {
+      setStoffImportError(err instanceof Error ? err.message : 'Ukjent feil')
+    } finally {
+      setStoffImporting(false)
+    }
+  }
+
+  function removeStoff(id: string) {
+    upd({ stoffer: form.stoffer.filter(s => s.id !== id) })
+    setStoffImportNote('')
+  }
+
+  function updateStoff(id: string, patch: Partial<FabricItem>) {
+    upd({ stoffer: form.stoffer.map(s => s.id === id ? { ...s, ...patch } : s) })
   }
 
   const cover = form.images[0]
@@ -1128,6 +1215,125 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
             <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-700">
               {calcError}
             </div>
+          )}
+        </div>
+
+        {/* ── Stoffer ── */}
+        <SectionHeading>Stoffer</SectionHeading>
+        <div className="space-y-4">
+
+          {/* Import input */}
+          <div>
+            <label className={labelCls}>Importer fra produktside (URL)</label>
+            <div className="flex gap-2">
+              <input className={`${inputCls} flex-1`}
+                value={stoffImportUrl}
+                onChange={e => { setStoffImportUrl(e.target.value); setStoffImportError(''); setStoffImportNote('') }}
+                onKeyDown={e => e.key === 'Enter' && importStoff()}
+                placeholder="https://www.selfmade.com/…" />
+              <button onClick={importStoff}
+                disabled={!stoffImportUrl.trim() || stoffImporting}
+                className="flex items-center gap-2 px-4 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap">
+                {stoffImporting && <Spinner />}
+                {stoffImporting ? 'Henter…' : 'Importer'}
+              </button>
+            </div>
+            <p className="text-xs text-stone-400 mt-1.5">
+              Selfmade, Stoff &amp; Stil, o.l. – Claude henter navn, materiale, bredde, vekt og vaskeinfo.
+            </p>
+          </div>
+
+          {/* Error / note */}
+          {stoffImportError && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-700">
+              {stoffImportError}
+            </div>
+          )}
+          {stoffImportNote && !stoffImportError && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-700">
+              {stoffImportNote}
+            </div>
+          )}
+
+          {/* Fabric cards */}
+          {form.stoffer.length > 0 && (
+            <ul className="space-y-3">
+              {form.stoffer.map(stoff => (
+                <li key={stoff.id} className="bg-white rounded-xl border border-stone-200 overflow-hidden flex">
+
+                  {/* Thumbnail */}
+                  {stoff.bilde ? (
+                    <div className="w-20 flex-shrink-0 bg-stone-100">
+                      <img src={stoff.bilde} alt={stoff.navn}
+                        className="w-full h-full object-cover" style={{ minHeight: '96px' }} />
+                    </div>
+                  ) : (
+                    <div className="w-20 flex-shrink-0 bg-stone-50 flex items-center justify-center" style={{ minHeight: '96px' }}>
+                      <svg className="w-7 h-7 text-stone-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1}
+                          d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" />
+                      </svg>
+                    </div>
+                  )}
+
+                  {/* Content */}
+                  <div className="flex-1 min-w-0 p-3 space-y-2">
+                    {/* Name + delete */}
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="font-medium text-stone-800 text-sm leading-tight">
+                        {stoff.navn || <span className="text-stone-400 italic font-normal">Ukjent stoff</span>}
+                      </p>
+                      <button onClick={() => removeStoff(stoff.id)}
+                        className="p-1 rounded hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors flex-shrink-0 -mt-0.5">
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+
+                    {/* Type selector */}
+                    <div className="flex flex-wrap gap-1">
+                      {FABRIC_TYPES.map(t => (
+                        <button key={t} onClick={() => updateStoff(stoff.id, { type: t })}
+                          className={`px-2 py-0.5 text-xs rounded border transition-colors ${
+                            stoff.type === t
+                              ? 'bg-stone-800 text-white border-stone-800'
+                              : 'bg-white text-stone-400 border-stone-200 hover:border-stone-400 hover:text-stone-600'
+                          }`}>
+                          {t}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Material info */}
+                    <div className="text-xs text-stone-500 space-y-0.5">
+                      {stoff.materiale && <p className="font-medium text-stone-700">{stoff.materiale}</p>}
+                      {(stoff.bredde || stoff.vekt) && (
+                        <p className="text-stone-400">
+                          {[stoff.bredde && `${stoff.bredde} cm`, stoff.vekt && `${stoff.vekt} g/m²`]
+                            .filter(Boolean).join(' · ')}
+                        </p>
+                      )}
+                      {stoff.vask && (
+                        <p className="text-stone-400 leading-relaxed">{stoff.vask}</p>
+                      )}
+                    </div>
+
+                    {/* Mengde input */}
+                    <input
+                      value={stoff.mengde}
+                      onChange={e => updateStoff(stoff.id, { mengde: e.target.value })}
+                      placeholder="Mengde (f.eks. 2 m)"
+                      className="w-full px-2.5 py-1.5 border border-stone-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-stone-300 bg-stone-50"
+                    />
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {form.stoffer.length === 0 && !stoffImportError && (
+            <p className="text-center py-6 text-sm text-stone-300">Ingen stoffer ennå</p>
           )}
         </div>
 
