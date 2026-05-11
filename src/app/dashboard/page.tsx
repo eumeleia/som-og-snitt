@@ -127,7 +127,7 @@ async function apiFetchUrl(url: string): Promise<string> {
 
 interface FabricImportResult {
   navn: string; materiale: string; bredde: string
-  vekt: string; vask: string; bilde: string
+  vekt: string; krymp: string; vask: string; sertifisering: string; bilde: string
 }
 
 async function apiImportFabric(url: string): Promise<FabricImportResult> {
@@ -757,6 +757,12 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
         .filter(([, v]) => !!v)
         .map(([k]) => k)
 
+      const fullVask = [
+        result.vask,
+        result.krymp      && `Krymp: ${result.krymp}`,
+        result.sertifisering,
+      ].filter(Boolean).join(' · ')
+
       upd({
         stoffer: [...form.stoffer, {
           id: uid(),
@@ -765,7 +771,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
           materiale: result.materiale,
           bredde:    result.bredde,
           vekt:      result.vekt,
-          vask:      result.vask,
+          vask:      fullVask,
           bilde:     result.bilde,
           mengde:    '',
           type:      'Hovedstoff',
@@ -1310,8 +1316,10 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
                       {stoff.materiale && <p className="font-medium text-stone-700">{stoff.materiale}</p>}
                       {(stoff.bredde || stoff.vekt) && (
                         <p className="text-stone-400">
-                          {[stoff.bredde && `${stoff.bredde} cm`, stoff.vekt && `${stoff.vekt} g/m²`]
-                            .filter(Boolean).join(' · ')}
+                          {[
+                            stoff.bredde && (stoff.bredde.includes('cm') ? stoff.bredde : `${stoff.bredde} cm`),
+                            stoff.vekt   && (stoff.vekt.includes('g')    ? stoff.vekt   : `${stoff.vekt} g/m²`),
+                          ].filter(Boolean).join(' · ')}
                         </p>
                       )}
                       {stoff.vask && (

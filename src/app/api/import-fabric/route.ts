@@ -3,17 +3,68 @@ import Anthropic from '@anthropic-ai/sdk'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
-const PROMPT = `Du får HTML-innhold fra en produktside for stoff. Finn og returner JSON med følgende felter (alle på norsk, tom streng hvis ikke funnet):
+const PROMPT = `Du får utdrag fra en Selfmade-produktside. Returner KUN gyldig JSON, ingen forklaring:
+
 {
-  "navn": "produktets navn",
-  "materiale": "hva stoffet er laget av (f.eks. '100% bomull')",
-  "bredde": "stoffbredde i cm (bare tallet, f.eks. '140')",
-  "vekt": "gram per kvadratmeter (bare tallet, f.eks. '120')",
-  "vask": "vaskeinstruksjoner (alle relevante linjer, separert med ' · ')",
-  "bilde": "URL til hovedbildet hvis funnet"
+  "navn": "",
+  "materiale": "",
+  "bredde": "",
+  "vekt": "",
+  "krymp": "",
+  "vask": "",
+  "sertifisering": "",
+  "bilde": ""
 }
 
-Returner KUN JSON, ingen forklaring. Pleieinfo ligger ofte i en 'Egenskaper'-seksjon som er kollapset i UI-en, men HTML-en inneholder dataen. Let i hele HTML-en, inkludert JSON-LD og data-attributter.`
+Feltforklaring:
+- navn: produktets navn
+- materiale: hva stoffet er laget av (f.eks. '70% lin, 30% bomull')
+- bredde: stoffbredde med 'cm' suffiks (f.eks. '140 cm')
+- vekt: gram per kvadratmeter med enhet (f.eks. '160 g/m²', eller tom streng)
+- krymp: krympverdi (f.eks. '3%' eller tom streng)
+- vask: alle vaske-/pleielinjer slått sammen med ' · ', på norsk
+- sertifisering: sertifisering som OEKO-TEX (f.eks. 'OEKO-TEX STANDARD 100' eller tom streng)
+- bilde: første bilde-URL, full URL
+
+Finn bredde/vekt/krymp/vask/sertifisering i properties-seksjonen, ikke i markedsføringsteksten. Hvis et felt mangler, bruk tom streng — ikke finn på.`
+
+function extractSections(html: string): string {
+  const parts: string[] = []
+
+  // Extract JSON-LD blocks (Product schema with name, image, sku)
+  const jsonLdRegex = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
+  let match
+  while ((match = jsonLdRegex.exec(html)) !== null) {
+    parts.push(`=== JSON-LD ===\n${match[1].trim()}`)
+  }
+
+  // Extract properties section by looking for known id patterns in Shopware
+  const propertiesIdPrefixes = ['propertiesToggle', 'properties-tab']
+  let foundProperties = false
+  for (const prefix of propertiesIdPrefixes) {
+    const idx = html.indexOf(`id="${prefix}`)
+    if (idx !== -1) {
+      const tagStart = html.lastIndexOf('<', idx)
+      parts.push(`=== Properties section ===\n${html.slice(tagStart, tagStart + 15000)}`)
+      foundProperties = true
+      break
+    }
+  }
+
+  // Fallback: look for characteristic Norwegian property keywords
+  if (!foundProperties) {
+    const keywords = ['Bredde:', 'Krymp vask', 'OEKO-TEX', 'Vaskeanvisning', 'g/m²']
+    for (const kw of keywords) {
+      const idx = html.indexOf(kw)
+      if (idx !== -1) {
+        parts.push(`=== Properties (via "${kw}") ===\n${html.slice(Math.max(0, idx - 2000), idx + 8000)}`)
+        break
+      }
+    }
+  }
+
+  return parts.join('\n\n').slice(0, 200000)
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -34,18 +85,20 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // Strip scripts, styles and comments to get more content within the limit
-    let html = await res.text()
-    html = html
-      .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-      .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
-      .replace(/<!--[\s\S]*?-->/g, '')
-      .slice(0, 50000)
+    const html = await res.text()
+    const extracted = extractSections(html)
+
+    if (!extracted.trim()) {
+      return NextResponse.json(
+        { error: 'Fant ingen relevant innhold i siden' },
+        { status: 422 }
+      )
+    }
 
     const msg = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
       max_tokens: 1024,
-      messages: [{ role: 'user', content: `${PROMPT}\n\nHTML:\n${html}` }],
+      messages: [{ role: 'user', content: `${PROMPT}\n\nSideinnhold:\n${extracted}` }],
     })
 
     const raw = (msg.content[0] as Anthropic.TextBlock).text.trim()
