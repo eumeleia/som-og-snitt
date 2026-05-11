@@ -2,6 +2,14 @@
 
 import { useState, useEffect, useCallback, useRef, type ReactNode, type ChangeEvent } from 'react'
 import { supabase } from '@/lib/supabase'
+import * as pdfjsLib from 'pdfjs-dist'
+
+if (typeof window !== 'undefined') {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+    'pdfjs-dist/build/pdf.worker.min.mjs',
+    import.meta.url
+  ).href
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -66,11 +74,18 @@ function fmtDate(d: string) {
   return `${day}.${m}.${y}`
 }
 
-async function apiClaude(prompt: string, pdfBase64?: string): Promise<string> {
+async function apiClaude(prompt: string, pdfText?: string): Promise<string> {
   const r = await fetch('/api/claude', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, pdfBase64 }),
+    body: JSON.stringify({ prompt, pdfText }),
   })
+  if (!r.ok) {
+    const text = await r.text()
+    let errMsg: string
+    try { errMsg = (JSON.parse(text) as { error?: string }).error ?? `HTTP ${r.status}` }
+    catch { errMsg = `HTTP ${r.status} – server svarte med: ${text.slice(0, 300)}` }
+    throw new Error(errMsg)
+  }
   const j = await r.json()
   if (j.error) throw new Error(j.error)
   return j.result
@@ -81,9 +96,16 @@ async function apiFetchPdf(url: string): Promise<string> {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url }),
   })
+  if (!r.ok) {
+    const text = await r.text()
+    let errMsg: string
+    try { errMsg = (JSON.parse(text) as { error?: string }).error ?? `HTTP ${r.status} fra /api/fetch-pdf` }
+    catch { errMsg = `HTTP ${r.status} fra /api/fetch-pdf – ugyldig JSON: ${text.slice(0, 200)}` }
+    throw new Error(errMsg)
+  }
   const j = await r.json()
   if (j.error) throw new Error(j.error)
-  return j.data
+  return j.data as string
 }
 
 async function apiFetchUrl(url: string): Promise<string> {
@@ -96,14 +118,24 @@ async function apiFetchUrl(url: string): Promise<string> {
   return j.content
 }
 
-async function fetchPdfBase64Client(url: string): Promise<string> {
-  const res = await fetch(url)
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  const buf = await res.arrayBuffer()
-  const bytes = new Uint8Array(buf)
-  let binary = ''
-  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i])
-  return btoa(binary)
+async function extractPdfText(
+  data: Uint8Array,
+  onProgress?: (page: number, total: number) => void
+): Promise<string> {
+  const pdf = await pdfjsLib.getDocument({ data }).promise
+  const total = pdf.numPages
+  const parts: string[] = []
+  for (let i = 1; i <= total; i++) {
+    onProgress?.(i, total)
+    const page = await pdf.getPage(i)
+    const content = await page.getTextContent()
+    const pageText = content.items
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .map((item: any) => (typeof item.str === 'string' ? item.str : ''))
+      .join(' ')
+    parts.push(pageText)
+  }
+  return parts.join('\n')
 }
 
 // ── Shared UI ─────────────────────────────────────────────────────────────────
@@ -431,7 +463,8 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
   const [calcAvailableSizes, setCalcAvailableSizes] = useState<string[]>([])
   const [calcLoadingStep, setCalcLoadingStep]       = useState<'' | 'sizes' | 'calc'>('')
   const [calcError, setCalcError]                   = useState('')
-  const pdfBase64CacheRef = useRef<Record<string, string>>({})
+  const [calcProgress, setCalcProgress]             = useState('')
+  const pdfTextCacheRef = useRef<Record<string, string>>({})
 
   const projectIdRef = useRef<string | null>(project?.id ?? null)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -561,32 +594,61 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
 
   // ── Stoffberegner helpers ──────────────────────────────────────────────────
 
-  async function getPdfBase64(pdf: PdfItem): Promise<string> {
-    if (pdfBase64CacheRef.current[pdf.id]) return pdfBase64CacheRef.current[pdf.id]
+  async function getPdfText(
+    pdf: PdfItem,
+    onProgress?: (page: number, total: number) => void
+  ): Promise<string> {
+    if (pdfTextCacheRef.current[pdf.id]) return pdfTextCacheRef.current[pdf.id]
     const source = pdf.source ?? 'link'
-    const base64 = source === 'upload'
-      ? await fetchPdfBase64Client(pdf.url)
-      : await apiFetchPdf(pdf.url)
-    pdfBase64CacheRef.current[pdf.id] = base64
-    return base64
+    let data: Uint8Array
+
+    if (source === 'upload') {
+      const res = await fetch(pdf.url)
+      if (!res.ok) throw new Error(`HTTP ${res.status} – kunne ikke hente PDF fra Supabase`)
+      data = new Uint8Array(await res.arrayBuffer())
+    } else {
+      const base64 = await apiFetchPdf(pdf.url)
+      const binary = atob(base64)
+      data = new Uint8Array(binary.length)
+      for (let i = 0; i < binary.length; i++) data[i] = binary.charCodeAt(i)
+    }
+
+    let text: string
+    try {
+      text = await extractPdfText(data, onProgress)
+    } catch (err) {
+      throw new Error('Kunne ikke lese PDF-innhold: ' + (err instanceof Error ? err.message : String(err)))
+    }
+
+    if (!text.trim()) throw new Error('PDF-en inneholder ingen lesbar tekst (kanskje den er skannet?)')
+
+    const truncated = text.slice(0, 50000)
+    pdfTextCacheRef.current[pdf.id] = truncated
+    return truncated
   }
 
   async function selectSizes(pdf: PdfItem) {
     setCalcAvailableSizes([])
     setCalcError('')
     setCalcLoadingStep('sizes')
+    setCalcProgress('')
     upd({ fabricCalc: { pdfId: pdf.id, size: '', result: '' } })
     try {
-      const base64 = await getPdfBase64(pdf)
+      const text = await getPdfText(pdf, (page, total) =>
+        setCalcProgress(`Leser PDF side ${page} av ${total}…`)
+      )
+      setCalcProgress('')
       const prompt =
         `Analyser dette symønsteret og finn alle tilgjengelige størrelser.\n` +
         `Svar BARE med en JSON-array av størrelser som strenger, f.eks: ["36","38","40","42"] eller ["XS","S","M","L","XL"].\n` +
         `Ingen annen tekst. Kun JSON-arrayen.`
-      const result = await apiClaude(prompt, base64)
-      const trimmed = result.trim()
+      const raw = await apiClaude(prompt, text)
+      const trimmed = raw.trim()
       const start = trimmed.indexOf('[')
       const end   = trimmed.lastIndexOf(']')
-      if (start === -1 || end === -1) throw new Error('Fant ingen størrelsesliste i mønsteret')
+      if (start === -1 || end === -1) {
+        throw new Error(`Fant ingen størrelsesliste. Claude svarte: ${trimmed.slice(0, 300)}`)
+      }
       const sizes: string[] = JSON.parse(trimmed.slice(start, end + 1))
       if (!Array.isArray(sizes) || sizes.length === 0) throw new Error('Ingen størrelser funnet')
       setCalcAvailableSizes(sizes)
@@ -595,6 +657,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
       setCalcError(`Kunne ikke lese størrelser: ${msg}`)
     } finally {
       setCalcLoadingStep('')
+      setCalcProgress('')
     }
   }
 
@@ -603,19 +666,24 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
     if (!pdf || !form.fabricCalc.size) return
     setCalcError('')
     setCalcLoadingStep('calc')
+    setCalcProgress('')
     try {
-      const base64 = await getPdfBase64(pdf)
+      const text = await getPdfText(pdf, (page, total) =>
+        setCalcProgress(`Leser PDF side ${page} av ${total}…`)
+      )
+      setCalcProgress('')
       const prompt =
         `Analyser dette symønsteret. Finn stoffbehovet for størrelse ${form.fabricCalc.size}.\n` +
         `Svar på norsk. List opp stoff type, bredde, lengde og evt. tilbehør som glidelås og knapper.\n` +
         `Bullet points, kort og presist med konkrete mål.`
-      const result = await apiClaude(prompt, base64)
+      const result = await apiClaude(prompt, text)
       upd({ fabricCalc: { ...form.fabricCalc, result } })
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Ukjent feil'
       setCalcError(`Beregning feilet: ${msg}`)
     } finally {
       setCalcLoadingStep('')
+      setCalcProgress('')
     }
   }
 
@@ -960,13 +1028,18 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
 
                   {/* Velg størrelse */}
                   {!showSizes && (
-                    <button
-                      onClick={() => selectSizes(pdf)}
-                      disabled={calcLoadingStep !== ''}
-                      className="flex items-center gap-2 px-4 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
-                      {loadingSz && <Spinner />}
-                      {loadingSz ? 'Laster størrelser…' : 'Velg størrelse'}
-                    </button>
+                    <div className="space-y-1.5">
+                      <button
+                        onClick={() => selectSizes(pdf)}
+                        disabled={calcLoadingStep !== ''}
+                        className="flex items-center gap-2 px-4 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                        {loadingSz && <Spinner />}
+                        {loadingSz ? 'Laster størrelser…' : 'Velg størrelse'}
+                      </button>
+                      {loadingSz && calcProgress && isActive && (
+                        <p className="text-xs text-stone-400">{calcProgress}</p>
+                      )}
+                    </div>
                   )}
 
                   {/* Size buttons */}
@@ -1016,16 +1089,21 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
 
                   {/* Beregn button */}
                   {isActive && form.fabricCalc.size && (
-                    <button
-                      onClick={runFabricCalc}
-                      disabled={calcLoadingStep !== ''}
-                      className="flex items-center gap-2 px-4 py-2 text-white text-sm rounded-lg transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
-                      style={{ backgroundColor: '#C9A57A' }}>
-                      {loadingCalc && <Spinner />}
-                      {loadingCalc
-                        ? 'Beregner…'
-                        : `Beregn stoffmengde – str. ${form.fabricCalc.size}`}
-                    </button>
+                    <div className="space-y-1.5">
+                      <button
+                        onClick={runFabricCalc}
+                        disabled={calcLoadingStep !== ''}
+                        className="flex items-center gap-2 px-4 py-2 text-white text-sm rounded-lg transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
+                        style={{ backgroundColor: '#C9A57A' }}>
+                        {loadingCalc && <Spinner />}
+                        {loadingCalc
+                          ? 'Beregner…'
+                          : `Beregn stoffmengde – str. ${form.fabricCalc.size}`}
+                      </button>
+                      {loadingCalc && calcProgress && isActive && (
+                        <p className="text-xs text-stone-400">{calcProgress}</p>
+                      )}
+                    </div>
                   )}
 
                   {/* Result */}
