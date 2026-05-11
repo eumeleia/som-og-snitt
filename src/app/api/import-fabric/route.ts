@@ -22,7 +22,7 @@ Feltforklaring:
 - bredde: stoffbredde med 'cm' suffiks (f.eks. '140 cm')
 - vekt: gram per kvadratmeter med enhet (f.eks. '160 g/m²', eller tom streng)
 - krymp: krympverdi (f.eks. '3%' eller tom streng)
-- vask: alle vaske-/pleielinjer slått sammen med ' · ', på norsk
+- vask: kombiner alt fra "Maintenance/Care"-seksjonen (vaskesymboler) OG eventuell "Vaskeanvisning"-tekst fra Properties, slå sammen med ' · ', på norsk
 - sertifisering: sertifisering som OEKO-TEX (f.eks. 'OEKO-TEX STANDARD 100' eller tom streng)
 - bilde: første bilde-URL, full URL
 
@@ -61,6 +61,17 @@ function extractSections(html: string): string {
         break
       }
     }
+  }
+
+  // Extract care/maintenance symbols from maintenance-property-wrapper divs
+  const maintenanceRegex = /<div[^>]*maintenance-property-wrapper[^>]*>[\s\S]*?alt="([^"]+)"/g
+  const careLabels: string[] = []
+  let m
+  while ((m = maintenanceRegex.exec(html)) !== null) {
+    if (m[1] && !careLabels.includes(m[1])) careLabels.push(m[1])
+  }
+  if (careLabels.length > 0) {
+    parts.push(`=== Maintenance/Care ===\n${careLabels.join(' · ')}`)
   }
 
   return parts.join('\n\n').slice(0, 200000)
