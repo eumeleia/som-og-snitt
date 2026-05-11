@@ -3,6 +3,7 @@
 export const dynamic = 'force-dynamic'
 
 import { useState, useEffect, useCallback, useRef, type ReactNode, type ChangeEvent } from 'react'
+import ReactMarkdown from 'react-markdown'
 import { supabase } from '@/lib/supabase'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -673,8 +674,10 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
       setCalcProgress('')
       const prompt =
         `Analyser dette symønsteret. Finn stoffbehovet for størrelse ${form.fabricCalc.size}.\n` +
-        `Svar på norsk. List opp stoff type, bredde, lengde og evt. tilbehør som glidelås og knapper.\n` +
-        `Bullet points, kort og presist med konkrete mål.`
+        `Svar på norsk med markdown-formatering: bruk ## for seksjoner, - for lister, **fet** for viktige mål.\n` +
+        `Ikke bruk blockquotes (>), horisontale streker (---), emojier eller advarsler.\n` +
+        `Struktur: én seksjon per stoff/materiale, og én seksjon for tilbehør (glidelås, knapper osv.) om relevant.\n` +
+        `Kort og presist med konkrete mål.`
       const result = await apiClaude(prompt, text)
       upd({ fabricCalc: { ...form.fabricCalc, result } })
     } catch (err) {
@@ -1107,12 +1110,12 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
 
                   {/* Result */}
                   {isActive && form.fabricCalc.result && (
-                    <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-                      <p className="text-xs font-semibold tracking-widest uppercase text-amber-600 mb-2">
+                    <div className="bg-amber-50 border border-amber-100 rounded-xl p-4">
+                      <p className="text-xs tracking-widest uppercase text-amber-500 mb-3">
                         Stoffbehov — størrelse {form.fabricCalc.size}
                       </p>
-                      <div className="text-sm text-stone-700 whitespace-pre-wrap leading-relaxed">
-                        {form.fabricCalc.result}
+                      <div className="text-sm text-stone-700 leading-relaxed [&>h2]:font-['Cormorant_Garamond',serif] [&>h2]:text-lg [&>h2]:font-semibold [&>h2]:text-stone-800 [&>h2]:mt-4 [&>h2]:mb-1 [&>h2:first-child]:mt-0 [&>h3]:text-sm [&>h3]:font-semibold [&>h3]:text-stone-700 [&>h3]:mt-3 [&>h3]:mb-1 [&>ul]:list-disc [&>ul]:pl-5 [&>ul]:space-y-0.5 [&>p]:my-1 [&_strong]:font-semibold [&>blockquote]:border-l-2 [&>blockquote]:border-amber-300 [&>blockquote]:bg-amber-100/50 [&>blockquote]:pl-3 [&>blockquote]:py-1 [&>blockquote]:my-2 [&>blockquote]:text-stone-600">
+                        <ReactMarkdown>{form.fabricCalc.result}</ReactMarkdown>
                       </div>
                     </div>
                   )}
