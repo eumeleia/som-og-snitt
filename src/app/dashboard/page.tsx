@@ -19,6 +19,7 @@ interface ProjectData {
   name: string; status: Status; category: Category; date: string; notes: string
   images: ImageItem[]; pdfs: PdfItem[]
   fabricCalc: FabricCalcState; care: CareState
+  focalX: number; focalY: number
 }
 
 interface Project { id: string; created_at: string; data: ProjectData }
@@ -45,6 +46,7 @@ const EMPTY: ProjectData = {
   images: [], pdfs: [],
   fabricCalc: { pdfId: '', size: '', result: '', loading: false },
   care:        { sourceUrl: '', details: '', loading: false },
+  focalX: 50, focalY: 50,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -126,7 +128,8 @@ function ProjectCard({ project, onEdit, onDelete }: {
     >
       <div className="h-44 bg-stone-50 overflow-hidden flex-shrink-0">
         {cover
-          ? <img src={cover} alt={d.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+          ? <img src={cover} alt={d.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+              style={{ objectPosition: `${d.focalX ?? 50}% ${d.focalY ?? 50}%` }} />
           : (
             <div className="w-full h-full flex items-center justify-center">
               <svg className="w-10 h-10 text-stone-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -302,6 +305,93 @@ function ImageUploadModal({ onAdd, onClose }: {
   )
 }
 
+// ── FocalPointModal ───────────────────────────────────────────────────────────
+
+function FocalPointModal({ imageUrl, focalX, focalY, onSave, onClose }: {
+  imageUrl: string
+  focalX: number
+  focalY: number
+  onSave: (x: number, y: number) => void
+  onClose: () => void
+}) {
+  const [pos, setPos] = useState({ x: focalX, y: focalY })
+
+  function pick(e: React.PointerEvent<HTMLImageElement>) {
+    e.preventDefault()
+    const rect = e.currentTarget.getBoundingClientRect()
+    const x = Math.round(Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100)))
+    const y = Math.round(Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100)))
+    setPos({ x, y })
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl w-full max-w-3xl shadow-2xl overflow-hidden flex flex-col" style={{ maxHeight: '95vh' }}>
+
+        <div className="px-5 py-4 border-b border-stone-100 flex-shrink-0">
+          <h3 className="font-serif text-xl text-stone-800">Velg fokuspunkt</h3>
+          <p className="text-xs text-stone-400 mt-0.5">Klikk på bildet for å sette fokuspunktet</p>
+        </div>
+
+        <div className="flex-1 bg-stone-900 flex items-center justify-center overflow-hidden min-h-0 p-2">
+          <div className="relative" style={{ touchAction: 'none' }}>
+            <img
+              src={imageUrl}
+              alt=""
+              onPointerDown={pick}
+              style={{
+                maxHeight: '75vh',
+                maxWidth: '100%',
+                display: 'block',
+                cursor: 'crosshair',
+                userSelect: 'none',
+              }}
+              draggable={false}
+            />
+            <div
+              style={{
+                position: 'absolute',
+                left: `${pos.x}%`,
+                top: `${pos.y}%`,
+                transform: 'translate(-50%, -50%)',
+                pointerEvents: 'none',
+              }}
+            >
+              <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+                <circle cx="18" cy="18" r="11" stroke="rgba(0,0,0,0.4)" strokeWidth="3" fill="none" />
+                <circle cx="18" cy="18" r="11" stroke="white" strokeWidth="2" fill="rgba(255,255,255,0.15)" />
+                <line x1="18" y1="4" x2="18" y2="13" stroke="rgba(0,0,0,0.4)" strokeWidth="3" strokeLinecap="round" />
+                <line x1="18" y1="4" x2="18" y2="13" stroke="white" strokeWidth="2" strokeLinecap="round" />
+                <line x1="18" y1="23" x2="18" y2="32" stroke="rgba(0,0,0,0.4)" strokeWidth="3" strokeLinecap="round" />
+                <line x1="18" y1="23" x2="18" y2="32" stroke="white" strokeWidth="2" strokeLinecap="round" />
+                <line x1="4" y1="18" x2="13" y2="18" stroke="rgba(0,0,0,0.4)" strokeWidth="3" strokeLinecap="round" />
+                <line x1="4" y1="18" x2="13" y2="18" stroke="white" strokeWidth="2" strokeLinecap="round" />
+                <line x1="23" y1="18" x2="32" y2="18" stroke="rgba(0,0,0,0.4)" strokeWidth="3" strokeLinecap="round" />
+                <line x1="23" y1="18" x2="32" y2="18" stroke="white" strokeWidth="2" strokeLinecap="round" />
+                <circle cx="18" cy="18" r="2.5" fill="rgba(0,0,0,0.4)" />
+                <circle cx="18" cy="18" r="2" fill="white" />
+              </svg>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex gap-3 justify-end px-5 py-4 border-t border-stone-100 flex-shrink-0">
+          <button onClick={onClose}
+            className="px-4 py-2 text-sm text-stone-600 hover:bg-stone-100 rounded-lg transition-colors">
+            Avbryt
+          </button>
+          <button
+            onClick={() => { onSave(pos.x, pos.y); onClose() }}
+            className="px-5 py-2 text-sm bg-stone-800 text-white rounded-lg hover:bg-stone-700 transition-colors font-medium">
+            Lagre
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── ProjectDetail ─────────────────────────────────────────────────────────────
 
 function ProjectDetail({ project, onBack, onSaved, onDelete }: {
@@ -314,7 +404,8 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
     project ? structuredClone(project.data) : structuredClone(EMPTY)
   )
   const [saveStatus, setSaveStatus]   = useState<SaveStatus>('idle')
-  const [showImgModal, setShowImgModal] = useState(false)
+  const [showImgModal, setShowImgModal]   = useState(false)
+  const [showFocalModal, setShowFocalModal] = useState(false)
   const [pdfUrl, setPdfUrl]           = useState('')
   const [pdfName, setPdfName]       = useState('')
   const [toast, setToast]           = useState('')
@@ -515,21 +606,37 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
         <SectionHeading>Forsidebilde</SectionHeading>
         <div className="space-y-3">
           {cover ? (
-            <div className="relative group rounded-2xl overflow-hidden bg-stone-100" style={{ height: '300px' }}>
-              <img src={cover.url} alt="" className="w-full h-full object-cover object-top" />
-              <button onClick={() => removeImage(cover.id)}
-                className="absolute top-3 right-3 p-2 bg-white/90 rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-50">
-                <svg className="w-4 h-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            <>
+              <div className="relative group rounded-2xl overflow-hidden bg-stone-100" style={{ height: '300px' }}>
+                <img
+                  src={cover.url}
+                  alt=""
+                  className="w-full h-full object-cover"
+                  style={{ objectPosition: `${form.focalX ?? 50}% ${form.focalY ?? 50}%` }}
+                />
+                <button onClick={() => removeImage(cover.id)}
+                  className="absolute top-3 right-3 p-2 bg-white/90 rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-50">
+                  <svg className="w-4 h-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+                <button onClick={() => setShowImgModal(true)}
+                  className="absolute bottom-3 right-3 p-2 bg-white/90 rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity hover:bg-stone-50">
+                  <svg className="w-4 h-4 text-stone-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                  </svg>
+                </button>
+              </div>
+              <button
+                onClick={() => setShowFocalModal(true)}
+                className="flex items-center gap-1.5 text-xs text-stone-400 hover:text-stone-600 transition-colors self-start mt-1">
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                    d="M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0-6 0M12 3v3M12 18v3M3 12h3M18 12h3" />
                 </svg>
+                Velg fokuspunkt
               </button>
-              <button onClick={() => setShowImgModal(true)}
-                className="absolute bottom-3 right-3 p-2 bg-white/90 rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity hover:bg-stone-50">
-                <svg className="w-4 h-4 text-stone-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                </svg>
-              </button>
-            </div>
+            </>
           ) : (
             <button
               onClick={() => setShowImgModal(true)}
@@ -711,6 +818,16 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
         <ImageUploadModal
           onAdd={addImage}
           onClose={() => setShowImgModal(false)}
+        />
+      )}
+
+      {showFocalModal && cover && (
+        <FocalPointModal
+          imageUrl={cover.url}
+          focalX={form.focalX ?? 50}
+          focalY={form.focalY ?? 50}
+          onSave={(x, y) => upd({ focalX: x, focalY: y })}
+          onClose={() => setShowFocalModal(false)}
         />
       )}
 
