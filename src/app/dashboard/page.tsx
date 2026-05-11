@@ -17,7 +17,7 @@ interface ImageItem { id: string; url: string }
 interface PdfItem   { id: string; name: string; url: string; type: PdfType; source: 'upload' | 'link' }
 
 interface FabricCalcState { pdfId: string; size: string; result: string }
-interface CareState       { sourceUrl: string; details: string; loading: boolean }
+interface CareState       { details: string }
 
 type FabricType = 'Hovedstoff' | 'Fôr' | 'Mellomlegg' | 'Annet'
 
@@ -66,7 +66,7 @@ const EMPTY: ProjectData = {
   name: '', status: 'Planlagt', category: 'Klær', date: '', notes: '',
   images: [], pdfs: [],
   fabricCalc: { pdfId: '', size: '', result: '' },
-  care:        { sourceUrl: '', details: '', loading: false },
+  care:        { details: '' },
   stoffer:     [],
   focalX: 50, focalY: 50,
 }
@@ -724,24 +724,6 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
     }
   }
 
-  async function runCareImport() {
-    if (!form.care.sourceUrl) return
-    upd({ care: { ...form.care, loading: true } })
-    try {
-      const content = await apiFetchUrl(form.care.sourceUrl)
-      const prompt =
-        `Tekst fra en produktside om et stoff:\n\n${content}\n\n` +
-        `Ekstraher vedlikeholds- og pleieinstruksjonene på norsk. ` +
-        `Inkluder vasketemperatur, tørking, stryking, bleking og spesielle hensyn. ` +
-        `Bullet points, kort og konkret.`
-      const details = await apiClaude(prompt)
-      upd({ care: { ...form.care, details, loading: false } })
-    } catch {
-      upd({ care: { ...form.care, loading: false } })
-      showToast('Kunne ikke hente siden – sjekk URL og prøv igjen.')
-    }
-  }
-
   async function importStoff() {
     const trimmedUrl = stoffImportUrl.trim()
     if (!trimmedUrl) return
@@ -1349,29 +1331,11 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
         <SectionHeading>Vedlikehold &amp; Pleie</SectionHeading>
         <div className="space-y-5">
           <div>
-            <label className={labelCls}>Importer fra produktside (URL)</label>
-            <div className="flex gap-2">
-              <input className={`${inputCls} flex-1`}
-                value={form.care.sourceUrl}
-                onChange={e => upd({ care: { ...form.care, sourceUrl: e.target.value } })}
-                placeholder="URL til stoffets produktside…" />
-              <button onClick={runCareImport}
-                disabled={!form.care.sourceUrl || form.care.loading}
-                className="flex items-center gap-2 px-4 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap">
-                {form.care.loading && <Spinner />}
-                {form.care.loading ? 'Henter…' : 'Importer'}
-              </button>
-            </div>
-            <p className="text-xs text-stone-400 mt-1.5">
-              F.eks. stoffbutikk, Ryer, Stoff &amp; Stil – Claude henter pleieinfo automatisk.
-            </p>
-          </div>
-          <div>
             <label className={labelCls}>Pleie &amp; Vedlikehold</label>
             <textarea className={`${inputCls} resize-y`} style={{ minHeight: 180 }}
               value={form.care.details}
-              onChange={e => upd({ care: { ...form.care, details: e.target.value } })}
-              placeholder="Pleieinstruksjoner… (skriv manuelt eller importer fra URL)" />
+              onChange={e => upd({ care: { details: e.target.value } })}
+              placeholder="Pleieinstruksjoner…" />
           </div>
         </div>
       </div>
