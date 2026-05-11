@@ -1,15 +1,9 @@
 'use client'
 
+export const dynamic = 'force-dynamic'
+
 import { useState, useEffect, useCallback, useRef, type ReactNode, type ChangeEvent } from 'react'
 import { supabase } from '@/lib/supabase'
-import * as pdfjsLib from 'pdfjs-dist'
-
-if (typeof window !== 'undefined') {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-    'pdfjs-dist/build/pdf.worker.min.mjs',
-    import.meta.url
-  ).href
-}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -122,7 +116,12 @@ async function extractPdfText(
   data: Uint8Array,
   onProgress?: (page: number, total: number) => void
 ): Promise<string> {
-  const pdf = await pdfjsLib.getDocument({ data }).promise
+  const pdfjs = await import('pdfjs-dist')
+  pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+    'pdfjs-dist/build/pdf.worker.min.mjs',
+    import.meta.url
+  ).href
+  const pdf = await pdfjs.getDocument({ data }).promise
   const total = pdf.numPages
   const parts: string[] = []
   for (let i = 1; i <= total; i++) {
