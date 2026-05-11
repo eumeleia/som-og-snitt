@@ -7,12 +7,13 @@ import { supabase } from '@/lib/supabase'
 
 type Status    = 'Aktiv' | 'Planlagt' | 'Fullført'
 type Category  = 'Klær' | 'Interiør' | 'Tilbehør' | 'Reparasjoner'
+type PdfType   = 'Oppskrift' | 'Mønster' | 'Annet'
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
 interface ImageItem { id: string; url: string }
-interface PdfItem   { id: string; name: string; url: string }
+interface PdfItem   { id: string; name: string; url: string; type: PdfType; source: 'upload' | 'link' }
 
-interface FabricCalcState { pdfId: string; size: string; result: string; loading: boolean }
+interface FabricCalcState { pdfId: string; size: string; result: string }
 interface CareState       { sourceUrl: string; details: string; loading: boolean }
 
 interface ProjectData {
@@ -28,6 +29,7 @@ interface Project { id: string; created_at: string; data: ProjectData }
 
 const STATUSES:   Status[]   = ['Aktiv', 'Planlagt', 'Fullført']
 const CATEGORIES: Category[] = ['Klær', 'Interiør', 'Tilbehør', 'Reparasjoner']
+const PDF_TYPES:  PdfType[]  = ['Oppskrift', 'Mønster', 'Annet']
 
 const STATUS_STYLE: Record<Status, string> = {
   Aktiv:    'bg-emerald-50 text-emerald-700 border-emerald-200',
@@ -40,11 +42,16 @@ const CATEGORY_STYLE: Record<Category, string> = {
   Tilbehør:     'bg-teal-50 text-teal-700 border-teal-200',
   Reparasjoner: 'bg-orange-50 text-orange-700 border-orange-200',
 }
+const PDF_TYPE_STYLE: Record<PdfType, string> = {
+  Oppskrift: 'bg-rose-50 text-rose-700 border-rose-200',
+  Mønster:   'bg-teal-50 text-teal-700 border-teal-200',
+  Annet:     'bg-stone-50 text-stone-500 border-stone-200',
+}
 
 const EMPTY: ProjectData = {
   name: '', status: 'Planlagt', category: 'Klær', date: '', notes: '',
   images: [], pdfs: [],
-  fabricCalc: { pdfId: '', size: '', result: '', loading: false },
+  fabricCalc: { pdfId: '', size: '', result: '' },
   care:        { sourceUrl: '', details: '', loading: false },
   focalX: 50, focalY: 50,
 }
@@ -68,6 +75,7 @@ async function apiClaude(prompt: string, pdfBase64?: string): Promise<string> {
   if (j.error) throw new Error(j.error)
   return j.result
 }
+
 async function apiFetchPdf(url: string): Promise<string> {
   const r = await fetch('/api/fetch-pdf', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -77,6 +85,7 @@ async function apiFetchPdf(url: string): Promise<string> {
   if (j.error) throw new Error(j.error)
   return j.data
 }
+
 async function apiFetchUrl(url: string): Promise<string> {
   const r = await fetch('/api/fetch-url', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -85,6 +94,16 @@ async function apiFetchUrl(url: string): Promise<string> {
   const j = await r.json()
   if (j.error) throw new Error(j.error)
   return j.content
+}
+
+async function fetchPdfBase64Client(url: string): Promise<string> {
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const buf = await res.arrayBuffer()
+  const bytes = new Uint8Array(buf)
+  let binary = ''
+  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i])
+  return btoa(binary)
 }
 
 // ── Shared UI ─────────────────────────────────────────────────────────────────
@@ -238,7 +257,6 @@ function ImageUploadModal({ onAdd, onClose }: {
       <div className="fixed inset-0 bg-black/30 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-white rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden">
 
-        {/* Tabs */}
         <div className="flex border-b border-stone-100">
           {(['file', 'url'] as const).map(t => (
             <button key={t} onClick={() => setTab(t)}
@@ -340,24 +358,16 @@ function FocalPointModal({ imageUrl, focalX, focalY, onSave, onClose }: {
               src={imageUrl}
               alt=""
               onPointerDown={pick}
-              style={{
-                maxHeight: '75vh',
-                maxWidth: '100%',
-                display: 'block',
-                cursor: 'crosshair',
-                userSelect: 'none',
-              }}
+              style={{ maxHeight: '75vh', maxWidth: '100%', display: 'block', cursor: 'crosshair', userSelect: 'none' }}
               draggable={false}
             />
-            <div
-              style={{
-                position: 'absolute',
-                left: `${pos.x}%`,
-                top: `${pos.y}%`,
-                transform: 'translate(-50%, -50%)',
-                pointerEvents: 'none',
-              }}
-            >
+            <div style={{
+              position: 'absolute',
+              left: `${pos.x}%`,
+              top: `${pos.y}%`,
+              transform: 'translate(-50%, -50%)',
+              pointerEvents: 'none',
+            }}>
               <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
                 <circle cx="18" cy="18" r="11" stroke="rgba(0,0,0,0.4)" strokeWidth="3" fill="none" />
                 <circle cx="18" cy="18" r="11" stroke="white" strokeWidth="2" fill="rgba(255,255,255,0.15)" />
@@ -400,15 +410,28 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
   onSaved: () => void
   onDelete?: () => void
 }) {
-  const [form, setForm]             = useState<ProjectData>(() =>
+  const [form, setForm] = useState<ProjectData>(() =>
     project ? structuredClone(project.data) : structuredClone(EMPTY)
   )
-  const [saveStatus, setSaveStatus]   = useState<SaveStatus>('idle')
+  const [saveStatus, setSaveStatus]       = useState<SaveStatus>('idle')
   const [showImgModal, setShowImgModal]   = useState(false)
   const [showFocalModal, setShowFocalModal] = useState(false)
-  const [pdfUrl, setPdfUrl]           = useState('')
+  const [toast, setToast]                 = useState('')
+
+  // PDF form state
+  const [pdfTab, setPdfTab]         = useState<'file' | 'link'>('file')
+  const [pdfFile, setPdfFile]       = useState<File | null>(null)
+  const [pdfUrl, setPdfUrl]         = useState('')
   const [pdfName, setPdfName]       = useState('')
-  const [toast, setToast]           = useState('')
+  const [pdfType, setPdfType]       = useState<PdfType>('Oppskrift')
+  const [pdfUploading, setPdfUploading] = useState(false)
+  const pdfFileInputRef             = useRef<HTMLInputElement>(null)
+
+  // Stoffberegner ephemeral state
+  const [calcAvailableSizes, setCalcAvailableSizes] = useState<string[]>([])
+  const [calcLoadingStep, setCalcLoadingStep]       = useState<'' | 'sizes' | 'calc'>('')
+  const [calcError, setCalcError]                   = useState('')
+  const pdfBase64CacheRef = useRef<Record<string, string>>({})
 
   const projectIdRef = useRef<string | null>(project?.id ?? null)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -449,7 +472,6 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
     }
   }
 
-  // Debounced autosave
   useEffect(() => {
     if (!form.name.trim()) return
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
@@ -472,33 +494,128 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
     onBack()
   }
 
-  function addImage(url: string) {
-    upd({ images: [...form.images, { id: uid(), url }] })
-  }
+  // ── Image handlers ─────────────────────────────────────────────────────────
+
+  function addImage(url: string) { upd({ images: [...form.images, { id: uid(), url }] }) }
   function removeImage(id: string) { upd({ images: form.images.filter(i => i.id !== id) }) }
 
-  function addPdf() {
-    if (!pdfUrl.trim()) return
-    upd({ pdfs: [...form.pdfs, { id: uid(), name: pdfName.trim() || 'PDF', url: pdfUrl.trim() }] })
-    setPdfUrl(''); setPdfName('')
+  // ── PDF handlers ───────────────────────────────────────────────────────────
+
+  async function handlePdfUpload() {
+    if (!pdfFile) return
+    setPdfUploading(true)
+    try {
+      const ext = pdfFile.name.split('.').pop() ?? 'pdf'
+      const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`
+      const { error: uploadErr } = await supabase.storage
+        .from('project-images')
+        .upload(filename, pdfFile, { contentType: 'application/pdf' })
+      if (uploadErr) throw uploadErr
+      const { data } = supabase.storage.from('project-images').getPublicUrl(filename)
+      upd({
+        pdfs: [...form.pdfs, {
+          id: uid(),
+          name: pdfName.trim() || pdfFile.name,
+          url: data.publicUrl,
+          type: pdfType,
+          source: 'upload',
+        }],
+      })
+      setPdfFile(null)
+      setPdfName('')
+    } catch {
+      showToast('Opplasting feilet. Prøv igjen.')
+    } finally {
+      setPdfUploading(false)
+    }
   }
-  function removePdf(id: string) { upd({ pdfs: form.pdfs.filter(p => p.id !== id) }) }
+
+  function addPdfLink() {
+    if (!pdfUrl.trim()) return
+    upd({
+      pdfs: [...form.pdfs, {
+        id: uid(),
+        name: pdfName.trim() || 'PDF',
+        url: pdfUrl.trim(),
+        type: pdfType,
+        source: 'link',
+      }],
+    })
+    setPdfUrl('')
+    setPdfName('')
+  }
+
+  function removePdf(id: string) {
+    const patch: Partial<ProjectData> = { pdfs: form.pdfs.filter(p => p.id !== id) }
+    if (form.fabricCalc.pdfId === id) {
+      patch.fabricCalc = { pdfId: '', size: '', result: '' }
+      setCalcAvailableSizes([])
+      setCalcError('')
+    }
+    upd(patch)
+  }
+
+  function updatePdfType(id: string, type: PdfType) {
+    upd({ pdfs: form.pdfs.map(p => p.id === id ? { ...p, type, source: p.source ?? 'link' } : p) })
+  }
+
+  // ── Stoffberegner helpers ──────────────────────────────────────────────────
+
+  async function getPdfBase64(pdf: PdfItem): Promise<string> {
+    if (pdfBase64CacheRef.current[pdf.id]) return pdfBase64CacheRef.current[pdf.id]
+    const source = pdf.source ?? 'link'
+    const base64 = source === 'upload'
+      ? await fetchPdfBase64Client(pdf.url)
+      : await apiFetchPdf(pdf.url)
+    pdfBase64CacheRef.current[pdf.id] = base64
+    return base64
+  }
+
+  async function selectSizes(pdf: PdfItem) {
+    setCalcAvailableSizes([])
+    setCalcError('')
+    setCalcLoadingStep('sizes')
+    upd({ fabricCalc: { pdfId: pdf.id, size: '', result: '' } })
+    try {
+      const base64 = await getPdfBase64(pdf)
+      const prompt =
+        `Analyser dette symønsteret og finn alle tilgjengelige størrelser.\n` +
+        `Svar BARE med en JSON-array av størrelser som strenger, f.eks: ["36","38","40","42"] eller ["XS","S","M","L","XL"].\n` +
+        `Ingen annen tekst. Kun JSON-arrayen.`
+      const result = await apiClaude(prompt, base64)
+      const trimmed = result.trim()
+      const start = trimmed.indexOf('[')
+      const end   = trimmed.lastIndexOf(']')
+      if (start === -1 || end === -1) throw new Error('Fant ingen størrelsesliste i mønsteret')
+      const sizes: string[] = JSON.parse(trimmed.slice(start, end + 1))
+      if (!Array.isArray(sizes) || sizes.length === 0) throw new Error('Ingen størrelser funnet')
+      setCalcAvailableSizes(sizes)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Ukjent feil'
+      setCalcError(`Kunne ikke lese størrelser: ${msg}`)
+    } finally {
+      setCalcLoadingStep('')
+    }
+  }
 
   async function runFabricCalc() {
     const pdf = form.pdfs.find(p => p.id === form.fabricCalc.pdfId)
     if (!pdf || !form.fabricCalc.size) return
-    upd({ fabricCalc: { ...form.fabricCalc, loading: true, result: '' } })
+    setCalcError('')
+    setCalcLoadingStep('calc')
     try {
-      const base64 = await apiFetchPdf(pdf.url)
+      const base64 = await getPdfBase64(pdf)
       const prompt =
         `Analyser dette symønsteret. Finn stoffbehovet for størrelse ${form.fabricCalc.size}.\n` +
-        `Svar på norsk. List opp: stoff type, bredde, lengde og evt. tilbehør som glidelås, knapper.\n` +
+        `Svar på norsk. List opp stoff type, bredde, lengde og evt. tilbehør som glidelås og knapper.\n` +
         `Bullet points, kort og presist med konkrete mål.`
       const result = await apiClaude(prompt, base64)
-      upd({ fabricCalc: { ...form.fabricCalc, result, loading: false } })
-    } catch {
-      upd({ fabricCalc: { ...form.fabricCalc, loading: false } })
-      showToast('Kunne ikke analysere PDF – sjekk at lenken er tilgjengelig.')
+      upd({ fabricCalc: { ...form.fabricCalc, result } })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Ukjent feil'
+      setCalcError(`Beregning feilet: ${msg}`)
+    } finally {
+      setCalcLoadingStep('')
     }
   }
 
@@ -521,6 +638,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
   }
 
   const cover = form.images[0]
+  const oppskriftPdfs = form.pdfs.filter(p => (p.type ?? 'Annet') === 'Oppskrift')
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: '#FAF7F4' }}>
@@ -541,9 +659,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
 
           <div className="flex items-center gap-3 flex-shrink-0">
             {saveStatus === 'saving' && (
-              <span className="text-xs text-stone-400 flex items-center gap-1.5">
-                <Spinner /> Lagrer…
-              </span>
+              <span className="text-xs text-stone-400 flex items-center gap-1.5"><Spinner /> Lagrer…</span>
             )}
             {saveStatus === 'saved' && (
               <span className="text-xs text-emerald-500 font-medium">Lagret ✓</span>
@@ -552,8 +668,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
               <span className="text-xs text-red-400">Feil ved lagring</span>
             )}
             {onDelete && (
-              <button onClick={onDelete}
-                className="text-sm text-stone-400 hover:text-red-500 transition-colors">
+              <button onClick={onDelete} className="text-sm text-stone-400 hover:text-red-500 transition-colors">
                 Slett
               </button>
             )}
@@ -561,10 +676,10 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
         </div>
       </header>
 
-      {/* Scrollable content */}
+      {/* Content */}
       <div className="max-w-2xl mx-auto px-4 sm:px-6 py-8 pb-24">
 
-        {/* Detaljer */}
+        {/* ── Detaljer ── */}
         <SectionHeading first>Detaljer</SectionHeading>
         <div className="space-y-5">
           <div>
@@ -600,20 +715,24 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
               </button>
             </div>
           </div>
+          {form.fabricCalc.size && (
+            <div>
+              <label className={labelCls}>Valgt størrelse</label>
+              <input className={inputCls} value={form.fabricCalc.size}
+                onChange={e => upd({ fabricCalc: { ...form.fabricCalc, size: e.target.value, result: '' } })}
+                placeholder="F.eks. 38, M…" />
+            </div>
+          )}
         </div>
 
-        {/* Forsidebilde */}
+        {/* ── Forsidebilde ── */}
         <SectionHeading>Forsidebilde</SectionHeading>
         <div className="space-y-3">
           {cover ? (
             <>
               <div className="relative group rounded-2xl overflow-hidden bg-stone-100" style={{ height: '300px' }}>
-                <img
-                  src={cover.url}
-                  alt=""
-                  className="w-full h-full object-cover"
-                  style={{ objectPosition: `${form.focalX ?? 50}% ${form.focalY ?? 50}%` }}
-                />
+                <img src={cover.url} alt="" className="w-full h-full object-cover"
+                  style={{ objectPosition: `${form.focalX ?? 50}% ${form.focalY ?? 50}%` }} />
                 <button onClick={() => removeImage(cover.id)}
                   className="absolute top-3 right-3 p-2 bg-white/90 rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-50">
                   <svg className="w-4 h-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -627,8 +746,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
                   </svg>
                 </button>
               </div>
-              <button
-                onClick={() => setShowFocalModal(true)}
+              <button onClick={() => setShowFocalModal(true)}
                 className="flex items-center gap-1.5 text-xs text-stone-400 hover:text-stone-600 transition-colors self-start mt-1">
                 <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
@@ -638,8 +756,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
               </button>
             </>
           ) : (
-            <button
-              onClick={() => setShowImgModal(true)}
+            <button onClick={() => setShowImgModal(true)}
               className="w-full rounded-2xl bg-stone-100 hover:bg-stone-150 transition-colors flex flex-col items-center justify-center gap-3 text-stone-300 hover:text-stone-400"
               style={{ height: '300px' }}>
               <svg className="w-12 h-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -672,118 +789,269 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
           )}
         </div>
 
-        {/* Notater & Justeringer */}
+        {/* ── Notater & Justeringer ── */}
         <SectionHeading>Notater &amp; Justeringer</SectionHeading>
         <textarea className={`${inputCls} resize-y`} style={{ minHeight: 180 }}
           value={form.notes}
           onChange={e => upd({ notes: e.target.value })}
           placeholder="Stoff, teknikker, endringer, observasjoner…" />
 
-        {/* PDF-arkiv */}
+        {/* ── PDF-arkiv ── */}
         <SectionHeading>PDF-arkiv</SectionHeading>
         <div className="space-y-4">
-          <div className="space-y-3 p-4 bg-stone-50 rounded-xl border border-stone-100">
-            <div>
-              <label className={labelCls}>PDF-navn</label>
-              <input className={inputCls} value={pdfName}
-                onChange={e => setPdfName(e.target.value)}
-                placeholder="Navn på mønster eller fil…" />
-            </div>
-            <div>
-              <label className={labelCls}>URL (Google Drive, direkte lenke…)</label>
-              <div className="flex gap-2">
-                <input className={`${inputCls} flex-1`} value={pdfUrl}
-                  onChange={e => setPdfUrl(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && addPdf()}
-                  placeholder="https://…" />
-                <button onClick={addPdf}
-                  className="px-4 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors whitespace-nowrap">
-                  Legg til
+
+          {/* Add PDF form */}
+          <div className="bg-stone-50 rounded-xl border border-stone-100 overflow-hidden">
+            <div className="flex border-b border-stone-100">
+              {(['file', 'link'] as const).map(t => (
+                <button key={t} onClick={() => setPdfTab(t)}
+                  className={`flex-1 py-3 text-sm font-medium transition-colors border-b-2 ${
+                    pdfTab === t
+                      ? 'text-stone-800 border-stone-800'
+                      : 'text-stone-400 border-transparent hover:text-stone-600'
+                  }`}>
+                  {t === 'file' ? 'Last opp fil' : 'Lim inn lenke'}
                 </button>
+              ))}
+            </div>
+
+            <div className="p-4 space-y-3">
+              <div>
+                <label className={labelCls}>Navn</label>
+                <input className={inputCls} value={pdfName}
+                  onChange={e => setPdfName(e.target.value)}
+                  placeholder="Navn på fil…" />
               </div>
+
+              <div>
+                <label className={labelCls}>Type</label>
+                <div className="flex gap-2">
+                  {PDF_TYPES.map(t => (
+                    <button key={t} onClick={() => setPdfType(t)}
+                      className={`px-3 py-1.5 rounded-lg text-sm border transition-colors ${
+                        pdfType === t
+                          ? 'bg-stone-800 text-white border-stone-800'
+                          : 'bg-white text-stone-600 border-stone-200 hover:border-stone-400'
+                      }`}>
+                      {t}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {pdfTab === 'file' ? (
+                <>
+                  <div
+                    onClick={() => pdfFileInputRef.current?.click()}
+                    className="border-2 border-dashed border-stone-200 rounded-xl p-6 text-center cursor-pointer hover:border-stone-300 hover:bg-white transition-colors">
+                    {pdfFile ? (
+                      <p className="text-sm text-stone-700 font-medium truncate">{pdfFile.name}</p>
+                    ) : (
+                      <>
+                        <svg className="w-8 h-8 text-stone-300 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414A1 1 0 0119 9.414V19a2 2 0 01-2 2z" />
+                        </svg>
+                        <p className="text-sm text-stone-400">Trykk for å velge PDF</p>
+                      </>
+                    )}
+                  </div>
+                  <input ref={pdfFileInputRef} type="file" accept="application/pdf"
+                    className="hidden"
+                    onChange={e => setPdfFile(e.target.files?.[0] ?? null)} />
+                  <button onClick={handlePdfUpload} disabled={!pdfFile || pdfUploading}
+                    className="w-full py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                    {pdfUploading && <Spinner />}
+                    {pdfUploading ? 'Laster opp…' : 'Last opp'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <label className={labelCls}>URL (Google Drive, direkte lenke…)</label>
+                    <input className={inputCls} value={pdfUrl}
+                      onChange={e => setPdfUrl(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && addPdfLink()}
+                      placeholder="https://…" />
+                  </div>
+                  <button onClick={addPdfLink} disabled={!pdfUrl.trim()}
+                    className="w-full py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                    Legg til
+                  </button>
+                </>
+              )}
             </div>
           </div>
+
+          {/* PDF list */}
           {form.pdfs.length > 0 ? (
             <ul className="divide-y divide-stone-100">
-              {form.pdfs.map(pdf => (
-                <li key={pdf.id} className="flex items-center justify-between py-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-9 h-9 bg-red-50 rounded-lg flex items-center justify-center flex-shrink-0">
-                      <svg className="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              {form.pdfs.map(pdf => {
+                const typeVal = pdf.type ?? 'Annet'
+                return (
+                  <li key={pdf.id} className="flex items-center justify-between py-3 gap-2">
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <div className="w-9 h-9 bg-red-50 rounded-lg flex items-center justify-center flex-shrink-0">
+                        <svg className="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414A1 1 0 0119 9.414V19a2 2 0 01-2 2z" />
+                        </svg>
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                          <p className="text-sm font-medium text-stone-700 truncate">{pdf.name}</p>
+                          <Badge label={typeVal} cls={PDF_TYPE_STYLE[typeVal]} />
+                        </div>
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <a href={pdf.url} target="_blank" rel="noopener noreferrer"
+                            className="text-xs text-sky-500 hover:underline">
+                            Åpne ↗
+                          </a>
+                          <select
+                            value={typeVal}
+                            onChange={e => updatePdfType(pdf.id, e.target.value as PdfType)}
+                            className="text-xs text-stone-400 bg-transparent border-none outline-none cursor-pointer hover:text-stone-600 transition-colors">
+                            {PDF_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                    <button onClick={() => removePdf(pdf.id)}
+                      className="p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors flex-shrink-0">
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414A1 1 0 0119 9.414V19a2 2 0 01-2 2z" />
+                          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                       </svg>
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-stone-700 truncate">{pdf.name}</p>
-                      <a href={pdf.url} target="_blank" rel="noopener noreferrer"
-                        className="text-xs text-sky-500 hover:underline">
-                        Åpne PDF ↗
-                      </a>
-                    </div>
-                  </div>
-                  <button onClick={() => removePdf(pdf.id)}
-                    className="ml-3 p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors flex-shrink-0">
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                    </svg>
-                  </button>
-                </li>
-              ))}
+                    </button>
+                  </li>
+                )
+              })}
             </ul>
           ) : (
             <p className="text-center py-8 text-sm text-stone-300">Ingen PDF-er ennå</p>
           )}
         </div>
 
-        {/* Stoffberegner */}
+        {/* ── Stoffberegner ── */}
         <SectionHeading>Stoffberegner</SectionHeading>
-        <div className="space-y-5">
-          <p className="text-sm text-stone-500 leading-relaxed">
-            Velg et mønster fra PDF-arkivet og oppgi størrelse. Claude leser mønsteret og
-            beregner nødvendig stoff automatisk.
-          </p>
-          <div>
-            <label className={labelCls}>PDF-mønster</label>
-            {form.pdfs.length === 0 ? (
-              <p className="text-sm text-stone-400 italic">Legg til PDF-er i PDF-arkivet først.</p>
-            ) : (
-              <select className={inputCls} value={form.fabricCalc.pdfId}
-                onChange={e => upd({ fabricCalc: { ...form.fabricCalc, pdfId: e.target.value } })}>
-                <option value="">Velg mønster…</option>
-                {form.pdfs.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
-            )}
-          </div>
-          <div>
-            <label className={labelCls}>Størrelse</label>
-            <div className="flex gap-2">
-              <input className={`${inputCls} flex-1`}
-                value={form.fabricCalc.size}
-                onChange={e => upd({ fabricCalc: { ...form.fabricCalc, size: e.target.value } })}
-                placeholder="F.eks. 38, M, 36/38…" />
-              <button onClick={runFabricCalc}
-                disabled={!form.fabricCalc.pdfId || !form.fabricCalc.size || form.fabricCalc.loading}
-                className="flex items-center gap-2 px-5 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap">
-                {form.fabricCalc.loading && <Spinner />}
-                {form.fabricCalc.loading ? 'Analyserer…' : 'Beregn stoff'}
-              </button>
-            </div>
-          </div>
-          {form.fabricCalc.result && (
-            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-              <p className="text-xs font-semibold tracking-widest uppercase text-amber-600 mb-2">
-                Stoffbehov — størrelse {form.fabricCalc.size}
-              </p>
-              <div className="text-sm text-stone-700 whitespace-pre-wrap leading-relaxed">
-                {form.fabricCalc.result}
-              </div>
+        <div className="space-y-4">
+          {oppskriftPdfs.length === 0 ? (
+            <p className="text-sm text-stone-400 italic">
+              Merk en PDF som «Oppskrift» i PDF-arkivet for å bruke stoffberegneren.
+            </p>
+          ) : (
+            oppskriftPdfs.map(pdf => {
+              const isActive   = form.fabricCalc.pdfId === pdf.id
+              const showSizes  = isActive && calcAvailableSizes.length > 0
+              const loadingSz  = calcLoadingStep === 'sizes' && isActive
+              const loadingCalc = calcLoadingStep === 'calc' && isActive
+
+              return (
+                <div key={pdf.id} className="p-4 bg-white rounded-xl border border-stone-200 space-y-3">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="w-7 h-7 bg-red-50 rounded-md flex items-center justify-center flex-shrink-0">
+                      <svg className="w-4 h-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414A1 1 0 0119 9.414V19a2 2 0 01-2 2z" />
+                      </svg>
+                    </div>
+                    <span className="text-sm font-medium text-stone-700">{pdf.name}</span>
+                  </div>
+
+                  {/* Velg størrelse */}
+                  {!showSizes && (
+                    <button
+                      onClick={() => selectSizes(pdf)}
+                      disabled={calcLoadingStep !== ''}
+                      className="flex items-center gap-2 px-4 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                      {loadingSz && <Spinner />}
+                      {loadingSz ? 'Laster størrelser…' : 'Velg størrelse'}
+                    </button>
+                  )}
+
+                  {/* Size buttons */}
+                  {showSizes && (
+                    <div className="space-y-2">
+                      <p className="text-xs font-semibold tracking-widest uppercase text-stone-400">
+                        Velg størrelse
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {calcAvailableSizes.map(sz => (
+                          <button
+                            key={sz}
+                            onClick={() => {
+                              if (form.fabricCalc.size !== sz) {
+                                upd({ fabricCalc: { ...form.fabricCalc, size: sz, result: '' } })
+                              }
+                            }}
+                            className={`px-4 py-2 rounded-lg text-sm border transition-colors font-medium ${
+                              form.fabricCalc.size === sz
+                                ? 'bg-stone-800 text-white border-stone-800'
+                                : 'bg-white text-stone-700 border-stone-200 hover:border-stone-400 hover:bg-stone-50'
+                            }`}>
+                            {sz}
+                          </button>
+                        ))}
+                      </div>
+                      <button
+                        onClick={() => selectSizes(pdf)}
+                        disabled={calcLoadingStep !== ''}
+                        className="text-xs text-stone-400 hover:text-stone-600 transition-colors disabled:opacity-40">
+                        ↺ Last inn størrelser på nytt
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Persisted size indicator (on project reopen) */}
+                  {isActive && !showSizes && form.fabricCalc.size && !loadingSz && (
+                    <p className="text-xs text-stone-500">
+                      Valgt størrelse: <strong>{form.fabricCalc.size}</strong>
+                      {' '}
+                      <button onClick={() => selectSizes(pdf)} disabled={calcLoadingStep !== ''}
+                        className="text-stone-400 hover:text-stone-600 underline underline-offset-2 transition-colors disabled:opacity-40">
+                        Endre
+                      </button>
+                    </p>
+                  )}
+
+                  {/* Beregn button */}
+                  {isActive && form.fabricCalc.size && (
+                    <button
+                      onClick={runFabricCalc}
+                      disabled={calcLoadingStep !== ''}
+                      className="flex items-center gap-2 px-4 py-2 text-white text-sm rounded-lg transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
+                      style={{ backgroundColor: '#C9A57A' }}>
+                      {loadingCalc && <Spinner />}
+                      {loadingCalc
+                        ? 'Beregner…'
+                        : `Beregn stoffmengde – str. ${form.fabricCalc.size}`}
+                    </button>
+                  )}
+
+                  {/* Result */}
+                  {isActive && form.fabricCalc.result && (
+                    <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+                      <p className="text-xs font-semibold tracking-widest uppercase text-amber-600 mb-2">
+                        Stoffbehov — størrelse {form.fabricCalc.size}
+                      </p>
+                      <div className="text-sm text-stone-700 whitespace-pre-wrap leading-relaxed">
+                        {form.fabricCalc.result}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })
+          )}
+
+          {calcError && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-700">
+              {calcError}
             </div>
           )}
         </div>
 
-        {/* Vedlikehold & Pleie */}
+        {/* ── Vedlikehold & Pleie ── */}
         <SectionHeading>Vedlikehold &amp; Pleie</SectionHeading>
         <div className="space-y-5">
           <div>
@@ -815,10 +1083,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
       </div>
 
       {showImgModal && (
-        <ImageUploadModal
-          onAdd={addImage}
-          onClose={() => setShowImgModal(false)}
-        />
+        <ImageUploadModal onAdd={addImage} onClose={() => setShowImgModal(false)} />
       )}
 
       {showFocalModal && cover && (
@@ -938,7 +1203,6 @@ export default function Home() {
   return (
     <div className="min-h-screen" style={{ backgroundColor: '#FAF7F4' }}>
 
-      {/* Header */}
       <header className="border-b border-stone-200 bg-white/80 backdrop-blur-sm sticky top-0 z-10">
         <div className="px-4 pt-4 pb-3 sm:px-8 sm:pt-8 sm:pb-6 flex items-center sm:items-start justify-between">
           <div>
@@ -965,7 +1229,6 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Filters */}
       <div className="max-w-6xl mx-auto px-6 py-4 flex flex-wrap items-center gap-3">
         <div className="flex gap-1 bg-white rounded-xl p-1 border border-stone-200 shadow-sm">
           {(['Alle', ...STATUSES] as const).map(s => {
@@ -1000,7 +1263,6 @@ export default function Home() {
         )}
       </div>
 
-      {/* Grid */}
       <main className="max-w-6xl mx-auto px-6 pb-16">
         {loading ? (
           <div className="flex justify-center py-32">
