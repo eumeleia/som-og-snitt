@@ -218,72 +218,235 @@ function RecipeCard({ recipe, onEdit, onDelete }: {
 // ── NewRecipeModal ────────────────────────────────────────────────────────────
 
 function NewRecipeModal({ onCreate, onClose }: {
-  onCreate: (name: string, designer: string, category: string) => Promise<void>
+  onCreate: (data: RecipeData) => Promise<void>
   onClose: () => void
 }) {
-  const [name, setName]         = useState('')
-  const [designer, setDesigner] = useState('')
-  const [category, setCategory] = useState('')
-  const [creating, setCreating] = useState(false)
+  const [mode, setMode]         = useState<'choose' | 'pdf' | 'blank'>('choose')
+  const [progress, setProgress] = useState('')
   const [error, setError]       = useState('')
+  const [blankName, setBlankName] = useState('')
+  const [creating, setCreating] = useState(false)
+  const fileInputRef            = useRef<HTMLInputElement>(null)
 
-  async function handleCreate() {
-    if (!name.trim()) return
+  async function handlePdfFile(file: File) {
+    setMode('pdf')
+    setError('')
+    setCreating(true)
+
+    const recipeData: RecipeData = { ...structuredClone(EMPTY) }
+
+    try {
+      // 1. Upload PDF
+      setProgress('Laster opp PDF...')
+      const pdfFilename = `recipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.pdf`
+      const { error: pdfUploadErr } = await supabase.storage
+        .from('project-images')
+        .upload(pdfFilename, file, { contentType: 'application/pdf' })
+      if (pdfUploadErr) throw new Error('PDF-opplasting feilet')
+      const { data: pdfUrlData } = supabase.storage.from('project-images').getPublicUrl(pdfFilename)
+
+      recipeData.pdfs = [{
+        id: uid(), name: file.name,
+        url: pdfUrlData.publicUrl, type: 'Oppskrift', source: 'upload',
+      }]
+
+      // 2. Extract text (first 20 pages)
+      setProgress('Leser tekst...')
+      const arrayBuffer = await file.arrayBuffer()
+      const uint8 = new Uint8Array(arrayBuffer)
+
+      const pdfjs = await import('pdfjs-dist')
+      pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+        'pdfjs-dist/build/pdf.worker.min.mjs',
+        import.meta.url
+      ).href
+      const pdf = await pdfjs.getDocument({ data: uint8 }).promise
+      const numPages = Math.min(pdf.numPages, 20)
+      const parts: string[] = []
+      for (let i = 1; i <= numPages; i++) {
+        const pg = await pdf.getPage(i)
+        const content = await pg.getTextContent()
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        parts.push(content.items.map((item: any) => (typeof item.str === 'string' ? item.str : '')).join(' '))
+      }
+      const text = parts.join('\n')
+
+      // 3. Claude analysis
+      setProgress('Analyserer...')
+      const prompt =
+        `Du får tekst fra en søm-oppskrift (PDF). Returner KUN gyldig JSON, ingen forklaring:\n\n` +
+        `{\n  "name": "",\n  "designer": "",\n  "category": "",\n  "sizes": [],\n  "recommendedFabrics": "",\n  "otherEquipment": ""\n}\n\n` +
+        `Feltforklaring:\n` +
+        `- name: oppskriftens navn (f.eks. 'Bébé Blossom Dress')\n` +
+        `- designer: designeren eller mønstermerket (f.eks. 'Sew Liberated', 'Tilly and the Buttons')\n` +
+        `- category: klesplagg-type på norsk (f.eks. 'kjole', 'skjorte', 'bukse', 'genser')\n` +
+        `- sizes: array av størrelser, på originalspråk (f.eks. ['1Y', '2Y', '3-4Y'] eller ['XS', 'S', 'M', 'L'])\n` +
+        `- recommendedFabrics: kort norsk beskrivelse av anbefalt stoff (f.eks. 'Lett til medium tung vevd stoff: bomullsvoile, lin, batiste')\n` +
+        `- otherEquipment: liste over tilbehør på norsk, separert med komma (f.eks. 'Elastikk 1,2 cm, klisterinnlegg, sytråd')\n\n` +
+        `Hvis et felt ikke finnes i oppskriften, bruk tom streng / tomt array. Ikke finn på.`
+
+      try {
+        const raw = await apiClaude(prompt, text.slice(0, 50000))
+        const s = raw.indexOf('{')
+        const e = raw.lastIndexOf('}')
+        if (s !== -1 && e !== -1) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const parsed: any = JSON.parse(raw.slice(s, e + 1))
+          recipeData.name             = (typeof parsed.name === 'string' && parsed.name.trim()) ? parsed.name.trim() : 'Ny oppskrift'
+          recipeData.designer         = typeof parsed.designer === 'string' ? parsed.designer.trim() : ''
+          recipeData.category         = typeof parsed.category === 'string' ? parsed.category.trim() : ''
+          recipeData.sizes            = Array.isArray(parsed.sizes) ? parsed.sizes.filter((v: unknown) => typeof v === 'string') : []
+          recipeData.recommendedFabrics = typeof parsed.recommendedFabrics === 'string' ? parsed.recommendedFabrics.trim() : ''
+          recipeData.otherEquipment   = typeof parsed.otherEquipment === 'string' ? parsed.otherEquipment.trim() : ''
+        } else {
+          recipeData.name = 'Ny oppskrift'
+        }
+      } catch {
+        recipeData.name = 'Ny oppskrift'
+      }
+
+      // 4. Render cover image from first page
+      setProgress('Lager bilde...')
+      try {
+        const page1   = await pdf.getPage(1)
+        const viewport = page1.getViewport({ scale: 2 })
+        const canvas  = document.createElement('canvas')
+        canvas.width  = viewport.width
+        canvas.height = viewport.height
+        const ctx = canvas.getContext('2d')
+        if (ctx) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          await page1.render({ canvas, canvasContext: ctx as any, viewport }).promise
+          const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.85))
+          if (blob) {
+            const imgFilename = `recipe-cover-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`
+            const { error: imgErr } = await supabase.storage
+              .from('project-images')
+              .upload(imgFilename, blob, { contentType: 'image/jpeg' })
+            if (!imgErr) {
+              const { data: imgUrlData } = supabase.storage.from('project-images').getPublicUrl(imgFilename)
+              const imgId = uid()
+              recipeData.images      = [{ id: imgId, url: imgUrlData.publicUrl }]
+              recipeData.coverImageId = imgId
+              recipeData.focalX      = 50
+              recipeData.focalY      = 50
+            }
+          }
+        }
+      } catch {
+        // No cover — user can add manually
+      }
+
+      // 5. Create recipe
+      setProgress('Oppretter oppskrift...')
+      await onCreate(recipeData)
+
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Noe gikk galt. Prøv igjen.')
+      setCreating(false)
+      setProgress('')
+      setMode('choose')
+    }
+  }
+
+  async function handleBlank() {
+    if (!blankName.trim()) return
     setCreating(true)
     setError('')
     try {
-      await onCreate(name.trim(), designer.trim(), category.trim())
+      await onCreate({ ...structuredClone(EMPTY), name: blankName.trim() })
     } catch {
       setError('Noe gikk galt. Prøv igjen.')
       setCreating(false)
     }
   }
 
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault()
+    const file = e.dataTransfer.files[0]
+    if (file?.type === 'application/pdf') handlePdfFile(file)
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4">
-      <div className="fixed inset-0 bg-black/30 backdrop-blur-sm" onClick={onClose} />
+      <div className="fixed inset-0 bg-black/30 backdrop-blur-sm" onClick={mode !== 'pdf' ? onClose : undefined} />
       <div className="relative bg-white rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden">
-        <div className="px-6 pt-6 pb-2">
-          <h3 className="font-serif text-2xl text-stone-800 mb-0.5">Ny oppskrift</h3>
-          <p className="text-sm text-stone-400">Fyll inn grunninfo for å komme i gang</p>
-        </div>
-        <div className="p-6 space-y-4">
-          <div>
-            <label className={labelCls}>Navn *</label>
-            <input className={inputCls} value={name} autoFocus
-              onChange={e => setName(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleCreate()}
-              placeholder="F.eks. Sommerkjole" />
+
+        {mode === 'choose' && (
+          <>
+            <div className="px-6 pt-6 pb-2">
+              <h3 className="font-serif text-2xl text-stone-800">Ny oppskrift</h3>
+            </div>
+            <div className="p-6 space-y-3">
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                onDragOver={e => e.preventDefault()}
+                onDrop={handleDrop}
+                className="w-full border-2 border-dashed border-stone-200 rounded-2xl p-8 text-center hover:border-[#C9A57A] hover:bg-amber-50/30 transition-colors cursor-pointer group">
+                <svg className="w-10 h-10 text-stone-300 group-hover:text-[#C9A57A] mx-auto mb-3 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                    d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414A1 1 0 0119 9.414V19a2 2 0 01-2 2z" />
+                </svg>
+                <p className="font-medium text-stone-700 mb-1">Last opp PDF</p>
+                <p className="text-xs text-stone-400">Anbefalt — navn, designer og størrelser fylles inn automatisk</p>
+              </button>
+              <input
+                ref={fileInputRef} type="file" accept="application/pdf"
+                className="hidden"
+                onChange={e => { const f = e.target.files?.[0]; if (f) handlePdfFile(f) }}
+              />
+              {error && <p className="text-xs text-red-500">{error}</p>}
+              <button
+                onClick={() => { setError(''); setMode('blank') }}
+                className="w-full py-2.5 text-sm text-stone-500 hover:text-stone-700 transition-colors">
+                Start tomt
+              </button>
+              <button onClick={onClose}
+                className="w-full py-1.5 text-sm text-stone-300 hover:text-stone-500 transition-colors">
+                Avbryt
+              </button>
+            </div>
+          </>
+        )}
+
+        {mode === 'pdf' && (
+          <div className="px-6 py-14 text-center">
+            <div className="w-10 h-10 border-2 border-stone-200 border-t-stone-600 rounded-full animate-spin mx-auto mb-5" />
+            <p className="font-serif text-lg text-stone-700 mb-1">Analyserer oppskrift…</p>
+            <p className="text-sm text-stone-400">{progress}</p>
           </div>
-          <div>
-            <label className={labelCls}>Designer</label>
-            <input className={inputCls} value={designer}
-              onChange={e => setDesigner(e.target.value)}
-              placeholder="F.eks. Bebe et Bisou" />
-          </div>
-          <div>
-            <label className={labelCls}>Kategori</label>
-            <input className={inputCls} value={category}
-              onChange={e => setCategory(e.target.value)}
-              list="new-recipe-category-suggestions"
-              placeholder="F.eks. Kjole" />
-            <datalist id="new-recipe-category-suggestions">
-              {CATEGORY_SUGGESTIONS.map(s => <option key={s} value={s} />)}
-            </datalist>
-          </div>
-          {error && <p className="text-xs text-red-500">{error}</p>}
-          <button
-            onClick={handleCreate}
-            disabled={!name.trim() || creating}
-            className="w-full py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
-            {creating && <Spinner />}
-            {creating ? 'Oppretter…' : 'Opprett oppskrift'}
-          </button>
-          <button onClick={onClose}
-            className="w-full py-2 text-sm text-stone-400 hover:text-stone-600 transition-colors">
-            Avbryt
-          </button>
-        </div>
+        )}
+
+        {mode === 'blank' && (
+          <>
+            <div className="px-6 pt-6 pb-2">
+              <h3 className="font-serif text-2xl text-stone-800 mb-0.5">Ny oppskrift</h3>
+              <p className="text-sm text-stone-400">Du kan legge til detaljer etterpå</p>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className={labelCls}>Navn *</label>
+                <input className={inputCls} value={blankName} autoFocus
+                  onChange={e => setBlankName(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && handleBlank()}
+                  placeholder="F.eks. Sommerkjole" />
+              </div>
+              {error && <p className="text-xs text-red-500">{error}</p>}
+              <button
+                onClick={handleBlank}
+                disabled={!blankName.trim() || creating}
+                className="w-full py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                {creating && <Spinner />}
+                {creating ? 'Oppretter…' : 'Opprett oppskrift'}
+              </button>
+              <button onClick={() => setMode('choose')}
+                className="w-full py-2 text-sm text-stone-400 hover:text-stone-600 transition-colors">
+                Tilbake
+              </button>
+            </div>
+          </>
+        )}
+
       </div>
     </div>
   )
@@ -1090,8 +1253,7 @@ export default function RecipesPage() {
 
   useEffect(() => { load() }, [load])
 
-  async function createRecipe(name: string, designer: string, category: string) {
-    const data: RecipeData = { ...structuredClone(EMPTY), name, designer, category }
+  async function createRecipe(data: RecipeData) {
     const { data: rows, error } = await supabase.from('recipes').insert({ data }).select()
     if (error) throw error
     const recipe = (rows as Recipe[])?.[0]
