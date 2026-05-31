@@ -202,7 +202,7 @@ function parseEquipmentList(otherEquipment: string): string[] {
 
 // ── Shared UI ─────────────────────────────────────────────────────────────────
 
-const inputCls = 'w-full px-3 py-2 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300 transition'
+const inputCls = 'w-full px-3 py-2 border border-stone-200 rounded-lg text-base sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300 transition'
 const labelCls = 'block text-xs font-semibold tracking-widest uppercase text-stone-400 mb-1.5'
 
 function Badge({ label, cls }: { label: string; cls: string }) {
@@ -1032,29 +1032,30 @@ function PdfViewerModal({
   return (
     <div className="fixed inset-0 z-50 flex flex-col" style={{ backgroundColor: '#1c1917' }}>
       {/* Toolbar */}
-      <div className="flex items-center gap-3 px-4 py-3 flex-shrink-0 border-b border-stone-700"
+      <div className="flex items-center gap-2 sm:gap-3 px-3 py-2 sm:px-4 sm:py-3 flex-shrink-0 border-b border-stone-700"
         style={{ backgroundColor: '#292524' }}>
         <button onClick={onClose}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-stone-300 hover:text-white hover:bg-stone-700 transition-colors flex-shrink-0">
+          className="flex items-center gap-1.5 px-2.5 py-2 sm:px-3 sm:py-1.5 rounded-lg text-sm text-stone-300 hover:text-white hover:bg-stone-700 transition-colors flex-shrink-0 min-h-[44px] sm:min-h-0">
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
           </svg>
-          Lukk
+          <span className="hidden sm:inline">Lukk</span>
         </button>
-        <h2 className="flex-1 font-serif text-lg text-stone-200 truncate">{pdf.name}</h2>
+        <h2 className="flex-1 font-serif text-base sm:text-lg text-stone-200 truncate min-w-0">{pdf.name}</h2>
         {loading && totalCount > 0 && (
-          <span className="text-xs text-stone-400 flex-shrink-0">{loadedCount}/{totalCount} sider</span>
+          <span className="text-xs text-stone-400 flex-shrink-0 hidden sm:inline">{loadedCount}/{totalCount} sider</span>
         )}
-        <div className="flex gap-1.5 flex-shrink-0">
+        <div className="flex gap-1 sm:gap-1.5 flex-shrink-0">
           {(['pin', 'textbox'] as const).map(tool => (
             <button key={tool} onClick={() => toggleTool(tool)}
               title={tool === 'pin' ? 'Pin-annotasjon' : 'Tekstboks'}
-              className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
+              className={`px-2 py-2 sm:px-3 sm:py-1.5 rounded-lg text-sm transition-colors min-h-[44px] sm:min-h-0 flex items-center gap-1 ${
                 activeTool === tool
                   ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
                   : 'text-stone-400 hover:text-stone-200 hover:bg-stone-700'
               }`}>
-              {tool === 'pin' ? '📌 Pin' : '📝 Tekstboks'}
+              <span>{tool === 'pin' ? '📌' : '📝'}</span>
+              <span className="hidden sm:inline">{tool === 'pin' ? 'Pin' : 'Tekstboks'}</span>
             </button>
           ))}
         </div>
@@ -1123,7 +1124,7 @@ function PdfViewerModal({
                           transform: 'translate(-50%, -50%)', zIndex: 10 }}
                         onClick={e => { e.stopPropagation()
                           if (!isEditing) setSelectedId(isSelected ? null : ann.id) }}>
-                        <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold
+                        <div className={`w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-xs font-bold
                           cursor-pointer shadow-md transition-transform hover:scale-110 select-none ${
                           isSelected || isEditing
                             ? 'bg-amber-400 text-stone-900 ring-2 ring-amber-200'
@@ -1984,13 +1985,13 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
           {form.stoffer.length > 0 && (
             <ul className="space-y-3">
               {form.stoffer.map(stoff => (
-                <li key={stoff.id} className="bg-white rounded-xl border border-stone-200 overflow-hidden flex">
+                <li key={stoff.id} className="bg-white rounded-xl border border-stone-200 overflow-hidden flex flex-col sm:flex-row w-full max-w-full">
                   {stoff.bilde ? (
-                    <div className="w-20 flex-shrink-0 bg-stone-100">
+                    <div className="w-full h-36 sm:w-20 sm:h-auto flex-shrink-0 bg-stone-100">
                       <img src={stoff.bilde} alt={stoff.navn} className="w-full h-full object-cover" style={{ minHeight: '96px' }} />
                     </div>
                   ) : (
-                    <div className="w-20 flex-shrink-0 bg-stone-50 flex items-center justify-center" style={{ minHeight: '96px' }}>
+                    <div className="w-full h-24 sm:w-20 sm:h-auto flex-shrink-0 bg-stone-50 flex items-center justify-center" style={{ minHeight: '96px' }}>
                       <svg className="w-7 h-7 text-stone-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1}
                           d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" />
@@ -1999,7 +2000,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
                   )}
                   <div className="flex-1 min-w-0 p-3 space-y-2">
                     <div className="flex items-start justify-between gap-2">
-                      <p className="font-medium text-stone-800 text-sm leading-tight">
+                      <p className="font-medium text-stone-800 text-sm leading-tight break-words min-w-0">
                         {stoff.navn || <span className="text-stone-400 italic font-normal">Ukjent stoff</span>}
                       </p>
                       <button onClick={() => removeStoff(stoff.id)}
@@ -2022,7 +2023,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
                       ))}
                     </div>
                     <div className="text-xs text-stone-500 space-y-0.5">
-                      {stoff.materiale && <p className="font-medium text-stone-700">{stoff.materiale}</p>}
+                      {stoff.materiale && <p className="font-medium text-stone-700 break-words">{stoff.materiale}</p>}
                       {(stoff.bredde || stoff.vekt) && (
                         <p className="text-stone-400">
                           {[
@@ -2031,7 +2032,18 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
                           ].filter(Boolean).join(' · ')}
                         </p>
                       )}
-                      {stoff.vask && <p className="text-stone-400 leading-relaxed">{stoff.vask}</p>}
+                      {stoff.vask && (
+                        <div className="flex flex-wrap gap-1 pt-0.5">
+                          {stoff.vask.includes(' · ')
+                            ? stoff.vask.split(' · ').filter(Boolean).map((instr, i) => (
+                                <span key={i} className="inline-block px-1.5 py-0.5 bg-stone-100 text-stone-500 rounded-full border border-stone-200 leading-tight">
+                                  {instr}
+                                </span>
+                              ))
+                            : <p className="text-stone-400 break-words">{stoff.vask}</p>
+                          }
+                        </div>
+                      )}
                     </div>
                     <input
                       value={stoff.mengde}
@@ -2475,49 +2487,52 @@ export default function ProjectsPage() {
   return (
     <>
       {/* Filter bar + new button */}
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex gap-1 bg-white rounded-xl p-1 border border-stone-200 shadow-sm">
-            {(['Alle', ...STATUSES] as const).map(s => {
-              const count = counts[s as keyof typeof counts]
-              return (
-                <button key={s} onClick={() => setStatusFilter(s as Status | 'Alle')}
-                  className={`px-3 sm:px-4 py-1.5 rounded-lg text-sm transition-colors ${
-                    statusFilter === s
-                      ? 'bg-stone-800 text-white shadow-sm'
-                      : 'text-stone-500 hover:text-stone-700'
-                  }`}>
-                  {s}
-                  <span className={`ml-1.5 text-xs ${statusFilter === s ? 'text-white/60' : 'text-stone-400'}`}>
-                    {count}
-                  </span>
-                </button>
-              )
-            })}
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between gap-3">
+        <div className="flex-1 min-w-0 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
+          <div className="flex items-center gap-2 sm:gap-3 min-w-max">
+            <div className="flex gap-1 bg-white rounded-xl p-1 border border-stone-200 shadow-sm">
+              {(['Alle', ...STATUSES] as const).map(s => {
+                const count = counts[s as keyof typeof counts]
+                return (
+                  <button key={s} onClick={() => setStatusFilter(s as Status | 'Alle')}
+                    className={`px-2.5 sm:px-4 py-1.5 rounded-lg text-xs sm:text-sm whitespace-nowrap transition-colors ${
+                      statusFilter === s
+                        ? 'bg-stone-800 text-white shadow-sm'
+                        : 'text-stone-500 hover:text-stone-700'
+                    }`}>
+                    {s}
+                    <span className={`ml-1 text-xs ${statusFilter === s ? 'text-white/60' : 'text-stone-400'}`}>
+                      {count}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+
+            <select value={catFilter} onChange={e => setCatFilter(e.target.value as Category | 'Alle')}
+              className="px-2.5 py-2 border border-stone-200 rounded-xl text-xs sm:text-sm bg-white text-stone-600 focus:outline-none focus:ring-2 focus:ring-stone-300 shadow-sm whitespace-nowrap">
+              <option value="Alle">Alle kategorier</option>
+              {CATEGORIES.map(c => <option key={c}>{c}</option>)}
+            </select>
+
+            {(statusFilter !== 'Alle' || catFilter !== 'Alle') && (
+              <button onClick={() => { setStatusFilter('Alle'); setCatFilter('Alle') }}
+                className="text-xs sm:text-sm text-stone-400 hover:text-stone-600 transition-colors whitespace-nowrap">
+                Nullstill ×
+              </button>
+            )}
           </div>
-
-          <select value={catFilter} onChange={e => setCatFilter(e.target.value as Category | 'Alle')}
-            className="px-3 py-2 border border-stone-200 rounded-xl text-sm bg-white text-stone-600 focus:outline-none focus:ring-2 focus:ring-stone-300 shadow-sm">
-            <option value="Alle">Alle kategorier</option>
-            {CATEGORIES.map(c => <option key={c}>{c}</option>)}
-          </select>
-
-          {(statusFilter !== 'Alle' || catFilter !== 'Alle') && (
-            <button onClick={() => { setStatusFilter('Alle'); setCatFilter('Alle') }}
-              className="text-sm text-stone-400 hover:text-stone-600 transition-colors">
-              Nullstill ×
-            </button>
-          )}
         </div>
 
         <button
           onClick={() => setShowNewModal(true)}
-          className="flex items-center gap-2 px-4 py-2.5 min-h-[44px] bg-[#C9A57A] text-white text-sm rounded-xl hover:bg-[#b8925f] transition-colors font-medium whitespace-nowrap"
+          className="flex-shrink-0 flex items-center gap-2 px-3 sm:px-4 py-2.5 min-h-[44px] bg-[#C9A57A] text-white text-sm rounded-xl hover:bg-[#b8925f] transition-colors font-medium whitespace-nowrap"
         >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
           </svg>
-          Nytt prosjekt
+          <span className="hidden xs:inline">Nytt prosjekt</span>
+          <span className="inline xs:hidden">Nytt</span>
         </button>
       </div>
 

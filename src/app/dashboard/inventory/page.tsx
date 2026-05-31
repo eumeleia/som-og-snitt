@@ -71,7 +71,7 @@ async function apiImportFabric(url: string) {
 
 // ── Shared UI ─────────────────────────────────────────────────────────────────
 
-const inputCls = 'w-full px-3 py-2 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300 transition'
+const inputCls = 'w-full px-3 py-2 border border-stone-200 rounded-lg text-base sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300 transition'
 const labelCls = 'block text-xs font-semibold tracking-widest uppercase text-stone-400 mb-1.5'
 
 function chipCls(active: boolean) {
@@ -131,7 +131,10 @@ function InventoryCard({ item, onEdit, onDelete }: {
         <h3 className="font-serif text-xl font-semibold text-stone-800 mb-0.5 truncate leading-tight">
           {d.navn || <span className="text-stone-300 italic font-light">Uten navn</span>}
         </h3>
-        {subtitle && <p className="text-xs text-stone-400 mb-2 truncate">{subtitle}</p>}
+        {subtitle && <p className="text-xs text-stone-400 mb-1 truncate">{subtitle}</p>}
+        {d.kategori === 'Stoff' && d.tenktTil && (
+          <p className="text-xs text-stone-400 truncate mb-1">✎ Til: {d.tenktTil}</p>
+        )}
 
         <div className="flex items-center justify-between mt-auto pt-3 border-t border-stone-100">
           <div>
@@ -158,11 +161,12 @@ function InventoryCard({ item, onEdit, onDelete }: {
 
 // ── NewInventoryModal ─────────────────────────────────────────────────────────
 
-function NewInventoryModal({ onCreate, onClose }: {
+function NewInventoryModal({ onCreate, onClose, initialKategori = 'Stoff' }: {
   onCreate: (data: InventoryItemData) => Promise<void>
   onClose: () => void
+  initialKategori?: Kategori
 }) {
-  const [kategori, setKategori]       = useState<Kategori>('Stoff')
+  const [kategori, setKategori]       = useState<Kategori>(initialKategori)
   const [mode, setMode]               = useState<'choose' | 'url-import' | 'form'>('choose')
   const [importing, setImporting]     = useState(false)
   const [importUrl, setImportUrl]     = useState('')
@@ -184,6 +188,7 @@ function NewInventoryModal({ onCreate, onClose }: {
       const fabric = await apiImportFabric(importUrl.trim())
       const data: InventoryItemData = {
         ...emptyData('Stoff'),
+        type:      'Hovedstoff',
         navn:      fabric.navn      || 'Nytt stoff',
         materiale: fabric.materiale || '',
         bredde:    fabric.bredde    || '',
@@ -207,6 +212,7 @@ function NewInventoryModal({ onCreate, onClose }: {
       const data: InventoryItemData = {
         ...emptyData(kategori),
         navn: navn.trim(),
+        ...(kategori === 'Stoff'    && { type: 'Hovedstoff' as StoffType }),
         ...(kategori === 'Tilbehør' && { underkategori: underkategori.trim() }),
         ...(kategori === 'Utstyr'   && { utstyrstype:   utstyrstype.trim() }),
       }
@@ -857,7 +863,7 @@ export default function InventoryPage() {
 
   const filterValues = Array.from(new Set(
     tabItems.map(i =>
-      tab === 'Stoff'    ? i.data.type
+      tab === 'Stoff'      ? (i.data.type ?? 'Hovedstoff')
       : tab === 'Tilbehør' ? i.data.underkategori
       : i.data.utstyrstype
     ).filter((v): v is string => Boolean(v))
@@ -879,8 +885,8 @@ export default function InventoryPage() {
     .filter(i => {
       if (typeFilter === 'Alle') return true
       const d = i.data
-      const v = tab === 'Stoff'    ? d.type
-              : tab === 'Tilbehør' ? d.underkategori
+      const v = tab === 'Stoff'      ? (d.type ?? 'Hovedstoff')
+              : tab === 'Tilbehør'   ? d.underkategori
               : d.utstyrstype
       return v === typeFilter
     })
@@ -1027,7 +1033,7 @@ export default function InventoryPage() {
       </main>
 
       {showNewModal && (
-        <NewInventoryModal onCreate={createItem} onClose={() => setShowNewModal(false)} />
+        <NewInventoryModal onCreate={createItem} onClose={() => setShowNewModal(false)} initialKategori={tab} />
       )}
 
       {deleteId && !showDetail && (

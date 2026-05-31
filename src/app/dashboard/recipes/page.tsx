@@ -116,7 +116,7 @@ async function extractPdfText(
 
 // ── Shared UI ─────────────────────────────────────────────────────────────────
 
-const inputCls = 'w-full px-3 py-2 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300 transition'
+const inputCls = 'w-full px-3 py-2 border border-stone-200 rounded-lg text-base sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300 transition'
 const labelCls = 'block text-xs font-semibold tracking-widest uppercase text-stone-400 mb-1.5'
 
 function Badge({ label, cls }: { label: string; cls: string }) {
