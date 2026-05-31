@@ -28,6 +28,19 @@ interface PdfComment {
   createdAt: string
 }
 
+interface PdfAnnotation {
+  id: string
+  pdfId: string
+  page: number
+  text: string
+  type: 'pin' | 'textbox'
+  x: number
+  y: number
+  width?: number
+  height?: number
+  createdAt: string
+}
+
 interface FabricItem {
   id: string; sourceUrl: string
   navn: string; materiale: string; bredde: string; vekt: string
@@ -46,6 +59,7 @@ interface ProjectData {
   recipeName: string
   equipmentList: string[]
   pdfComments: PdfComment[]
+  pdfAnnotations: PdfAnnotation[]
 }
 
 interface Project { id: string; created_at: string; data: ProjectData }
@@ -87,6 +101,7 @@ const EMPTY: ProjectData = {
   recipeName: '',
   equipmentList: [],
   pdfComments: [],
+  pdfAnnotations: [],
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -899,22 +914,36 @@ function FocalPointModal({ imageUrl, focalX, focalY, onSave, onClose }: {
 
 // ── PdfViewerModal ────────────────────────────────────────────────────────────
 
-function PdfViewerModal({ pdf, comments, onAddComment, onDeleteComment, onClose }: {
+type AnnotationTool = 'pin' | 'textbox' | null
+
+interface PendingAnnotation {
+  pdfId: string; page: number; type: 'pin' | 'textbox'; x: number; y: number
+}
+
+function PdfViewerModal({
+  pdf, annotations, onAddAnnotation, onUpdateAnnotation, onDeleteAnnotation, onClose,
+}: {
   pdf: PdfItem
-  comments: PdfComment[]
-  onAddComment: (comment: Omit<PdfComment, 'id' | 'createdAt'>) => void
-  onDeleteComment: (id: string) => void
+  annotations: PdfAnnotation[]
+  onAddAnnotation: (a: Omit<PdfAnnotation, 'id' | 'createdAt'>) => void
+  onUpdateAnnotation: (id: string, text: string) => void
+  onDeleteAnnotation: (id: string) => void
   onClose: () => void
 }) {
-  const [pages, setPages]   = useState<string[]>([])
-  const [loading, setLoading] = useState(true)
+  const [pages, setPages]         = useState<string[]>([])
+  const [loading, setLoading]     = useState(true)
   const [loadedCount, setLoadedCount] = useState(0)
   const [totalCount, setTotalCount]   = useState(0)
-  const [error, setError]   = useState('')
-  const [drafts, setDrafts] = useState<Record<number, string>>({})
-  const [addingPage, setAddingPage] = useState<number | null>(null)
+  const [error, setError]         = useState('')
+  const [activeTool, setActiveTool]   = useState<AnnotationTool>(null)
+  const [pending, setPending]         = useState<PendingAnnotation | null>(null)
+  const [pendingText, setPendingText] = useState('')
+  const [selectedId, setSelectedId]   = useState<string | null>(null)
+  const [editingId, setEditingId]     = useState<string | null>(null)
+  const [editText, setEditText]       = useState('')
+  const textboxCancelRef = useRef(false)
 
-  const myComments = comments.filter(c => c.pdfId === pdf.id)
+  const myAnnotations = annotations.filter(a => a.pdfId === pdf.id)
 
   useEffect(() => {
     let cancelled = false
@@ -955,38 +984,93 @@ function PdfViewerModal({ pdf, comments, onAddComment, onDeleteComment, onClose 
     return () => { cancelled = true }
   }, [pdf.url])
 
-  function submitComment(page: number) {
-    const text = (drafts[page] ?? '').trim()
-    if (!text) return
-    onAddComment({ pdfId: pdf.id, page, text })
-    setDrafts(d => ({ ...d, [page]: '' }))
-    setAddingPage(null)
+  function toggleTool(tool: 'pin' | 'textbox') {
+    setActiveTool(prev => prev === tool ? null : tool)
+    setPending(null); setPendingText('')
+    setSelectedId(null); setEditingId(null)
+  }
+
+  function handlePageClick(e: React.MouseEvent<HTMLDivElement>, pageNum: number) {
+    setSelectedId(null)
+    if (!activeTool) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    const x = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100))
+    const y = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100))
+    setPending({ pdfId: pdf.id, page: pageNum, type: activeTool, x, y })
+    setPendingText('')
+    setEditingId(null)
+  }
+
+  function savePinPending() {
+    if (!pending || !pendingText.trim()) { cancelPending(); return }
+    onAddAnnotation({ ...pending, text: pendingText.trim() })
+    setPending(null); setPendingText(''); setActiveTool(null)
+  }
+
+  function saveTextboxPending() {
+    if (pending && pendingText.trim()) {
+      onAddAnnotation({ ...pending, text: pendingText.trim(), width: 30 })
+    }
+    setPending(null); setPendingText(''); setActiveTool(null)
+  }
+
+  function cancelPending() { setPending(null); setPendingText('') }
+
+  function startEdit(ann: PdfAnnotation) {
+    setEditingId(ann.id); setEditText(ann.text); setSelectedId(null)
+  }
+
+  function saveEdit() {
+    if (editingId && editText.trim()) onUpdateAnnotation(editingId, editText.trim())
+    setEditingId(null); setEditText('')
+  }
+
+  function popupOffset(x: number) {
+    return x > 70 ? '-90%' : x < 30 ? '0%' : '-50%'
   }
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col" style={{ backgroundColor: '#1c1917' }}>
-      {/* Header */}
+      {/* Toolbar */}
       <div className="flex items-center gap-3 px-4 py-3 flex-shrink-0 border-b border-stone-700"
         style={{ backgroundColor: '#292524' }}>
-        <button
-          onClick={onClose}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-stone-300 hover:text-white hover:bg-stone-700 transition-colors flex-shrink-0"
-        >
+        <button onClick={onClose}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-stone-300 hover:text-white hover:bg-stone-700 transition-colors flex-shrink-0">
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
           </svg>
           Lukk
         </button>
         <h2 className="flex-1 font-serif text-lg text-stone-200 truncate">{pdf.name}</h2>
-        {(loading && totalCount > 0) && (
-          <span className="text-xs text-stone-400 flex-shrink-0">
-            {loadedCount}/{totalCount} sider
-          </span>
+        {loading && totalCount > 0 && (
+          <span className="text-xs text-stone-400 flex-shrink-0">{loadedCount}/{totalCount} sider</span>
         )}
+        <div className="flex gap-1.5 flex-shrink-0">
+          {(['pin', 'textbox'] as const).map(tool => (
+            <button key={tool} onClick={() => toggleTool(tool)}
+              title={tool === 'pin' ? 'Pin-annotasjon' : 'Tekstboks'}
+              className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
+                activeTool === tool
+                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                  : 'text-stone-400 hover:text-stone-200 hover:bg-stone-700'
+              }`}>
+              {tool === 'pin' ? '📌 Pin' : '📝 Tekstboks'}
+            </button>
+          ))}
+        </div>
       </div>
 
+      {activeTool && (
+        <div className="px-4 py-2 text-xs text-amber-400 bg-amber-900/20 border-b border-amber-800/30 text-center flex-shrink-0">
+          {activeTool === 'pin'
+            ? 'Klikk på PDF-en for å plassere en pin'
+            : 'Klikk på PDF-en for å plassere en tekstboks'}
+        </div>
+      )}
+
       {/* Content */}
-      <div className="flex-1 overflow-y-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
+      <div className="flex-1 overflow-y-auto" style={{ WebkitOverflowScrolling: 'touch' }}
+        onClick={() => setSelectedId(null)}>
         {loading && pages.length === 0 && (
           <div className="flex flex-col items-center justify-center py-24 gap-4">
             <div className="w-8 h-8 border-2 border-stone-600 border-t-stone-300 rounded-full animate-spin" />
@@ -1004,96 +1088,229 @@ function PdfViewerModal({ pdf, comments, onAddComment, onDeleteComment, onClose 
         <div className="max-w-3xl mx-auto px-3 py-6 space-y-10">
           {pages.map((dataUrl, i) => {
             const pageNum = i + 1
-            const pageComments = myComments.filter(c => c.page === pageNum).sort(
-              (a, b) => a.createdAt.localeCompare(b.createdAt)
-            )
-            const isAdding = addingPage === pageNum
-            const draft    = drafts[pageNum] ?? ''
+            const pageAnnotations = myAnnotations
+              .filter(a => a.page === pageNum)
+              .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+            const pagePins = pageAnnotations.filter(a => a.type === 'pin')
+            const pagePending = pending?.page === pageNum ? pending : null
 
             return (
               <div key={pageNum}>
-                {/* Page label */}
                 <p className="text-xs text-stone-500 mb-2 text-center tracking-wider uppercase">
-                  Side {pageNum}
-                  {totalCount > 0 && ` av ${totalCount}`}
+                  Side {pageNum}{totalCount > 0 && ` av ${totalCount}`}
                 </p>
 
-                {/* Page image */}
-                <div className="rounded-xl overflow-hidden shadow-2xl">
+                {/* Page container — no overflow-hidden so popups can extend beyond edges */}
+                <div className="relative"
+                  style={{ cursor: activeTool ? 'crosshair' : 'default' }}
+                  onClick={e => { e.stopPropagation(); handlePageClick(e, pageNum) }}>
                   <img
-                    src={dataUrl}
-                    alt={`Side ${pageNum}`}
-                    className="w-full block"
-                    style={{ touchAction: 'pan-y pinch-zoom' }}
+                    src={dataUrl} alt={`Side ${pageNum}`}
+                    className="w-full block select-none rounded-xl shadow-2xl"
+                    style={{ touchAction: activeTool ? 'none' : 'pan-y pinch-zoom' }}
+                    draggable={false}
                   />
-                </div>
 
-                {/* Comments section */}
-                <div className="mt-3 space-y-2">
-                  {pageComments.map(c => (
-                    <div key={c.id}
-                      className="flex items-start gap-2 px-3 py-2.5 rounded-xl"
-                      style={{ backgroundColor: '#292524' }}>
-                      <span className="text-sm">💬</span>
-                      <p className="flex-1 text-sm text-stone-200 leading-relaxed whitespace-pre-wrap">{c.text}</p>
-                      <button
-                        onClick={() => onDeleteComment(c.id)}
-                        className="flex-shrink-0 p-1 rounded-lg text-stone-500 hover:text-red-400 hover:bg-red-900/30 transition-colors mt-0.5"
-                        title="Slett kommentar"
-                      >
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      </button>
-                    </div>
-                  ))}
+                  {/* Existing annotations */}
+                  {pageAnnotations.map(ann => {
+                    const isSelected = selectedId === ann.id
+                    const isEditing  = editingId === ann.id
+                    const pinNumber  = pagePins.findIndex(a => a.id === ann.id) + 1
 
-                  {isAdding ? (
-                    <div className="rounded-xl overflow-hidden border border-stone-600" style={{ backgroundColor: '#292524' }}>
-                      <textarea
-                        autoFocus
-                        value={draft}
-                        onChange={e => setDrafts(d => ({ ...d, [pageNum]: e.target.value }))}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submitComment(pageNum)
-                          if (e.key === 'Escape') setAddingPage(null)
-                        }}
-                        placeholder="Skriv kommentar…"
-                        rows={3}
-                        className="w-full px-3 py-2.5 text-sm text-stone-200 bg-transparent resize-none outline-none placeholder-stone-600"
-                      />
-                      <div className="flex justify-end gap-2 px-3 pb-2.5">
-                        <button
-                          onClick={() => setAddingPage(null)}
-                          className="px-3 py-1.5 text-xs text-stone-500 hover:text-stone-300 transition-colors rounded-lg">
-                          Avbryt
-                        </button>
-                        <button
-                          onClick={() => submitComment(pageNum)}
-                          disabled={!draft.trim()}
-                          className="px-4 py-1.5 text-xs font-medium text-stone-900 rounded-lg transition-colors disabled:opacity-40"
-                          style={{ backgroundColor: '#C9A57A' }}>
-                          Legg til
-                        </button>
+                    if (ann.type === 'pin') return (
+                      <div key={ann.id}
+                        style={{ position: 'absolute', left: `${ann.x}%`, top: `${ann.y}%`,
+                          transform: 'translate(-50%, -50%)', zIndex: 10 }}
+                        onClick={e => { e.stopPropagation()
+                          if (!isEditing) setSelectedId(isSelected ? null : ann.id) }}>
+                        <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold
+                          cursor-pointer shadow-md transition-transform hover:scale-110 select-none ${
+                          isSelected || isEditing
+                            ? 'bg-amber-400 text-stone-900 ring-2 ring-amber-200'
+                            : 'bg-amber-500 text-white'}`}>
+                          {pinNumber}
+                        </div>
+
+                        {/* View popup */}
+                        {isSelected && !isEditing && (
+                          <div className="absolute z-20 min-w-48 max-w-64 rounded-xl shadow-2xl border border-stone-700 overflow-hidden"
+                            style={{ backgroundColor: '#292524', top: '100%', left: '50%',
+                              transform: `translateX(${popupOffset(ann.x)})`, marginTop: '8px' }}
+                            onClick={e => e.stopPropagation()}>
+                            <div className="px-3 py-2.5">
+                              <p className="text-sm text-stone-200 whitespace-pre-wrap leading-relaxed">{ann.text}</p>
+                            </div>
+                            <div className="flex border-t border-stone-700">
+                              <button onClick={() => startEdit(ann)}
+                                className="flex-1 py-2 text-xs text-stone-400 hover:text-stone-200 hover:bg-stone-700 transition-colors">
+                                Rediger
+                              </button>
+                              <button onClick={() => { onDeleteAnnotation(ann.id); setSelectedId(null) }}
+                                className="flex-1 py-2 text-xs text-red-400 hover:text-red-300 hover:bg-red-900/30 transition-colors border-l border-stone-700">
+                                Slett
+                              </button>
+                              <button onClick={() => setSelectedId(null)}
+                                className="flex-1 py-2 text-xs text-stone-500 hover:text-stone-300 hover:bg-stone-700 transition-colors border-l border-stone-700">
+                                Lukk
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Edit popup */}
+                        {isEditing && (
+                          <div className="absolute z-20 w-64 rounded-xl shadow-2xl border border-stone-600 overflow-hidden"
+                            style={{ backgroundColor: '#292524', top: '100%', left: '50%',
+                              transform: `translateX(${popupOffset(ann.x)})`, marginTop: '8px' }}
+                            onClick={e => e.stopPropagation()}>
+                            <textarea autoFocus value={editText}
+                              onChange={e => setEditText(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) saveEdit()
+                                if (e.key === 'Escape') { setEditingId(null); setEditText('') }
+                              }}
+                              rows={3}
+                              className="w-full px-3 py-2.5 text-sm text-stone-200 bg-transparent resize-none outline-none placeholder-stone-600"
+                            />
+                            <div className="flex justify-end gap-2 px-3 pb-2.5">
+                              <button onClick={() => { setEditingId(null); setEditText('') }}
+                                className="px-3 py-1.5 text-xs text-stone-500 hover:text-stone-300 transition-colors rounded-lg">
+                                Avbryt
+                              </button>
+                              <button onClick={saveEdit} disabled={!editText.trim()}
+                                className="px-4 py-1.5 text-xs font-medium text-stone-900 rounded-lg transition-colors disabled:opacity-40"
+                                style={{ backgroundColor: '#C9A57A' }}>
+                                Lagre
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )
+
+                    if (ann.type === 'textbox') return (
+                      <div key={ann.id}
+                        style={{ position: 'absolute', left: `${ann.x}%`, top: `${ann.y}%`,
+                          width: `${ann.width ?? 30}%`, zIndex: 10 }}
+                        onClick={e => { e.stopPropagation()
+                          if (!isEditing) setSelectedId(isSelected ? null : ann.id) }}>
+                        {isEditing ? (
+                          <div className="rounded-lg border border-amber-500/60 overflow-hidden"
+                            style={{ backgroundColor: 'rgba(41,37,36,0.95)', backdropFilter: 'blur(4px)' }}
+                            onClick={e => e.stopPropagation()}>
+                            <textarea autoFocus value={editText}
+                              onChange={e => setEditText(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === 'Escape') { setEditingId(null); setEditText('') }
+                              }}
+                              rows={3}
+                              className="w-full px-2 py-2 text-xs text-stone-200 bg-transparent resize-none outline-none placeholder-stone-600"
+                            />
+                            <div className="flex justify-end gap-1 px-2 pb-2">
+                              <button onClick={() => { setEditingId(null); setEditText('') }}
+                                className="px-3 py-1 text-xs text-stone-500 hover:text-stone-300 transition-colors rounded-md">
+                                Avbryt
+                              </button>
+                              <button onClick={saveEdit} disabled={!editText.trim()}
+                                className="px-3 py-1 text-xs font-medium text-stone-900 rounded-md disabled:opacity-40"
+                                style={{ backgroundColor: '#C9A57A' }}>
+                                Lagre
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className={`rounded-lg px-2.5 py-2 cursor-pointer shadow-md transition-all ${
+                            isSelected ? 'ring-2 ring-amber-400/60' : ''}`}
+                            style={{ backgroundColor: 'rgba(255,253,235,0.92)', backdropFilter: 'blur(4px)',
+                              boxShadow: '0 2px 8px rgba(0,0,0,0.3)' }}>
+                            <p className="text-xs text-stone-800 whitespace-pre-wrap leading-relaxed">{ann.text}</p>
+                            {isSelected && (
+                              <div className="flex gap-1 mt-1.5 pt-1.5 border-t border-stone-300/50"
+                                onClick={e => e.stopPropagation()}>
+                                <button onClick={() => startEdit(ann)}
+                                  className="flex-1 text-xs text-stone-500 hover:text-stone-700 transition-colors py-0.5">
+                                  Rediger
+                                </button>
+                                <button onClick={() => { onDeleteAnnotation(ann.id); setSelectedId(null) }}
+                                  className="flex-1 text-xs text-red-500 hover:text-red-700 transition-colors py-0.5">
+                                  Slett
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )
+
+                    return null
+                  })}
+
+                  {/* Pending pin */}
+                  {pagePending?.type === 'pin' && (
+                    <div style={{ position: 'absolute', left: `${pagePending.x}%`, top: `${pagePending.y}%`,
+                      transform: 'translate(-50%, -50%)', zIndex: 20 }}
+                      onClick={e => e.stopPropagation()}>
+                      <div className="w-6 h-6 rounded-full bg-amber-400 flex items-center justify-center ring-2 ring-amber-200 shadow-md select-none">
+                        <span className="text-xs font-bold text-stone-900">+</span>
+                      </div>
+                      <div className="absolute z-30 w-56 rounded-xl shadow-2xl border border-stone-600 overflow-hidden"
+                        style={{ backgroundColor: '#292524', top: '100%', left: '50%',
+                          transform: `translateX(${popupOffset(pagePending.x)})`, marginTop: '8px' }}>
+                        <input autoFocus value={pendingText}
+                          onChange={e => setPendingText(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') savePinPending()
+                            if (e.key === 'Escape') cancelPending()
+                          }}
+                          placeholder="Skriv kommentar…"
+                          className="w-full px-3 py-2.5 text-sm text-stone-200 bg-transparent outline-none placeholder-stone-600"
+                        />
+                        <div className="flex justify-end gap-2 px-3 pb-2.5">
+                          <button onClick={cancelPending}
+                            className="px-3 py-1.5 text-xs text-stone-500 hover:text-stone-300 transition-colors rounded-lg">
+                            Avbryt
+                          </button>
+                          <button onClick={savePinPending} disabled={!pendingText.trim()}
+                            className="px-4 py-1.5 text-xs font-medium text-stone-900 rounded-lg transition-colors disabled:opacity-40"
+                            style={{ backgroundColor: '#C9A57A' }}>
+                            Lagre
+                          </button>
+                        </div>
                       </div>
                     </div>
-                  ) : (
-                    <button
-                      onClick={() => setAddingPage(pageNum)}
-                      className="flex items-center gap-1.5 text-xs text-stone-500 hover:text-stone-300 transition-colors px-1 py-1"
-                    >
-                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                      </svg>
-                      Legg til kommentar på side {pageNum}
-                    </button>
+                  )}
+
+                  {/* Pending textbox */}
+                  {pagePending?.type === 'textbox' && (
+                    <div style={{ position: 'absolute', left: `${pagePending.x}%`, top: `${pagePending.y}%`,
+                      width: '30%', zIndex: 20 }}
+                      onClick={e => e.stopPropagation()}>
+                      <div className="rounded-lg border-2 border-amber-500/80 overflow-hidden"
+                        style={{ backgroundColor: 'rgba(255,253,235,0.96)', backdropFilter: 'blur(4px)' }}>
+                        <textarea autoFocus value={pendingText}
+                          onChange={e => setPendingText(e.target.value)}
+                          onBlur={() => {
+                            if (textboxCancelRef.current) { textboxCancelRef.current = false; return }
+                            saveTextboxPending()
+                          }}
+                          onKeyDown={e => {
+                            if (e.key === 'Escape') {
+                              textboxCancelRef.current = true
+                              cancelPending()
+                            }
+                          }}
+                          placeholder="Skriv tekst…"
+                          rows={3}
+                          className="w-full px-2.5 py-2 text-xs text-stone-800 bg-transparent resize-none outline-none placeholder-stone-500"
+                        />
+                      </div>
+                    </div>
                   )}
                 </div>
               </div>
             )
           })}
 
-          {/* Still loading more pages */}
           {loading && pages.length > 0 && (
             <div className="flex items-center justify-center gap-2 py-4 text-stone-500 text-sm">
               <div className="w-4 h-4 border-2 border-stone-600 border-t-stone-400 rounded-full animate-spin" />
@@ -1114,11 +1331,17 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
   onSaved: () => void
   onDelete?: () => void
 }) {
-  const [form, setForm] = useState<ProjectData>(() =>
-    project
-      ? { ...structuredClone(EMPTY), ...structuredClone(project.data) }
-      : structuredClone(EMPTY)
-  )
+  const [form, setForm] = useState<ProjectData>(() => {
+    if (!project) return structuredClone(EMPTY)
+    const data: ProjectData = { ...structuredClone(EMPTY), ...structuredClone(project.data) }
+    if ((data.pdfComments ?? []).length > 0 && (data.pdfAnnotations ?? []).length === 0) {
+      data.pdfAnnotations = (data.pdfComments ?? []).map(c => ({
+        id: c.id, pdfId: c.pdfId, page: c.page, text: c.text,
+        type: 'pin' as const, x: 50, y: 5, createdAt: c.createdAt,
+      }))
+    }
+    return data
+  })
   const [saveStatus, setSaveStatus]         = useState<SaveStatus>('idle')
   const [showImgModal, setShowImgModal]     = useState(false)
   const [showFocalModal, setShowFocalModal] = useState(false)
@@ -1307,13 +1530,17 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
     upd({ pdfs: form.pdfs.map(p => p.id === id ? { ...p, type, source: p.source ?? 'link' } : p) })
   }
 
-  function addPdfComment(comment: Omit<PdfComment, 'id' | 'createdAt'>) {
-    const newComment: PdfComment = { ...comment, id: uid(), createdAt: new Date().toISOString() }
-    upd({ pdfComments: [...(form.pdfComments ?? []), newComment] })
+  function addPdfAnnotation(annotation: Omit<PdfAnnotation, 'id' | 'createdAt'>) {
+    const newAnnotation: PdfAnnotation = { ...annotation, id: uid(), createdAt: new Date().toISOString() }
+    upd({ pdfAnnotations: [...(form.pdfAnnotations ?? []), newAnnotation] })
   }
 
-  function deletePdfComment(id: string) {
-    upd({ pdfComments: (form.pdfComments ?? []).filter(c => c.id !== id) })
+  function updatePdfAnnotation(id: string, text: string) {
+    upd({ pdfAnnotations: (form.pdfAnnotations ?? []).map(a => a.id === id ? { ...a, text } : a) })
+  }
+
+  function deletePdfAnnotation(id: string) {
+    upd({ pdfAnnotations: (form.pdfAnnotations ?? []).filter(a => a.id !== id) })
   }
 
   // ── Stoffberegner helpers ───────────────────────────────────────────────────
@@ -1915,7 +2142,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
               {form.pdfs.map(pdf => {
                 const typeVal     = pdf.type ?? 'Annet'
                 const isUpload    = (pdf.source ?? 'link') === 'upload'
-                const commentCount = (form.pdfComments ?? []).filter(c => c.pdfId === pdf.id).length
+                const annotationCount = (form.pdfAnnotations ?? []).filter(a => a.pdfId === pdf.id).length
                 return (
                   <li key={pdf.id} className="flex items-center justify-between py-3 gap-2">
                     <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -1938,9 +2165,9 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
                             <p className="text-sm font-medium text-stone-700 truncate">{pdf.name}</p>
                           )}
                           <Badge label={typeVal} cls={PDF_TYPE_STYLE[typeVal]} />
-                          {commentCount > 0 && (
+                          {annotationCount > 0 && (
                             <span className="text-xs text-stone-400 flex-shrink-0">
-                              💬 {commentCount}
+                              💬 {annotationCount}
                             </span>
                           )}
                         </div>
@@ -2110,9 +2337,10 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
       {showPdfViewer && (
         <PdfViewerModal
           pdf={showPdfViewer}
-          comments={form.pdfComments ?? []}
-          onAddComment={addPdfComment}
-          onDeleteComment={deletePdfComment}
+          annotations={form.pdfAnnotations ?? []}
+          onAddAnnotation={addPdfAnnotation}
+          onUpdateAnnotation={updatePdfAnnotation}
+          onDeleteAnnotation={deletePdfAnnotation}
           onClose={() => setShowPdfViewer(null)}
         />
       )}
