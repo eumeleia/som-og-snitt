@@ -5,6 +5,14 @@ export const dynamic = 'force-dynamic'
 import { useState, useEffect, useCallback, useRef, type ReactNode, type ChangeEvent } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import {
+  DndContext, closestCenter, PointerSensor, TouchSensor,
+  useSensor, useSensors, type DragEndEvent,
+} from '@dnd-kit/core'
+import {
+  SortableContext, useSortable, rectSortingStrategy, arrayMove,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -27,6 +35,7 @@ interface RecipeData {
   coverImageId: string
   focalX: number
   focalY: number
+  sortOrder?: number
 }
 
 interface Recipe { id: string; created_at: string; data: RecipeData }
@@ -57,6 +66,31 @@ const EMPTY: RecipeData = {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function uid() { return Math.random().toString(36).slice(2, 10) }
+
+// formatSizeRange(['6m','2y']) → '6m–2y' | ['XS','L'] → 'XS–L' | ['38','44'] → '38–44' | ['M'] → 'M' | [] → ''
+const LETTER_SIZE_WEIGHT: Record<string, number> = {
+  XS: 10000, S: 20000, M: 30000, L: 40000, XL: 50000, XXL: 60000, XXXL: 70000,
+}
+function sizeWeight(s: string): number {
+  const u = s.toUpperCase()
+  if (LETTER_SIZE_WEIGHT[u] !== undefined) return LETTER_SIZE_WEIGHT[u]
+  const mM = s.match(/^(\d+(?:\.\d+)?)m$/i)
+  if (mM) return parseFloat(mM[1])
+  const yM = s.match(/^(\d+(?:\.\d+)?)y$/i)
+  if (yM) return parseFloat(yM[1]) * 12
+  if (/^\d+$/.test(s)) return parseInt(s, 10) * 100
+  return NaN
+}
+function formatSizeRange(sizes: string[]): string {
+  if (sizes.length === 0) return ''
+  if (sizes.length === 1) return sizes[0]
+  const sorted = [...sizes].sort((a, b) => {
+    const wa = sizeWeight(a), wb = sizeWeight(b)
+    if (isNaN(wa) || isNaN(wb)) return 0
+    return wa - wb
+  })
+  return `${sorted[0]}–${sorted[sorted.length - 1]}`
+}
 
 async function apiClaude(prompt: string, pdfText?: string): Promise<string> {
   const r = await fetch('/api/claude', {
@@ -142,8 +176,9 @@ function SectionHeading({ children, first = false }: { children: ReactNode; firs
 
 // ── RecipeCard ────────────────────────────────────────────────────────────────
 
-function RecipeCard({ recipe, onEdit, onDelete }: {
+function RecipeCard({ recipe, onEdit, onDelete, dragHandle }: {
   recipe: Recipe; onEdit: () => void; onDelete: () => void
+  dragHandle?: React.ReactNode
 }) {
   const d = recipe.data
   const cover = d.images[0]?.url
@@ -153,7 +188,8 @@ function RecipeCard({ recipe, onEdit, onDelete }: {
       onClick={onEdit}
       className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col"
     >
-      <div className="h-44 bg-stone-50 overflow-hidden flex-shrink-0">
+      <div className="h-44 bg-stone-50 overflow-hidden flex-shrink-0 relative">
+        {dragHandle && <div className="absolute top-2 left-2 z-10">{dragHandle}</div>}
         {cover
           ? <img src={cover} alt={d.name}
               className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
@@ -188,7 +224,7 @@ function RecipeCard({ recipe, onEdit, onDelete }: {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
                     d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a2 2 0 012-2z" />
                 </svg>
-                {d.sizes.length} str.
+                {formatSizeRange(d.sizes)}
               </span>
             )}
             {d.pdfs.length > 0 && (
@@ -213,6 +249,44 @@ function RecipeCard({ recipe, onEdit, onDelete }: {
         </div>
       </div>
     </article>
+  )
+}
+
+// ── SortableRecipeCard ────────────────────────────────────────────────────────
+
+function SortableRecipeCard({ recipe, onEdit, onDelete, isDragMode }: {
+  recipe: Recipe; onEdit: () => void; onDelete: () => void; isDragMode: boolean
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: recipe.id,
+    disabled: !isDragMode,
+  })
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }}
+      {...attributes}
+    >
+      <RecipeCard
+        recipe={recipe}
+        onEdit={onEdit}
+        onDelete={onDelete}
+        dragHandle={isDragMode ? (
+          <button
+            {...listeners}
+            className="p-1.5 bg-white/80 backdrop-blur-sm rounded-lg shadow-sm touch-none cursor-grab active:cursor-grabbing"
+            onClick={e => e.stopPropagation()}
+            aria-label="Dra for å sortere"
+          >
+            <svg className="w-4 h-4 text-stone-400" fill="currentColor" viewBox="0 0 20 20">
+              <circle cx="7" cy="5" r="1.5" /><circle cx="13" cy="5" r="1.5" />
+              <circle cx="7" cy="10" r="1.5" /><circle cx="13" cy="10" r="1.5" />
+              <circle cx="7" cy="15" r="1.5" /><circle cx="13" cy="15" r="1.5" />
+            </svg>
+          </button>
+        ) : undefined}
+      />
+    </div>
   )
 }
 
@@ -1375,6 +1449,14 @@ export default function RecipesPage() {
   const [showNewModal, setShowNewModal]     = useState(false)
   const [deleteId, setDeleteId]             = useState<string | null>(null)
   const [search, setSearch]                 = useState('')
+  const [sortBy, setSortBy]                 = useState<'Manuell' | 'Nyeste' | 'Eldste' | 'Navn'>('Manuell')
+  const [orderSaving, setOrderSaving]       = useState(false)
+  const [orderSaved, setOrderSaved]         = useState(false)
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 300, tolerance: 5 } }),
+  )
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -1424,6 +1506,47 @@ export default function RecipesPage() {
     )
   })
 
+  const sortedFiltered = [...filtered].sort((a, b) => {
+    if (sortBy === 'Nyeste') return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    if (sortBy === 'Eldste') return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+    if (sortBy === 'Navn') return a.data.name.localeCompare(b.data.name, 'nb')
+    const aO = a.data.sortOrder ?? Infinity
+    const bO = b.data.sortOrder ?? Infinity
+    if (aO !== bO) return aO - bO
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  })
+
+  async function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+
+    const oldIdx = sortedFiltered.findIndex(r => r.id === active.id)
+    const newIdx = sortedFiltered.findIndex(r => r.id === over.id)
+    const newOrder = arrayMove(sortedFiltered, oldIdx, newIdx)
+
+    const updatedMap = new Map<string, number>()
+    newOrder.forEach((r, i) => updatedMap.set(r.id, (i + 1) * 1000))
+
+    const newRecipes = recipes.map(r => {
+      const order = updatedMap.get(r.id)
+      return order !== undefined ? { ...r, data: { ...r.data, sortOrder: order } } : r
+    })
+
+    setRecipes(newRecipes)
+    setOrderSaving(true)
+    try {
+      await Promise.all(
+        Array.from(updatedMap.keys()).map(id => {
+          const r = newRecipes.find(x => x.id === id)!
+          return supabase.from('recipes').update({ data: r.data }).eq('id', id)
+        })
+      )
+      setOrderSaved(true)
+      setTimeout(() => setOrderSaved(false), 2000)
+    } catch { /* silent */ }
+    finally { setOrderSaving(false) }
+  }
+
   if (showDetail && currentRecipe) {
     return (
       <>
@@ -1445,7 +1568,7 @@ export default function RecipesPage() {
 
   return (
     <>
-      {/* Search + new button */}
+      {/* Search + sort + new button */}
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex flex-wrap items-center gap-3">
         <div className="flex-1 min-w-[200px] relative">
           <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 pointer-events-none"
@@ -1460,6 +1583,20 @@ export default function RecipesPage() {
             placeholder="Søk på navn eller designer…"
             className="w-full pl-9 pr-4 py-2 border border-stone-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300 shadow-sm"
           />
+        </div>
+        <div className="flex items-center gap-2">
+          <select
+            value={sortBy}
+            onChange={e => setSortBy(e.target.value as typeof sortBy)}
+            className="px-2.5 py-2 border border-stone-200 rounded-xl text-sm bg-white text-stone-600 focus:outline-none focus:ring-2 focus:ring-stone-300 shadow-sm"
+          >
+            <option value="Manuell">Manuell (min rekkefølge)</option>
+            <option value="Nyeste">Nyeste først</option>
+            <option value="Eldste">Eldste først</option>
+            <option value="Navn">Navn A–Å</option>
+          </select>
+          {orderSaving && <span className="text-xs text-stone-400">Lagrer…</span>}
+          {!orderSaving && orderSaved && <span className="text-xs text-emerald-500 font-medium">Lagret ✓</span>}
         </div>
         <button
           onClick={() => setShowNewModal(true)}
@@ -1497,13 +1634,19 @@ export default function RecipesPage() {
             )}
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
-            {filtered.map(r => (
-              <RecipeCard key={r.id} recipe={r}
-                onEdit={() => openEdit(r)}
-                onDelete={() => setDeleteId(r.id)} />
-            ))}
-          </div>
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+            <SortableContext items={sortedFiltered.map(r => r.id)} strategy={rectSortingStrategy}>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+                {sortedFiltered.map(r => (
+                  <SortableRecipeCard key={r.id} recipe={r}
+                    onEdit={() => openEdit(r)}
+                    onDelete={() => setDeleteId(r.id)}
+                    isDragMode={sortBy === 'Manuell'}
+                  />
+                ))}
+              </div>
+            </SortableContext>
+          </DndContext>
         )}
       </main>
 

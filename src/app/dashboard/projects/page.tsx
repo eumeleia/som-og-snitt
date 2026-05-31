@@ -6,6 +6,14 @@ import { useState, useEffect, useCallback, useRef, type ReactNode, type ChangeEv
 import ReactMarkdown from 'react-markdown'
 import { supabase } from '@/lib/supabase'
 import { RecipePicker, type PickerRecipe } from '@/app/dashboard/_shared/RecipePicker'
+import {
+  DndContext, closestCenter, PointerSensor, TouchSensor,
+  useSensor, useSensors, type DragEndEvent,
+} from '@dnd-kit/core'
+import {
+  SortableContext, useSortable, rectSortingStrategy, arrayMove,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -60,6 +68,7 @@ interface ProjectData {
   equipmentList: string[]
   pdfComments: PdfComment[]
   pdfAnnotations: PdfAnnotation[]
+  sortOrder?: number
 }
 
 interface Project { id: string; created_at: string; data: ProjectData }
@@ -228,8 +237,9 @@ function SectionHeading({ children, first = false }: { children: ReactNode; firs
 
 // ── ProjectCard ───────────────────────────────────────────────────────────────
 
-function ProjectCard({ project, onEdit, onDelete }: {
+function ProjectCard({ project, onEdit, onDelete, dragHandle }: {
   project: Project; onEdit: () => void; onDelete: () => void
+  dragHandle?: React.ReactNode
 }) {
   const d = project.data
   const cover = d.images[0]?.url
@@ -252,7 +262,8 @@ function ProjectCard({ project, onEdit, onDelete }: {
       onClick={onEdit}
       className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col"
     >
-      <div className="h-44 bg-stone-50 overflow-hidden flex-shrink-0">
+      <div className="h-44 bg-stone-50 overflow-hidden flex-shrink-0 relative">
+        {dragHandle && <div className="absolute top-2 left-2 z-10">{dragHandle}</div>}
         {cover
           ? <img src={cover} alt={d.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
               style={{ objectPosition: `${d.focalX ?? 50}% ${d.focalY ?? 50}%` }} />
@@ -354,6 +365,44 @@ function ProjectCard({ project, onEdit, onDelete }: {
         </div>
       </div>
     </article>
+  )
+}
+
+// ── SortableProjectCard ───────────────────────────────────────────────────────
+
+function SortableProjectCard({ project, onEdit, onDelete, isDragMode }: {
+  project: Project; onEdit: () => void; onDelete: () => void; isDragMode: boolean
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: project.id,
+    disabled: !isDragMode,
+  })
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }}
+      {...attributes}
+    >
+      <ProjectCard
+        project={project}
+        onEdit={onEdit}
+        onDelete={onDelete}
+        dragHandle={isDragMode ? (
+          <button
+            {...listeners}
+            className="p-1.5 bg-white/80 backdrop-blur-sm rounded-lg shadow-sm touch-none cursor-grab active:cursor-grabbing"
+            onClick={e => e.stopPropagation()}
+            aria-label="Dra for å sortere"
+          >
+            <svg className="w-4 h-4 text-stone-400" fill="currentColor" viewBox="0 0 20 20">
+              <circle cx="7" cy="5" r="1.5" /><circle cx="13" cy="5" r="1.5" />
+              <circle cx="7" cy="10" r="1.5" /><circle cx="13" cy="10" r="1.5" />
+              <circle cx="7" cy="15" r="1.5" /><circle cx="13" cy="15" r="1.5" />
+            </svg>
+          </button>
+        ) : undefined}
+      />
+    </div>
   )
 }
 
@@ -2631,6 +2680,14 @@ export default function ProjectsPage() {
   const [deleteId, setDeleteId]             = useState<string | null>(null)
   const [statusFilter, setStatusFilter]     = useState<Status | 'Alle'>('Alle')
   const [catFilter, setCatFilter]           = useState<Category | 'Alle'>('Alle')
+  const [sortBy, setSortBy]                 = useState<'Manuell' | 'Nyeste' | 'Eldste' | 'Navn'>('Manuell')
+  const [orderSaving, setOrderSaving]       = useState(false)
+  const [orderSaved, setOrderSaved]         = useState(false)
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 300, tolerance: 5 } }),
+  )
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -2714,6 +2771,47 @@ export default function ProjectsPage() {
     (catFilter    === 'Alle' || p.data.category === catFilter)
   )
 
+  const sortedFiltered = [...filtered].sort((a, b) => {
+    if (sortBy === 'Nyeste') return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    if (sortBy === 'Eldste') return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+    if (sortBy === 'Navn') return a.data.name.localeCompare(b.data.name, 'nb')
+    const aO = a.data.sortOrder ?? Infinity
+    const bO = b.data.sortOrder ?? Infinity
+    if (aO !== bO) return aO - bO
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  })
+
+  async function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+
+    const oldIdx = sortedFiltered.findIndex(p => p.id === active.id)
+    const newIdx = sortedFiltered.findIndex(p => p.id === over.id)
+    const newOrder = arrayMove(sortedFiltered, oldIdx, newIdx)
+
+    const updatedMap = new Map<string, number>()
+    newOrder.forEach((p, i) => updatedMap.set(p.id, (i + 1) * 1000))
+
+    const newProjects = projects.map(p => {
+      const order = updatedMap.get(p.id)
+      return order !== undefined ? { ...p, data: { ...p.data, sortOrder: order } } : p
+    })
+
+    setProjects(newProjects)
+    setOrderSaving(true)
+    try {
+      await Promise.all(
+        Array.from(updatedMap.keys()).map(id => {
+          const p = newProjects.find(x => x.id === id)!
+          return supabase.from('projects').update({ data: p.data }).eq('id', id)
+        })
+      )
+      setOrderSaved(true)
+      setTimeout(() => setOrderSaved(false), 2000)
+    } catch { /* silent */ }
+    finally { setOrderSaving(false) }
+  }
+
   const counts = {
     Alle:     projects.length,
     Aktiv:    projects.filter(p => p.data.status === 'Aktiv').length,
@@ -2778,6 +2876,21 @@ export default function ProjectsPage() {
                 Nullstill ×
               </button>
             )}
+
+            <div className="flex items-center gap-2">
+              <select
+                value={sortBy}
+                onChange={e => setSortBy(e.target.value as typeof sortBy)}
+                className="px-2.5 py-2 border border-stone-200 rounded-xl text-xs sm:text-sm bg-white text-stone-600 focus:outline-none focus:ring-2 focus:ring-stone-300 shadow-sm whitespace-nowrap"
+              >
+                <option value="Manuell">Manuell (min rekkefølge)</option>
+                <option value="Nyeste">Nyeste først</option>
+                <option value="Eldste">Eldste først</option>
+                <option value="Navn">Navn A–Å</option>
+              </select>
+              {orderSaving && <span className="text-xs text-stone-400">Lagrer…</span>}
+              {!orderSaving && orderSaved && <span className="text-xs text-emerald-500 font-medium">Lagret ✓</span>}
+            </div>
           </div>
         </div>
 
@@ -2815,13 +2928,19 @@ export default function ProjectsPage() {
             )}
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
-            {filtered.map(p => (
-              <ProjectCard key={p.id} project={p}
-                onEdit={() => openEdit(p)}
-                onDelete={() => setDeleteId(p.id)} />
-            ))}
-          </div>
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+            <SortableContext items={sortedFiltered.map(p => p.id)} strategy={rectSortingStrategy}>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+                {sortedFiltered.map(p => (
+                  <SortableProjectCard key={p.id} project={p}
+                    onEdit={() => openEdit(p)}
+                    onDelete={() => setDeleteId(p.id)}
+                    isDragMode={sortBy === 'Manuell'}
+                  />
+                ))}
+              </div>
+            </SortableContext>
+          </DndContext>
         )}
       </main>
 
