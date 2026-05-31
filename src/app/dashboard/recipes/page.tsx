@@ -20,7 +20,7 @@ type PdfType   = 'Oppskrift' | 'Mønster' | 'Annet'
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
 interface ImageItem { id: string; url: string }
-interface PdfItem   { id: string; name: string; url: string; type: PdfType; source: 'upload' | 'link' }
+interface PdfItem   { id: string; name: string; url: string; type: PdfType; source: 'upload' | 'link'; displayName?: string }
 
 interface RecipeData {
   name: string
@@ -36,6 +36,7 @@ interface RecipeData {
   focalX: number
   focalY: number
   sortOrder?: number
+  rating?: number
 }
 
 interface Recipe { id: string; created_at: string; data: RecipeData }
@@ -174,6 +175,35 @@ function SectionHeading({ children, first = false }: { children: ReactNode; firs
   )
 }
 
+// ── StarRating ────────────────────────────────────────────────────────────────
+
+const STAR_PATH = 'M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z'
+
+function StarRating({ rating, onRate, size = 'md' }: {
+  rating: number; onRate?: (n: number) => void; size?: 'sm' | 'md'
+}) {
+  const [hovered, setHovered] = useState(0)
+  const displayed = (onRate ? hovered : 0) || rating
+  const szCls = size === 'sm' ? 'w-3.5 h-3.5' : 'w-5 h-5'
+  return (
+    <div className="flex items-center gap-0.5">
+      {[1, 2, 3, 4, 5].map(n => (
+        <button key={n} type="button" disabled={!onRate}
+          onClick={() => onRate?.(rating === n ? 0 : n)}
+          onMouseEnter={() => onRate && setHovered(n)}
+          onMouseLeave={() => onRate && setHovered(0)}
+          className={`${szCls} transition-transform ${onRate ? 'cursor-pointer hover:scale-110 active:scale-95' : 'cursor-default'}`}
+        >
+          <svg viewBox="0 0 20 20" className={`w-full h-full ${n <= displayed ? 'text-amber-400' : 'text-stone-300'}`}
+            fill={n <= displayed ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={1.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d={STAR_PATH} />
+          </svg>
+        </button>
+      ))}
+    </div>
+  )
+}
+
 // ── RecipeCard ────────────────────────────────────────────────────────────────
 
 function RecipeCard({ recipe, onEdit, onDelete, dragHandle }: {
@@ -209,7 +239,12 @@ function RecipeCard({ recipe, onEdit, onDelete, dragHandle }: {
         <h3 className="font-serif text-xl font-semibold text-stone-800 mb-1 truncate leading-tight">
           {d.name || <span className="text-stone-300 italic font-light">Uten navn</span>}
         </h3>
-        {d.designer && <p className="text-xs text-stone-400 mb-2">{d.designer}</p>}
+        {d.designer && <p className="text-xs text-stone-400 mb-1.5">{d.designer}</p>}
+        {(d.rating ?? 0) > 0 && (
+          <div className="mb-2">
+            <StarRating rating={d.rating ?? 0} size="sm" />
+          </div>
+        )}
         {d.category && (
           <div className="flex flex-wrap gap-1.5 mb-3">
             <Badge label={d.category} cls="bg-rose-50 text-rose-700 border-rose-200" />
@@ -874,6 +909,10 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
   const [manualSize, setManualSize]       = useState('')
   const pdfTextCacheRef = useRef<Record<string, string>>({})
 
+  // PDF display name editing
+  const [editingPdfId, setEditingPdfId]     = useState<string | null>(null)
+  const [editingPdfName, setEditingPdfName] = useState('')
+
   const recipeIdRef  = useRef<string>(recipe.id)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingRef   = useRef<RecipeData>(form)
@@ -1046,6 +1085,12 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
     upd({ sizes: form.sizes.filter(s => s !== sz) })
   }
 
+  function savePdfDisplayName(id: string) {
+    const name = editingPdfName.trim()
+    upd({ pdfs: form.pdfs.map(p => p.id === id ? { ...p, displayName: name || undefined } : p) })
+    setEditingPdfId(null)
+  }
+
   const cover = form.images[0]
   const hasOppskriftPdf = form.pdfs.some(p => p.type === 'Oppskrift')
 
@@ -1185,6 +1230,15 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
             <datalist id="detail-category-suggestions">
               {CATEGORY_SUGGESTIONS.map(s => <option key={s} value={s} />)}
             </datalist>
+          </div>
+          <div>
+            <label className={labelCls}>Rangering</label>
+            <div className="flex items-center gap-3">
+              <StarRating rating={form.rating ?? 0} onRate={n => upd({ rating: n })} />
+              {(form.rating ?? 0) > 0 && (
+                <span className="text-sm text-stone-400">{form.rating}/5</span>
+              )}
+            </div>
           </div>
         </div>
 
@@ -1352,6 +1406,8 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
             <ul className="divide-y divide-stone-100">
               {form.pdfs.map(pdf => {
                 const typeVal = pdf.type ?? 'Annet'
+                const label = pdf.displayName?.trim() || pdf.name
+                const isEditing = editingPdfId === pdf.id
                 return (
                   <li key={pdf.id} className="flex items-center justify-between py-3 gap-2">
                     <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -1363,7 +1419,34 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                          <p className="text-sm font-medium text-stone-700 truncate">{pdf.name}</p>
+                          {isEditing ? (
+                            <input
+                              autoFocus
+                              className="text-sm font-medium text-stone-700 border-b border-stone-300 bg-transparent outline-none min-w-0 flex-1"
+                              value={editingPdfName}
+                              onChange={e => setEditingPdfName(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') savePdfDisplayName(pdf.id)
+                                if (e.key === 'Escape') setEditingPdfId(null)
+                              }}
+                              onBlur={() => savePdfDisplayName(pdf.id)}
+                              placeholder={pdf.name}
+                            />
+                          ) : (
+                            <>
+                              <p className="text-sm font-medium text-stone-700 truncate">{label}</p>
+                              <button
+                                onClick={() => { setEditingPdfId(pdf.id); setEditingPdfName(pdf.displayName?.trim() ?? '') }}
+                                className="p-0.5 text-stone-300 hover:text-stone-500 transition-colors flex-shrink-0"
+                                title="Endre visningsnavn"
+                              >
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                                    d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                                </svg>
+                              </button>
+                            </>
+                          )}
                           <Badge label={typeVal} cls={PDF_TYPE_STYLE[typeVal]} />
                         </div>
                         <div className="flex items-center gap-3 flex-wrap">
@@ -1449,9 +1532,10 @@ export default function RecipesPage() {
   const [showNewModal, setShowNewModal]     = useState(false)
   const [deleteId, setDeleteId]             = useState<string | null>(null)
   const [search, setSearch]                 = useState('')
-  const [sortBy, setSortBy]                 = useState<'Manuell' | 'Nyeste' | 'Eldste' | 'Navn'>('Manuell')
+  const [sortBy, setSortBy]                 = useState<'Manuell' | 'Nyeste' | 'Eldste' | 'Navn' | 'StjernerHøy' | 'StjernerLav'>('Manuell')
   const [orderSaving, setOrderSaving]       = useState(false)
   const [orderSaved, setOrderSaved]         = useState(false)
+  const [minRating, setMinRating]           = useState(0)
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -1475,7 +1559,9 @@ export default function RecipesPage() {
   useEffect(() => { load() }, [load])
 
   async function createRecipe(data: RecipeData) {
-    const { data: rows, error } = await supabase.from('recipes').insert({ data }).select()
+    const existingOrders = recipes.map(r => r.data.sortOrder).filter((o): o is number => o !== undefined)
+    const sortOrder = existingOrders.length > 0 ? Math.min(...existingOrders) - 1000 : 1000
+    const { data: rows, error } = await supabase.from('recipes').insert({ data: { ...data, sortOrder } }).select()
     if (error) throw error
     const recipe = (rows as Recipe[])?.[0]
     if (recipe) {
@@ -1498,18 +1584,18 @@ export default function RecipesPage() {
   function handleBack()        { setShowDetail(false); setCurrentRecipe(null); load() }
 
   const filtered = recipes.filter(r => {
-    if (!search.trim()) return true
-    const q = search.toLowerCase()
-    return (
-      r.data.name.toLowerCase().includes(q) ||
-      r.data.designer.toLowerCase().includes(q)
-    )
+    const q = search.trim().toLowerCase()
+    const matchesSearch = !q || r.data.name.toLowerCase().includes(q) || r.data.designer.toLowerCase().includes(q)
+    const matchesRating = minRating === 0 || (r.data.rating ?? 0) >= minRating
+    return matchesSearch && matchesRating
   })
 
   const sortedFiltered = [...filtered].sort((a, b) => {
     if (sortBy === 'Nyeste') return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     if (sortBy === 'Eldste') return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
     if (sortBy === 'Navn') return a.data.name.localeCompare(b.data.name, 'nb')
+    if (sortBy === 'StjernerHøy') return (b.data.rating ?? 0) - (a.data.rating ?? 0)
+    if (sortBy === 'StjernerLav') return (a.data.rating ?? 0) - (b.data.rating ?? 0)
     const aO = a.data.sortOrder ?? Infinity
     const bO = b.data.sortOrder ?? Infinity
     if (aO !== bO) return aO - bO
@@ -1568,7 +1654,7 @@ export default function RecipesPage() {
 
   return (
     <>
-      {/* Search + sort + new button */}
+      {/* Search + sort + filter + new button */}
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex flex-wrap items-center gap-3">
         <div className="flex-1 min-w-[200px] relative">
           <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 pointer-events-none"
@@ -1584,6 +1670,23 @@ export default function RecipesPage() {
             className="w-full pl-9 pr-4 py-2 border border-stone-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300 shadow-sm"
           />
         </div>
+
+        {/* Star filter chips */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {[1, 2, 3, 4, 5].map(n => (
+            <button key={n}
+              onClick={() => setMinRating(minRating === n ? 0 : n)}
+              className={`px-2 py-1 rounded-full text-xs border transition-colors ${
+                minRating === n
+                  ? 'bg-amber-50 text-amber-700 border-amber-300 font-medium'
+                  : 'bg-white text-stone-400 border-stone-200 hover:border-amber-200 hover:text-amber-500'
+              }`}
+            >
+              {'★'.repeat(n)}+
+            </button>
+          ))}
+        </div>
+
         <div className="flex items-center gap-2">
           <select
             value={sortBy}
@@ -1594,6 +1697,8 @@ export default function RecipesPage() {
             <option value="Nyeste">Nyeste først</option>
             <option value="Eldste">Eldste først</option>
             <option value="Navn">Navn A–Å</option>
+            <option value="StjernerHøy">Stjerner: høyest først</option>
+            <option value="StjernerLav">Stjerner: lavest først</option>
           </select>
           {orderSaving && <span className="text-xs text-stone-400">Lagrer…</span>}
           {!orderSaving && orderSaved && <span className="text-xs text-emerald-500 font-medium">Lagret ✓</span>}

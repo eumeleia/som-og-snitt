@@ -23,7 +23,7 @@ type PdfType   = 'Oppskrift' | 'Mønster' | 'Annet'
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
 interface ImageItem { id: string; url: string }
-interface PdfItem   { id: string; name: string; url: string; type: PdfType; source: 'upload' | 'link' }
+interface PdfItem   { id: string; name: string; url: string; type: PdfType; source: 'upload' | 'link'; displayName?: string }
 interface FabricCalcState { pdfId: string; size: string; result: string }
 interface CareState       { details: string }
 type FabricType = 'Hovedstoff' | 'Fôr' | 'Mellomlegg' | 'Annet'
@@ -1222,7 +1222,7 @@ function PdfViewerModal({
           </svg>
           <span className="hidden sm:inline">Lukk</span>
         </button>
-        <h2 className="flex-1 font-serif text-base sm:text-lg text-stone-200 truncate min-w-0">{pdf.name}</h2>
+        <h2 className="flex-1 font-serif text-base sm:text-lg text-stone-200 truncate min-w-0">{pdf.displayName?.trim() || pdf.name}</h2>
         {loading && totalCount > 0 && (
           <span className="text-xs text-stone-400 flex-shrink-0 hidden sm:inline">{loadedCount}/{totalCount} sider</span>
         )}
@@ -1562,6 +1562,10 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy }: {
   const [pdfUploading, setPdfUploading] = useState(false)
   const pdfFileInputRef             = useRef<HTMLInputElement>(null)
 
+  // PDF display name editing
+  const [editingPdfId, setEditingPdfId]     = useState<string | null>(null)
+  const [editingPdfName, setEditingPdfName] = useState('')
+
   // Stoffberegner ephemeral state
   const [calcAvailableSizes, setCalcAvailableSizes] = useState<string[]>([])
   const [calcLoadingStep, setCalcLoadingStep]       = useState<'' | 'sizes' | 'calc'>('')
@@ -1732,6 +1736,12 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy }: {
 
   function updatePdfType(id: string, type: PdfType) {
     upd({ pdfs: form.pdfs.map(p => p.id === id ? { ...p, type, source: p.source ?? 'link' } : p) })
+  }
+
+  function savePdfDisplayName(id: string) {
+    const name = editingPdfName.trim()
+    upd({ pdfs: form.pdfs.map(p => p.id === id ? { ...p, displayName: name || undefined } : p) })
+    setEditingPdfId(null)
   }
 
   function addPdfAnnotation(annotation: Omit<PdfAnnotation, 'id' | 'createdAt'>) {
@@ -2391,6 +2401,8 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy }: {
                 const typeVal     = pdf.type ?? 'Annet'
                 const isUpload    = (pdf.source ?? 'link') === 'upload'
                 const annotationCount = (form.pdfAnnotations ?? []).filter(a => a.pdfId === pdf.id).length
+                const label = pdf.displayName?.trim() || pdf.name
+                const isEditing = editingPdfId === pdf.id
                 return (
                   <li key={pdf.id} className="flex items-center justify-between py-3 gap-2">
                     <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -2402,15 +2414,42 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy }: {
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-                          {isUpload ? (
-                            <button
-                              onClick={() => setShowPdfViewer(pdf)}
-                              className="text-sm font-medium text-stone-700 hover:text-stone-900 hover:underline underline-offset-2 truncate text-left transition-colors"
-                            >
-                              {pdf.name}
-                            </button>
+                          {isEditing ? (
+                            <input
+                              autoFocus
+                              className="text-sm font-medium text-stone-700 border-b border-stone-300 bg-transparent outline-none min-w-0 flex-1"
+                              value={editingPdfName}
+                              onChange={e => setEditingPdfName(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') savePdfDisplayName(pdf.id)
+                                if (e.key === 'Escape') setEditingPdfId(null)
+                              }}
+                              onBlur={() => savePdfDisplayName(pdf.id)}
+                              placeholder={pdf.name}
+                            />
                           ) : (
-                            <p className="text-sm font-medium text-stone-700 truncate">{pdf.name}</p>
+                            <>
+                              {isUpload ? (
+                                <button
+                                  onClick={() => setShowPdfViewer(pdf)}
+                                  className="text-sm font-medium text-stone-700 hover:text-stone-900 hover:underline underline-offset-2 truncate text-left transition-colors"
+                                >
+                                  {label}
+                                </button>
+                              ) : (
+                                <p className="text-sm font-medium text-stone-700 truncate">{label}</p>
+                              )}
+                              <button
+                                onClick={() => { setEditingPdfId(pdf.id); setEditingPdfName(pdf.displayName?.trim() ?? '') }}
+                                className="p-0.5 text-stone-300 hover:text-stone-500 transition-colors flex-shrink-0"
+                                title="Endre visningsnavn"
+                              >
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                                    d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                                </svg>
+                              </button>
+                            </>
                           )}
                           <Badge label={typeVal} cls={PDF_TYPE_STYLE[typeVal]} />
                           {annotationCount > 0 && (
@@ -2477,7 +2516,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy }: {
                           d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414A1 1 0 0119 9.414V19a2 2 0 01-2 2z" />
                       </svg>
                     </div>
-                    <span className="text-sm font-medium text-stone-700">{pdf.name}</span>
+                    <span className="text-sm font-medium text-stone-700">{pdf.displayName?.trim() || pdf.name}</span>
                   </div>
 
                   {!showSizes && (
