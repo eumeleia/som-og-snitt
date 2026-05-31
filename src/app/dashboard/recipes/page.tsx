@@ -567,6 +567,42 @@ function ImageUploadModal({ onAdd, onClose }: {
   )
 }
 
+// ── GalleryPickerModal ────────────────────────────────────────────────────────
+
+function GalleryPickerModal({ images, onSelect, onClose }: {
+  images: ImageItem[]
+  onSelect: (id: string) => void
+  onClose: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col" style={{ maxHeight: '80vh' }}>
+        <div className="px-5 py-4 border-b border-stone-100 flex-shrink-0">
+          <h3 className="font-serif text-xl text-stone-800">Velg forsidebilde</h3>
+          <p className="text-xs text-stone-400 mt-0.5">Klikk på bildet du vil bruke som forsidebilde</p>
+        </div>
+        <div className="overflow-y-auto flex-1 p-4">
+          <div className="grid grid-cols-3 gap-3">
+            {images.map(img => (
+              <button key={img.id} onClick={() => { onSelect(img.id); onClose() }}
+                className="aspect-square rounded-xl overflow-hidden bg-stone-100 hover:ring-2 hover:ring-[#C9A57A] transition-all">
+                <img src={img.url} alt="" className="w-full h-full object-cover" />
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="px-5 py-3 border-t border-stone-100 flex-shrink-0">
+          <button onClick={onClose}
+            className="w-full py-2 text-sm text-stone-400 hover:text-stone-600 transition-colors">
+            Avbryt
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── FocalPointModal ───────────────────────────────────────────────────────────
 
 function FocalPointModal({ imageUrl, focalX, focalY, onSave, onClose }: {
@@ -743,8 +779,9 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
     ({ ...structuredClone(EMPTY), ...structuredClone(recipe.data) })
   )
   const [saveStatus, setSaveStatus]         = useState<SaveStatus>('idle')
-  const [showImgModal, setShowImgModal]     = useState(false)
-  const [showFocalModal, setShowFocalModal] = useState(false)
+  const [showImgModal, setShowImgModal]           = useState(false)
+  const [showFocalModal, setShowFocalModal]       = useState(false)
+  const [showGalleryPicker, setShowGalleryPicker] = useState(false)
   const [toast, setToast]                   = useState('')
 
   // PDF form
@@ -819,6 +856,12 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
 
   function addImage(url: string) { upd({ images: [...form.images, { id: uid(), url }] }) }
   function removeImage(id: string) { upd({ images: form.images.filter(i => i.id !== id) }) }
+  function setCoverFromGallery(id: string) {
+    const idx = form.images.findIndex(i => i.id === id)
+    if (idx <= 0) return
+    const reordered = [form.images[idx], ...form.images.filter((_, i) => i !== idx)]
+    upd({ images: reordered })
+  }
 
   // ── PDFs ───────────────────────────────────────────────────────────────────
 
@@ -989,14 +1032,26 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
                   </svg>
                 </button>
               </div>
-              <button onClick={() => setShowFocalModal(true)}
-                className="flex items-center gap-1.5 text-xs text-stone-400 hover:text-stone-600 transition-colors">
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                    d="M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0-6 0M12 3v3M12 18v3M3 12h3M18 12h3" />
-                </svg>
-                Velg fokuspunkt
-              </button>
+              <div className="flex items-center gap-4 flex-wrap">
+                <button onClick={() => setShowFocalModal(true)}
+                  className="flex items-center gap-1.5 text-xs text-stone-400 hover:text-stone-600 transition-colors">
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                      d="M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0-6 0M12 3v3M12 18v3M3 12h3M18 12h3" />
+                  </svg>
+                  Velg fokuspunkt
+                </button>
+                {form.images.length > 1 && (
+                  <button onClick={() => setShowGalleryPicker(true)}
+                    className="flex items-center gap-1.5 text-xs text-stone-400 hover:text-stone-600 transition-colors">
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                        d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
+                    Velg fra galleri
+                  </button>
+                )}
+              </div>
             </>
           ) : (
             <button onClick={() => setShowImgModal(true)}
@@ -1284,6 +1339,13 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
 
       {showImgModal && (
         <ImageUploadModal onAdd={addImage} onClose={() => setShowImgModal(false)} />
+      )}
+      {showGalleryPicker && form.images.length > 1 && (
+        <GalleryPickerModal
+          images={form.images.slice(1)}
+          onSelect={setCoverFromGallery}
+          onClose={() => setShowGalleryPicker(false)}
+        />
       )}
       {showFocalModal && cover && (
         <FocalPointModal

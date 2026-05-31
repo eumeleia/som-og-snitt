@@ -32,9 +32,11 @@ interface InventoryItemData {
   underkategori?: string
   antall?:        string
   farge?:         string
+  lengde?:        string   // for Glidelås
   // Utstyr
   utstyrstype?:  string
   detaljer?:     string
+  brukesTil?:    string   // hva utstyret kan brukes til
 }
 
 interface InventoryItem {
@@ -185,17 +187,38 @@ function NewInventoryModal({ onCreate, onClose, initialKategori = 'Stoff' }: {
     setImporting(true)
     setError('')
     try {
-      const fabric = await apiImportFabric(importUrl.trim())
-      const data: InventoryItemData = {
-        ...emptyData('Stoff'),
-        type:      'Hovedstoff',
-        navn:      fabric.navn      || 'Nytt stoff',
-        materiale: fabric.materiale || '',
-        bredde:    fabric.bredde    || '',
-        vekt:      fabric.vekt      || '',
-        vask:      fabric.vask      || '',
-        bilde:     fabric.bilde     || '',
-        kilde:     importUrl.trim(),
+      const result = await apiImportFabric(importUrl.trim())
+      let data: InventoryItemData
+      if (kategori === 'Stoff') {
+        data = {
+          ...emptyData('Stoff'),
+          type:      'Hovedstoff',
+          navn:      result.navn      || 'Nytt stoff',
+          materiale: result.materiale || '',
+          bredde:    result.bredde    || '',
+          vekt:      result.vekt      || '',
+          vask:      result.vask      || '',
+          bilde:     result.bilde     || '',
+          kilde:     importUrl.trim(),
+        }
+      } else if (kategori === 'Tilbehør') {
+        data = {
+          ...emptyData('Tilbehør'),
+          navn:          result.navn  || 'Nytt tilbehør',
+          farge:         result.materiale || '',
+          bilde:         result.bilde || '',
+          underkategori: underkategori.trim(),
+          kilde:         importUrl.trim(),
+        }
+      } else {
+        data = {
+          ...emptyData('Utstyr'),
+          navn:       result.navn  || 'Nytt utstyr',
+          detaljer:   result.materiale || '',
+          bilde:      result.bilde || '',
+          utstyrstype: utstyrstype.trim(),
+          kilde:      importUrl.trim(),
+        }
       }
       await onCreate(data)
     } catch (err) {
@@ -223,7 +246,7 @@ function NewInventoryModal({ onCreate, onClose, initialKategori = 'Stoff' }: {
     }
   }
 
-  const showForm = kategori !== 'Stoff' || mode === 'form'
+  const showForm = mode === 'form'
   const busy     = importing || creating
 
   return (
@@ -234,7 +257,7 @@ function NewInventoryModal({ onCreate, onClose, initialKategori = 'Stoff' }: {
         {importing ? (
           <div className="px-6 py-14 text-center">
             <div className="w-10 h-10 border-2 border-stone-200 border-t-stone-600 rounded-full animate-spin mx-auto mb-5" />
-            <p className="font-serif text-lg text-stone-700">Importerer stoff…</p>
+            <p className="font-serif text-lg text-stone-700">Importerer…</p>
           </div>
         ) : (
           <>
@@ -254,8 +277,8 @@ function NewInventoryModal({ onCreate, onClose, initialKategori = 'Stoff' }: {
 
             <div className="px-6 pb-6 space-y-3">
 
-              {/* Stoff – velg metode */}
-              {kategori === 'Stoff' && mode === 'choose' && (
+              {/* Velg metode (alle kategorier) */}
+              {mode === 'choose' && (
                 <>
                   <button
                     onClick={() => setMode('url-import')}
@@ -265,25 +288,52 @@ function NewInventoryModal({ onCreate, onClose, initialKategori = 'Stoff' }: {
                         d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
                     </svg>
                     <p className="font-medium text-stone-700 mb-0.5">Importer fra URL</p>
-                    <p className="text-xs text-stone-400">Selfmade, Stoff &amp; Stil o.l. — Claude henter detaljer automatisk</p>
+                    <p className="text-xs text-stone-400">
+                      {kategori === 'Stoff' ? 'Selfmade, Stoff & Stil o.l. — Claude henter detaljer automatisk'
+                       : 'Finn produktside — Claude henter navn og bilde'}
+                    </p>
                   </button>
                   <button onClick={() => setMode('form')}
                     className="w-full py-2.5 text-sm text-stone-500 hover:text-stone-700 transition-colors">
-                    Last opp manuelt
+                    Legg til manuelt
                   </button>
                 </>
               )}
 
-              {/* Stoff – URL import */}
-              {kategori === 'Stoff' && mode === 'url-import' && (
+              {/* URL import */}
+              {mode === 'url-import' && (
                 <>
                   <div>
                     <label className={labelCls}>URL</label>
                     <input className={inputCls} value={importUrl} autoFocus
                       onChange={e => setImportUrl(e.target.value)}
                       onKeyDown={e => e.key === 'Enter' && handleImport()}
-                      placeholder="https://selfmade.no/…" />
+                      placeholder="https://…" />
                   </div>
+                  {kategori === 'Tilbehør' && (
+                    <div>
+                      <label className={labelCls}>Underkategori (valgfritt)</label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {TILBEHOR_CHIPS.map(c => (
+                          <button key={c} onClick={() => setUnderkategori(c)} className={chipCls(underkategori === c)}>
+                            {c}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {kategori === 'Utstyr' && (
+                    <div>
+                      <label className={labelCls}>Utstyrstype (valgfritt)</label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {UTSTYR_CHIPS.map(c => (
+                          <button key={c} onClick={() => setUtstyrstype(c)} className={chipCls(utstyrstype === c)}>
+                            {c}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   {error && <p className="text-xs text-red-500">{error}</p>}
                   <button onClick={handleImport} disabled={!importUrl.trim()}
                     className="w-full py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
@@ -296,7 +346,7 @@ function NewInventoryModal({ onCreate, onClose, initialKategori = 'Stoff' }: {
                 </>
               )}
 
-              {/* Felles skjema (manuelt stoff / tilbehør / utstyr) */}
+              {/* Manuelt skjema */}
               {showForm && (
                 <>
                   <div>
@@ -349,12 +399,10 @@ function NewInventoryModal({ onCreate, onClose, initialKategori = 'Stoff' }: {
                     {creating && <Spinner />}
                     {creating ? 'Oppretter…' : 'Legg til'}
                   </button>
-                  {kategori === 'Stoff' && (
-                    <button onClick={() => { setMode('choose'); setError('') }}
-                      className="w-full py-2 text-sm text-stone-400 hover:text-stone-600 transition-colors">
-                      Tilbake
-                    </button>
-                  )}
+                  <button onClick={() => { setMode('choose'); setError('') }}
+                    className="w-full py-2 text-sm text-stone-400 hover:text-stone-600 transition-colors">
+                    Tilbake
+                  </button>
                 </>
               )}
 
@@ -511,6 +559,9 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
   const [showImgModal, setShowImgModal] = useState(false)
   const [toast, setToast]           = useState('')
+  const [importUrl, setImportUrl]   = useState(item.data.kilde ?? '')
+  const [importing, setImporting]   = useState(false)
+  const [importNote, setImportNote] = useState('')
 
   const itemIdRef    = useRef<string>(item.id)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -526,6 +577,46 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
   }
 
   function showToast(msg: string) { setToast(msg); setTimeout(() => setToast(''), 3500) }
+
+  async function handleImportUrl() {
+    const trimmed = importUrl.trim()
+    if (!trimmed) return
+    setImporting(true); setImportNote('')
+    try {
+      const result = await apiImportFabric(trimmed)
+      const d = form
+      if (d.kategori === 'Stoff') {
+        upd({
+          navn:      result.navn      || d.navn,
+          materiale: result.materiale || d.materiale,
+          bredde:    result.bredde    || d.bredde,
+          vekt:      result.vekt      || d.vekt,
+          vask:      result.vask      || d.vask,
+          bilde:     result.bilde     || d.bilde,
+          kilde:     trimmed,
+        })
+      } else if (d.kategori === 'Tilbehør') {
+        upd({
+          navn:  result.navn  || d.navn,
+          farge: result.materiale || d.farge,
+          bilde: result.bilde || d.bilde,
+          kilde: trimmed,
+        })
+      } else {
+        upd({
+          navn:    result.navn  || d.navn,
+          detaljer: result.materiale || d.detaljer,
+          bilde:   result.bilde || d.bilde,
+          kilde:   trimmed,
+        })
+      }
+      setImportNote('Importert!')
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Import feilet.')
+    } finally {
+      setImporting(false)
+    }
+  }
 
   async function doSave(data: InventoryItemData) {
     setSaveStatus('saving')
@@ -690,6 +781,15 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
                   onChange={e => upd({ farge: e.target.value })}
                   placeholder="F.eks. Hvit" />
               </div>
+              {/* Glidelås: lengde-felt */}
+              {d.underkategori === 'Glidelås' && (
+                <div>
+                  <label className={labelCls}>Lengde</label>
+                  <input className={inputCls} value={d.lengde ?? ''}
+                    onChange={e => upd({ lengde: e.target.value })}
+                    placeholder="F.eks. 20 cm" />
+                </div>
+              )}
             </>
           )}
 
@@ -713,6 +813,13 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
                 <input className={inputCls} value={d.detaljer ?? ''}
                   onChange={e => upd({ detaljer: e.target.value })}
                   placeholder="F.eks. Universalnål str. 80" />
+              </div>
+              <div>
+                <label className={labelCls}>Brukes til</label>
+                <textarea className={`${inputCls} resize-y`} style={{ minHeight: 72 }}
+                  value={d.brukesTil ?? ''}
+                  onChange={e => upd({ brukesTil: e.target.value })}
+                  placeholder="F.eks. Strikkstoff, jersey, interlock" />
               </div>
             </>
           )}
@@ -747,11 +854,25 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
           </button>
         </div>
 
-        {/* 6. Kilde */}
+        {/* 6. Kilde + URL-import */}
         <SectionHeading>Kilde</SectionHeading>
-        <input className={inputCls} value={d.kilde}
-          onChange={e => upd({ kilde: e.target.value })}
-          placeholder="F.eks. selfmade.no eller butikknavn" />
+        <div className="space-y-2">
+          <div className="flex gap-2">
+            <input className={`${inputCls} flex-1`}
+              value={importUrl}
+              onChange={e => { setImportUrl(e.target.value); upd({ kilde: e.target.value }) }}
+              onKeyDown={e => e.key === 'Enter' && handleImportUrl()}
+              placeholder="URL eller butikknavn" />
+            <button onClick={handleImportUrl} disabled={!importUrl.trim() || importing}
+              className="flex items-center gap-1.5 px-3 py-2 bg-stone-800 text-white text-xs rounded-lg hover:bg-stone-700 transition-colors disabled:opacity-40 whitespace-nowrap">
+              {importing ? <><span className="inline-block w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> Henter…</> : 'Importer'}
+            </button>
+          </div>
+          {importNote && <p className="text-xs text-emerald-600">{importNote}</p>}
+          <p className="text-xs text-stone-400">
+            {isStoff ? 'Skriv inn URL for å hente stoff-detaljer automatisk' : 'Skriv inn URL for å hente navn og bilde automatisk'}
+          </p>
+        </div>
 
         {/* 7. Tenkt til */}
         <SectionHeading>Tenkt til</SectionHeading>
@@ -811,13 +932,15 @@ export default function InventoryPage() {
   const [items, setItems]           = useState<InventoryItem[]>([])
   const [loading, setLoading]       = useState(true)
   const [tab, setTab]               = useState<Kategori>('Stoff')
-  const [search, setSearch]         = useState('')
-  const [typeFilter, setTypeFilter] = useState<string>('Alle')
-  const [sort, setSort]             = useState<SortOrder>('newest')
-  const [showDetail, setShowDetail] = useState(false)
-  const [currentItem, setCurrentItem] = useState<InventoryItem | null>(null)
-  const [showNewModal, setShowNewModal] = useState(false)
-  const [deleteId, setDeleteId]     = useState<string | null>(null)
+  const [search, setSearch]                   = useState('')
+  const [typeFilter, setTypeFilter]           = useState<string>('Alle')
+  const [sort, setSort]                       = useState<SortOrder>('newest')
+  const [showDetail, setShowDetail]           = useState(false)
+  const [currentItem, setCurrentItem]         = useState<InventoryItem | null>(null)
+  const [showNewModal, setShowNewModal]       = useState(false)
+  const [deleteId, setDeleteId]               = useState<string | null>(null)
+  const [utstyrSearch, setUtstyrSearch]       = useState('')
+  const [tilbehorExpanded, setTilbehorExpanded] = useState<Record<string, boolean>>({})
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -999,12 +1122,124 @@ export default function InventoryPage() {
         </div>
       </div>
 
+      {/* Utstyr smart search (5E) */}
+      {tab === 'Utstyr' && (
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 mb-4">
+          <div className="relative">
+            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#C9A57A] pointer-events-none"
+              fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+            </svg>
+            <input
+              type="text"
+              value={utstyrSearch}
+              onChange={e => setUtstyrSearch(e.target.value)}
+              placeholder="Anbefal utstyr for… (f.eks. «stretch», «overlokk»)"
+              className="w-full pl-9 pr-4 py-2 border border-[#C9A57A]/40 rounded-xl text-sm bg-[#C9A57A]/5 focus:outline-none focus:ring-2 focus:ring-[#C9A57A]/40 shadow-sm"
+            />
+          </div>
+        </div>
+      )}
+
       {/* Grid */}
       <main className="max-w-6xl mx-auto px-4 sm:px-6 pb-16">
         {loading ? (
           <div className="flex justify-center py-32">
             <div className="w-8 h-8 border-2 border-stone-300 border-t-stone-700 rounded-full animate-spin" />
           </div>
+        ) : tab === 'Tilbehør' && !search.trim() && typeFilter === 'Alle' ? (
+          /* 5D: Grouped Tilbehør sections */
+          (() => {
+            const groups = Array.from(
+              filtered.reduce((map, item) => {
+                const key = item.data.underkategori ?? 'Annet'
+                if (!map.has(key)) map.set(key, [])
+                map.get(key)!.push(item)
+                return map
+              }, new Map<string, InventoryItem[]>())
+            )
+            if (groups.length === 0) return (
+              <div className="text-center py-28">
+                <p className="font-serif text-2xl text-stone-400 font-light">Ingen tilbehør i lageret ennå.</p>
+                <button onClick={() => setShowNewModal(true)}
+                  className="mt-5 px-6 py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors font-medium">
+                  Legg til tilbehør
+                </button>
+              </div>
+            )
+            return (
+              <div className="space-y-8">
+                {groups.map(([groupName, groupItems]) => {
+                  const expanded = tilbehorExpanded[groupName] ?? false
+                  const visible = expanded ? groupItems : groupItems.slice(0, 5)
+                  const hasMore = groupItems.length > 5
+                  return (
+                    <section key={groupName}>
+                      <h3 className="font-medium text-stone-600 text-sm mb-3 flex items-center gap-2">
+                        {groupName}
+                        <span className="text-stone-400 font-normal">({groupItems.length})</span>
+                      </h3>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+                        {visible.map(item => (
+                          <InventoryCard key={item.id} item={item}
+                            onEdit={() => openEdit(item)}
+                            onDelete={() => setDeleteId(item.id)} />
+                        ))}
+                      </div>
+                      {hasMore && (
+                        <button
+                          onClick={() => setTilbehorExpanded(p => ({ ...p, [groupName]: !expanded }))}
+                          className="mt-3 text-sm text-stone-500 hover:text-stone-700 underline underline-offset-2">
+                          {expanded ? 'Vis færre' : `Se mer (${groupItems.length} totalt)`}
+                        </button>
+                      )}
+                    </section>
+                  )
+                })}
+              </div>
+            )
+          })()
+        ) : tab === 'Utstyr' && utstyrSearch.trim() ? (
+          /* 5E: Smart Utstyr search results */
+          (() => {
+            const q = utstyrSearch.toLowerCase()
+            const matches = filtered.filter(i => {
+              const d = i.data
+              return (
+                d.navn.toLowerCase().includes(q) ||
+                (d.utstyrstype  ?? '').toLowerCase().includes(q) ||
+                (d.materiale    ?? '').toLowerCase().includes(q) ||
+                (d.brukesTil    ?? '').toLowerCase().includes(q) ||
+                (d.notater      ?? '').toLowerCase().includes(q)
+              )
+            })
+            if (matches.length === 0) return (
+              <div className="text-center py-20">
+                <p className="font-serif text-2xl text-stone-400 font-light">Ingen treff for «{utstyrSearch}»</p>
+              </div>
+            )
+            return (
+              <div>
+                {matches.length === 1 && (
+                  <div className="mb-4 px-4 py-3 bg-[#C9A57A]/10 border border-[#C9A57A]/30 rounded-xl text-sm text-stone-600 flex items-center gap-2">
+                    <svg className="w-4 h-4 text-[#C9A57A] flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                        d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                    </svg>
+                    Anbefalt: <strong>{matches[0].data.navn}</strong>
+                  </div>
+                )}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+                  {matches.map(item => (
+                    <InventoryCard key={item.id} item={item}
+                      onEdit={() => openEdit(item)}
+                      onDelete={() => setDeleteId(item.id)} />
+                  ))}
+                </div>
+              </div>
+            )
+          })()
         ) : filtered.length === 0 ? (
           <div className="text-center py-28">
             <svg className="w-14 h-14 text-stone-200 mx-auto mb-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">

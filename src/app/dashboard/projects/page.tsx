@@ -233,6 +233,19 @@ function ProjectCard({ project, onEdit, onDelete }: {
 }) {
   const d = project.data
   const cover = d.images[0]?.url
+  const isFullfort = d.status === 'Fullført'
+  const isActive   = d.status === 'Aktiv' || d.status === 'Planlagt'
+
+  const oppskriftPdf = !isFullfort
+    ? (d.pdfs ?? []).find(p => (p.type ?? 'Annet') === 'Oppskrift')
+    : null
+
+  const washChips: string[] = isFullfort
+    ? Array.from(new Set(
+        (d.stoffer ?? [])
+          .flatMap(s => (s.vask ?? '').split(' · ').map(v => v.trim()).filter(Boolean))
+      )).slice(0, 5)
+    : []
 
   return (
     <article
@@ -264,9 +277,41 @@ function ProjectCard({ project, onEdit, onDelete }: {
         <div className="flex flex-wrap gap-1.5 mb-3">
           <Badge label={d.status}   cls={STATUS_STYLE[d.status]} />
           <Badge label={d.category} cls={CATEGORY_STYLE[d.category]} />
+          {(d.size ?? '') && (
+            <span className="inline-flex items-center px-2 py-0.5 rounded border text-xs font-medium bg-stone-50 text-stone-500 border-stone-200">
+              Str. {d.size}
+            </span>
+          )}
         </div>
         {d.date  && <p className="text-xs text-stone-400 mb-2">{fmtDate(d.date)}</p>}
         {d.notes && <p className="text-sm text-stone-500 line-clamp-2 flex-1">{d.notes}</p>}
+
+        {/* Oppskrift-snarvei for Planlagt/Aktiv */}
+        {isActive && oppskriftPdf && (
+          <div className="mt-2">
+            <button
+              onClick={e => { e.stopPropagation(); window.open(oppskriftPdf.url, '_blank') }}
+              className="inline-flex items-center gap-1 text-xs text-rose-500 hover:text-rose-700 transition-colors"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414A1 1 0 0119 9.414V19a2 2 0 01-2 2z" />
+              </svg>
+              Oppskrift ↗
+            </button>
+          </div>
+        )}
+
+        {/* Vaskeinstruksjoner for Fullført */}
+        {isFullfort && washChips.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-2">
+            {washChips.map((chip, i) => (
+              <span key={i} className="inline-block px-1.5 py-0.5 bg-stone-100 text-stone-500 rounded-full border border-stone-200 text-xs leading-tight">
+                {chip}
+              </span>
+            ))}
+          </div>
+        )}
 
         <div className="flex items-center justify-between mt-3 pt-3 border-t border-stone-100">
           <div className="flex gap-3 text-xs text-stone-400">
@@ -847,6 +892,42 @@ function ImageUploadModal({ onAdd, onClose }: {
   )
 }
 
+// ── GalleryPickerModal ────────────────────────────────────────────────────────
+
+function GalleryPickerModal({ images, onSelect, onClose }: {
+  images: ImageItem[]
+  onSelect: (id: string) => void
+  onClose: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col" style={{ maxHeight: '80vh' }}>
+        <div className="px-5 py-4 border-b border-stone-100 flex-shrink-0">
+          <h3 className="font-serif text-xl text-stone-800">Velg forsidebilde</h3>
+          <p className="text-xs text-stone-400 mt-0.5">Klikk på bildet du vil bruke som forsidebilde</p>
+        </div>
+        <div className="overflow-y-auto flex-1 p-4">
+          <div className="grid grid-cols-3 gap-3">
+            {images.map(img => (
+              <button key={img.id} onClick={() => { onSelect(img.id); onClose() }}
+                className="aspect-square rounded-xl overflow-hidden bg-stone-100 hover:ring-2 hover:ring-[#C9A57A] transition-all">
+                <img src={img.url} alt="" className="w-full h-full object-cover" />
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="px-5 py-3 border-t border-stone-100 flex-shrink-0">
+          <button onClick={onClose}
+            className="w-full py-2 text-sm text-stone-400 hover:text-stone-600 transition-colors">
+            Avbryt
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── FocalPointModal ───────────────────────────────────────────────────────────
 
 function FocalPointModal({ imageUrl, focalX, focalY, onSave, onClose }: {
@@ -921,13 +1002,14 @@ interface PendingAnnotation {
 }
 
 function PdfViewerModal({
-  pdf, annotations, onAddAnnotation, onUpdateAnnotation, onDeleteAnnotation, onClose,
+  pdf, annotations, onAddAnnotation, onUpdateAnnotation, onDeleteAnnotation, onMoveAnnotation, onClose,
 }: {
   pdf: PdfItem
   annotations: PdfAnnotation[]
   onAddAnnotation: (a: Omit<PdfAnnotation, 'id' | 'createdAt'>) => void
   onUpdateAnnotation: (id: string, text: string) => void
   onDeleteAnnotation: (id: string) => void
+  onMoveAnnotation: (id: string, x: number, y: number) => void
   onClose: () => void
 }) {
   const [pages, setPages]         = useState<string[]>([])
@@ -942,6 +1024,16 @@ function PdfViewerModal({
   const [editingId, setEditingId]     = useState<string | null>(null)
   const [editText, setEditText]       = useState('')
   const textboxCancelRef = useRef(false)
+
+  // Drag state
+  type DragState = {
+    id: string; origX: number; origY: number
+    startClientX: number; startClientY: number
+    containerRect: DOMRect; active: boolean
+    curX: number; curY: number
+  }
+  const [dragState, setDragState] = useState<DragState | null>(null)
+  const pageContainerRefs = useRef<Record<number, HTMLDivElement | null>>({})
 
   const myAnnotations = annotations.filter(a => a.pdfId === pdf.id)
 
@@ -1029,6 +1121,46 @@ function PdfViewerModal({
     return x > 70 ? '-90%' : x < 30 ? '0%' : '-50%'
   }
 
+  const DRAG_THRESHOLD = 5
+
+  function handleAnnotationPointerDown(e: React.PointerEvent<HTMLDivElement>, ann: PdfAnnotation, pageNum: number) {
+    if (activeTool || editingId) return
+    e.preventDefault()
+    e.stopPropagation()
+    const container = pageContainerRefs.current[pageNum]
+    if (!container) return
+    const rect = container.getBoundingClientRect()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    setDragState({
+      id: ann.id, origX: ann.x, origY: ann.y,
+      startClientX: e.clientX, startClientY: e.clientY,
+      containerRect: rect, active: false,
+      curX: ann.x, curY: ann.y,
+    })
+  }
+
+  function handleAnnotationPointerMove(e: React.PointerEvent, annId: string) {
+    if (!dragState || dragState.id !== annId) return
+    const dx = e.clientX - dragState.startClientX
+    const dy = e.clientY - dragState.startClientY
+    const dist = Math.sqrt(dx * dx + dy * dy)
+    if (dist < DRAG_THRESHOLD && !dragState.active) return
+    const { containerRect, origX, origY } = dragState
+    const newX = Math.max(1, Math.min(99, origX + (dx / containerRect.width) * 100))
+    const newY = Math.max(1, Math.min(99, origY + (dy / containerRect.height) * 100))
+    setDragState(prev => prev ? { ...prev, active: true, curX: newX, curY: newY } : null)
+  }
+
+  function handleAnnotationPointerUp(e: React.PointerEvent, ann: PdfAnnotation) {
+    if (!dragState || dragState.id !== ann.id) return
+    if (dragState.active) {
+      onMoveAnnotation(ann.id, dragState.curX, dragState.curY)
+    } else {
+      setSelectedId(prev => prev === ann.id ? null : ann.id)
+    }
+    setDragState(null)
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex flex-col" style={{ backgroundColor: '#1c1917' }}>
       {/* Toolbar */}
@@ -1103,6 +1235,7 @@ function PdfViewerModal({
 
                 {/* Page container — no overflow-hidden so popups can extend beyond edges */}
                 <div className="relative"
+                  ref={el => { pageContainerRefs.current[pageNum] = el }}
                   style={{ cursor: activeTool ? 'crosshair' : 'default' }}
                   onClick={e => { e.stopPropagation(); handlePageClick(e, pageNum) }}>
                   <img
@@ -1114,16 +1247,24 @@ function PdfViewerModal({
 
                   {/* Existing annotations */}
                   {pageAnnotations.map(ann => {
-                    const isSelected = selectedId === ann.id
-                    const isEditing  = editingId === ann.id
-                    const pinNumber  = pagePins.findIndex(a => a.id === ann.id) + 1
+                    const isSelected  = selectedId === ann.id
+                    const isEditing   = editingId === ann.id
+                    const pinNumber   = pagePins.findIndex(a => a.id === ann.id) + 1
+                    const isDragTarget = dragState?.id === ann.id && dragState.active
+                    const displayX    = isDragTarget ? dragState!.curX : ann.x
+                    const displayY    = isDragTarget ? dragState!.curY : ann.y
 
                     if (ann.type === 'pin') return (
                       <div key={ann.id}
-                        style={{ position: 'absolute', left: `${ann.x}%`, top: `${ann.y}%`,
-                          transform: 'translate(-50%, -50%)', zIndex: 10 }}
-                        onClick={e => { e.stopPropagation()
-                          if (!isEditing) setSelectedId(isSelected ? null : ann.id) }}>
+                        style={{ position: 'absolute', left: `${displayX}%`, top: `${displayY}%`,
+                          transform: 'translate(-50%, -50%)', zIndex: isDragTarget ? 30 : 10,
+                          opacity: isDragTarget ? 0.65 : 1,
+                          cursor: activeTool ? 'crosshair' : isDragTarget ? 'grabbing' : 'grab',
+                        }}
+                        onPointerDown={e => handleAnnotationPointerDown(e, ann, pageNum)}
+                        onPointerMove={e => handleAnnotationPointerMove(e, ann.id)}
+                        onPointerUp={e => handleAnnotationPointerUp(e, ann)}
+                        onClick={e => e.stopPropagation()}>
                         <div className={`w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-xs font-bold
                           cursor-pointer shadow-md transition-transform hover:scale-110 select-none ${
                           isSelected || isEditing
@@ -1191,10 +1332,15 @@ function PdfViewerModal({
 
                     if (ann.type === 'textbox') return (
                       <div key={ann.id}
-                        style={{ position: 'absolute', left: `${ann.x}%`, top: `${ann.y}%`,
-                          width: `${ann.width ?? 30}%`, zIndex: 10 }}
-                        onClick={e => { e.stopPropagation()
-                          if (!isEditing) setSelectedId(isSelected ? null : ann.id) }}>
+                        style={{ position: 'absolute', left: `${displayX}%`, top: `${displayY}%`,
+                          width: `${ann.width ?? 30}%`, zIndex: isDragTarget ? 30 : 10,
+                          opacity: isDragTarget ? 0.65 : 1,
+                          cursor: activeTool ? 'crosshair' : isDragTarget ? 'grabbing' : isEditing ? 'text' : isSelected ? 'default' : 'grab',
+                        }}
+                        onPointerDown={e => !isEditing && handleAnnotationPointerDown(e, ann, pageNum)}
+                        onPointerMove={e => handleAnnotationPointerMove(e, ann.id)}
+                        onPointerUp={e => handleAnnotationPointerUp(e, ann)}
+                        onClick={e => e.stopPropagation()}>
                         {isEditing ? (
                           <div className="rounded-lg border border-amber-500/60 overflow-hidden"
                             style={{ backgroundColor: 'rgba(41,37,36,0.95)', backdropFilter: 'blur(4px)' }}
@@ -1326,11 +1472,12 @@ function PdfViewerModal({
 
 // ── ProjectDetail ─────────────────────────────────────────────────────────────
 
-function ProjectDetail({ project, onBack, onSaved, onDelete }: {
+function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy }: {
   project: Project | null
   onBack: () => void
   onSaved: () => void
   onDelete?: () => void
+  onCopy?: () => void
 }) {
   const [form, setForm] = useState<ProjectData>(() => {
     if (!project) return structuredClone(EMPTY)
@@ -1344,9 +1491,10 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
     return data
   })
   const [saveStatus, setSaveStatus]         = useState<SaveStatus>('idle')
-  const [showImgModal, setShowImgModal]     = useState(false)
-  const [showFocalModal, setShowFocalModal] = useState(false)
-  const [showPdfViewer, setShowPdfViewer]   = useState<PdfItem | null>(null)
+  const [showImgModal, setShowImgModal]           = useState(false)
+  const [showFocalModal, setShowFocalModal]       = useState(false)
+  const [showGalleryPicker, setShowGalleryPicker] = useState(false)
+  const [showPdfViewer, setShowPdfViewer]         = useState<PdfItem | null>(null)
   const [toast, setToast]                   = useState('')
   const [showRecipePicker, setShowRecipePicker] = useState(false)
   const [pickerRecipes, setPickerRecipes]   = useState<PickerRecipe[]>([])
@@ -1476,6 +1624,12 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
 
   function addImage(url: string) { upd({ images: [...form.images, { id: uid(), url }] }) }
   function removeImage(id: string) { upd({ images: form.images.filter(i => i.id !== id) }) }
+  function setCoverFromGallery(id: string) {
+    const idx = form.images.findIndex(i => i.id === id)
+    if (idx <= 0) return
+    const reordered = [form.images[idx], ...form.images.filter((_, i) => i !== idx)]
+    upd({ images: reordered })
+  }
 
   // ── PDF handlers ────────────────────────────────────────────────────────────
 
@@ -1542,6 +1696,10 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
 
   function deletePdfAnnotation(id: string) {
     upd({ pdfAnnotations: (form.pdfAnnotations ?? []).filter(a => a.id !== id) })
+  }
+
+  function movePdfAnnotation(id: string, x: number, y: number) {
+    upd({ pdfAnnotations: (form.pdfAnnotations ?? []).map(a => a.id === id ? { ...a, x, y } : a) })
   }
 
   // ── Stoffberegner helpers ───────────────────────────────────────────────────
@@ -1664,9 +1822,20 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
     }
   }
 
-  function removeStoff(id: string) { upd({ stoffer: form.stoffer.filter(s => s.id !== id) }); setStoffImportNote('') }
+  function removeStoff(id: string) {
+    setForm(f => {
+      const next = { ...f, stoffer: f.stoffer.filter(s => s.id !== id) }
+      pendingRef.current = next
+      return next
+    })
+    setStoffImportNote('')
+  }
   function updateStoff(id: string, patch: Partial<FabricItem>) {
-    upd({ stoffer: form.stoffer.map(s => s.id === id ? { ...s, ...patch } : s) })
+    setForm(f => {
+      const next = { ...f, stoffer: f.stoffer.map(s => s.id === id ? { ...s, ...patch } : s) }
+      pendingRef.current = next
+      return next
+    })
   }
 
   const cover = form.images[0]
@@ -1697,6 +1866,11 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
             )}
             {saveStatus === 'error' && (
               <span className="text-xs text-red-400">Feil ved lagring</span>
+            )}
+            {onCopy && project && (
+              <button onClick={onCopy} className="text-sm text-stone-400 hover:text-stone-700 transition-colors whitespace-nowrap">
+                Kopier
+              </button>
             )}
             {onDelete && (
               <button onClick={onDelete} className="text-sm text-stone-400 hover:text-red-500 transition-colors">
@@ -1730,14 +1904,26 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
                   </svg>
                 </button>
               </div>
-              <button onClick={() => setShowFocalModal(true)}
-                className="flex items-center gap-1.5 text-xs text-stone-400 hover:text-stone-600 transition-colors">
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                    d="M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0-6 0M12 3v3M12 18v3M3 12h3M18 12h3" />
-                </svg>
-                Velg fokuspunkt
-              </button>
+              <div className="flex items-center gap-4 flex-wrap">
+                <button onClick={() => setShowFocalModal(true)}
+                  className="flex items-center gap-1.5 text-xs text-stone-400 hover:text-stone-600 transition-colors">
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                      d="M12 12m-3 0a3 3 0 1 0 6 0a3 3 0 1 0-6 0M12 3v3M12 18v3M3 12h3M18 12h3" />
+                  </svg>
+                  Velg fokuspunkt
+                </button>
+                {form.images.length > 1 && (
+                  <button onClick={() => setShowGalleryPicker(true)}
+                    className="flex items-center gap-1.5 text-xs text-stone-400 hover:text-stone-600 transition-colors">
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                        d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
+                    Velg fra galleri
+                  </button>
+                )}
+              </div>
             </>
           ) : (
             <button onClick={() => setShowImgModal(true)}
@@ -1750,7 +1936,8 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
               <span className="text-sm font-medium text-stone-400">Legg til bilde</span>
             </button>
           )}
-          {form.images.length > 1 && (
+          {/* Galleri vises her kun for Fullført */}
+          {form.status === 'Fullført' && form.images.length > 1 && (
             <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
               {form.images.slice(1).map(img => (
                 <div key={img.id} className="relative group aspect-square rounded-xl overflow-hidden bg-stone-100">
@@ -2046,7 +2233,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
                       )}
                     </div>
                     <input
-                      value={stoff.mengde}
+                      value={stoff.mengde ?? ''}
                       onChange={e => updateStoff(stoff.id, { mengde: e.target.value })}
                       placeholder="Mengde (f.eks. 2 m)"
                       className="w-full px-2.5 py-1.5 border border-stone-200 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-stone-300 bg-stone-50"
@@ -2332,9 +2519,43 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
             onChange={e => upd({ care: { details: e.target.value } })}
             placeholder="Pleieinstruksjoner…" />
         </div>
+
+        {/* ── 11. Bildegalleri (Planlagt/Aktiv) ── */}
+        {form.status !== 'Fullført' && form.images.length > 1 && (
+          <>
+            <SectionHeading>Bildegalleri</SectionHeading>
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+              {form.images.slice(1).map(img => (
+                <div key={img.id} className="relative group aspect-square rounded-xl overflow-hidden bg-stone-100">
+                  <img src={img.url} alt="" className="w-full h-full object-cover" />
+                  <button onClick={() => removeImage(img.id)}
+                    className="absolute top-1.5 right-1.5 p-1.5 bg-white/90 rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-50">
+                    <svg className="w-3 h-3 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              ))}
+              <button onClick={() => setShowImgModal(true)}
+                className="aspect-square rounded-xl border-2 border-dashed border-stone-200 hover:border-stone-300 hover:bg-stone-50 transition-colors flex items-center justify-center text-stone-300 hover:text-stone-400">
+                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" />
+                </svg>
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       {showImgModal && <ImageUploadModal onAdd={addImage} onClose={() => setShowImgModal(false)} />}
+
+      {showGalleryPicker && form.images.length > 1 && (
+        <GalleryPickerModal
+          images={form.images.slice(1)}
+          onSelect={setCoverFromGallery}
+          onClose={() => setShowGalleryPicker(false)}
+        />
+      )}
 
       {showFocalModal && cover && (
         <FocalPointModal
@@ -2353,6 +2574,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete }: {
           onAddAnnotation={addPdfAnnotation}
           onUpdateAnnotation={updatePdfAnnotation}
           onDeleteAnnotation={deletePdfAnnotation}
+          onMoveAnnotation={movePdfAnnotation}
           onClose={() => setShowPdfViewer(null)}
         />
       )}
@@ -2450,6 +2672,40 @@ export default function ProjectsPage() {
     load()
   }
 
+  async function copyProject(p: Project) {
+    const src = p.data
+    const copyData: ProjectData = {
+      ...structuredClone(EMPTY),
+      name:          `${src.name} (kopi)`,
+      status:        'Planlagt',
+      category:      src.category,
+      date:          '',
+      notes:         src.notes,
+      images:        (src.images ?? []).map(i => ({ ...i, id: uid() })),
+      pdfs:          (src.pdfs ?? []).map(pdf => ({ ...pdf, id: uid() })),
+      stoffer:       (src.stoffer ?? []).map(s => ({ ...s, id: uid(), mengde: '' })),
+      focalX:        src.focalX ?? 50,
+      focalY:        src.focalY ?? 50,
+      recipientName: src.recipientName ?? '',
+      size:          src.size ?? '',
+      recipeId:      src.recipeId ?? '',
+      recipeName:    src.recipeName ?? '',
+      equipmentList: [...(src.equipmentList ?? [])],
+      pdfAnnotations: [],
+      pdfComments:    [],
+      care:           { details: src.care?.details ?? '' },
+      fabricCalc:     { pdfId: '', size: '', result: '' },
+    }
+    const { data: rows, error } = await supabase.from('projects').insert({ data: copyData }).select()
+    if (error) { console.error('Copy error:', error); return }
+    const newProject = (rows as Project[])?.[0]
+    if (newProject) {
+      await load()
+      setCurrentProject(newProject)
+      setShowDetail(true)
+    }
+  }
+
   function openEdit(p: Project) { setCurrentProject(p); setShowDetail(true) }
   function handleBack()         { setShowDetail(false); setCurrentProject(null); load() }
 
@@ -2473,6 +2729,7 @@ export default function ProjectsPage() {
           onBack={handleBack}
           onSaved={load}
           onDelete={currentProject ? () => setDeleteId(currentProject.id) : undefined}
+          onCopy={currentProject ? () => copyProject(currentProject) : undefined}
         />
         {deleteId && (
           <DeleteDialog
