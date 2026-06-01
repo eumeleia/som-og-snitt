@@ -28,7 +28,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: '#FAF7F4' }}>
-      <header className="sticky top-0 z-20 bg-white/95 backdrop-blur-sm border-b border-stone-200">
+      <header className="sticky top-0 z-20 bg-[#FAF7F4] border-b border-stone-200">
         {/* Brand + logout — h-12 = 48px */}
         <div className="flex items-center justify-between px-4 sm:px-8 h-12">
           <Link href="/dashboard">
@@ -73,7 +73,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             })}
           </nav>
           {/* Fade indicator — hidden on sm+ where all tabs typically fit */}
-          <div className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-white/95 to-transparent sm:hidden" />
+          <div className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-[#FAF7F4] to-transparent sm:hidden" />
         </div>
       </header>
 
