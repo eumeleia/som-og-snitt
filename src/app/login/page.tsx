@@ -43,12 +43,12 @@ async function handleLogin() {
 }
 
   return (
-    <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: '#FAF7F4' }}>
-      <div className="bg-white rounded-2xl shadow-sm border border-stone-200 p-10 w-full max-w-sm">
-        <Image src="/logo.png" alt="Søm & Snitt" width={0} height={0} sizes="100vw"
-          className="h-14 w-auto mb-1" priority />
-        <p className="text-xs tracking-widest text-stone-400 uppercase mb-8">Din sydagbok</p>
+    <div className="min-h-screen flex flex-col items-center justify-center" style={{ backgroundColor: '#FAF7F4' }}>
+      <Image src="/logo.png" alt="Søm & Snitt" width={0} height={0} sizes="100vw"
+        className="h-14 w-auto mb-1" priority />
+      <p className="text-xs tracking-widest text-stone-400 uppercase mb-6">Din sydagbok</p>
 
+      <div className="bg-white rounded-2xl shadow-sm border border-stone-200 p-10 w-full max-w-sm">
         <div className="space-y-4">
           <div>
             <label className="block text-xs font-semibold tracking-widest uppercase text-stone-400 mb-1.5">
