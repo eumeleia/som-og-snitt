@@ -240,11 +240,9 @@ function RecipeCard({ recipe, onEdit, onDelete, dragHandle }: {
           {d.name || <span className="text-stone-300 italic font-light">Uten navn</span>}
         </h3>
         {d.designer && <p className="text-xs text-stone-400 mb-1.5">{d.designer}</p>}
-        {(d.rating ?? 0) > 0 && (
-          <div className="mb-2">
-            <StarRating rating={d.rating ?? 0} size="sm" />
-          </div>
-        )}
+        <div className="mb-2 h-3.5">
+          {(d.rating ?? 0) > 0 && <StarRating rating={d.rating ?? 0} size="sm" />}
+        </div>
         {d.category && (
           <div className="flex flex-wrap gap-1.5 mb-3">
             <Badge label={d.category} cls="bg-rose-50 text-rose-700 border-rose-200" />
@@ -1536,6 +1534,19 @@ export default function RecipesPage() {
   const [orderSaving, setOrderSaving]       = useState(false)
   const [orderSaved, setOrderSaved]         = useState(false)
   const [minRating, setMinRating]           = useState(0)
+  const [starDropdownOpen, setStarDropdownOpen] = useState(false)
+  const starDropdownRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!starDropdownOpen) return
+    function handleClick(e: MouseEvent) {
+      if (starDropdownRef.current && !starDropdownRef.current.contains(e.target as Node)) {
+        setStarDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [starDropdownOpen])
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -1671,20 +1682,46 @@ export default function RecipesPage() {
           />
         </div>
 
-        {/* Star filter chips */}
-        <div className="flex items-center gap-1.5 flex-wrap">
-          {[1, 2, 3, 4, 5].map(n => (
-            <button key={n}
-              onClick={() => setMinRating(minRating === n ? 0 : n)}
-              className={`px-2 py-1 rounded-full text-xs border transition-colors ${
-                minRating === n
-                  ? 'bg-amber-50 text-amber-700 border-amber-300 font-medium'
-                  : 'bg-white text-stone-400 border-stone-200 hover:border-amber-200 hover:text-amber-500'
-              }`}
-            >
-              {'★'.repeat(n)}+
-            </button>
-          ))}
+        {/* Star filter dropdown */}
+        <div className="relative" ref={starDropdownRef}>
+          <button
+            onClick={() => setStarDropdownOpen(o => !o)}
+            className={`flex items-center gap-1.5 px-3 min-h-[44px] rounded-xl border text-sm transition-colors ${
+              minRating > 0
+                ? 'bg-amber-50 text-amber-700 border-amber-300 font-medium'
+                : 'bg-white text-stone-500 border-stone-200 hover:border-amber-200 hover:text-amber-500'
+            }`}
+            aria-label="Filtrer på stjernerangering"
+          >
+            <span className="text-base leading-none">
+              {minRating > 0 ? '★'.repeat(minRating) + '+' : '★'}
+            </span>
+            <svg className="w-3 h-3 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          {starDropdownOpen && (
+            <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-20 min-w-[160px] py-1">
+              {([
+                { label: 'Alle', value: 0 },
+                { label: 'Minst 1 ★', value: 1 },
+                { label: 'Minst 2 ★★', value: 2 },
+                { label: 'Minst 3 ★★★', value: 3 },
+                { label: 'Minst 4 ★★★★', value: 4 },
+                { label: 'Minst 5 ★★★★★', value: 5 },
+              ] as { label: string; value: number }[]).map(opt => (
+                <button
+                  key={opt.value}
+                  onClick={() => { setMinRating(opt.value); setStarDropdownOpen(false) }}
+                  className={`w-full text-left px-4 py-2 text-sm transition-colors hover:bg-amber-50 hover:text-amber-700 ${
+                    minRating === opt.value ? 'text-amber-700 font-medium bg-amber-50' : 'text-stone-600'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
