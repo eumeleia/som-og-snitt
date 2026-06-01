@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import Image from 'next/image'
 import { usePathname } from 'next/navigation'
 import { useEffect, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
@@ -30,9 +31,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <header className="sticky top-0 z-20 bg-white/95 backdrop-blur-sm border-b border-stone-200">
         {/* Brand + logout — h-12 = 48px */}
         <div className="flex items-center justify-between px-4 sm:px-8 h-12">
-          <span className="font-serif text-lg sm:text-2xl text-[#3E2E2A] leading-none select-none">
-            Søm &amp; Snitt
-          </span>
+          <Link href="/dashboard">
+            <Image src="/logo.png" alt="Søm & Snitt" width={0} height={0} sizes="100vw"
+              className="h-10 sm:h-14 w-auto" priority />
+          </Link>
           <button
             onClick={handleLogout}
             className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs sm:text-sm text-stone-500 hover:bg-stone-100 rounded-lg transition-colors min-h-[44px]"
