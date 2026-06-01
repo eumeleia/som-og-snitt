@@ -110,6 +110,16 @@ function InventoryCard({ item, onEdit, onDelete }: {
     : d.kategori === 'Tilbehør' ? d.antall
     : null
 
+  let tilbehorExtra: string | null = null
+  if (d.kategori === 'Tilbehør') {
+    if (d.underkategori === 'Sytråd') {
+      tilbehorExtra = d.farge || null
+    } else if (d.underkategori === 'Glidelås') {
+      const parts = [d.lengde, d.farge].filter(Boolean)
+      tilbehorExtra = parts.length > 0 ? parts.join(' · ') : null
+    }
+  }
+
   return (
     <article
       onClick={onEdit}
@@ -136,6 +146,12 @@ function InventoryCard({ item, onEdit, onDelete }: {
         {subtitle && <p className="text-xs text-stone-400 mb-1 truncate">{subtitle}</p>}
         {d.kategori === 'Stoff' && d.tenktTil && (
           <p className="text-xs text-stone-400 truncate mb-1">✎ Til: {d.tenktTil}</p>
+        )}
+        {tilbehorExtra && (
+          <p className="text-xs text-stone-400 truncate mb-1">{tilbehorExtra}</p>
+        )}
+        {d.kategori === 'Utstyr' && d.brukesTil && (
+          <p className="text-xs text-stone-400 line-clamp-2 mb-1">{d.brukesTil}</p>
         )}
 
         <div className="flex items-center justify-between mt-auto pt-3 border-t border-stone-100">
@@ -775,13 +791,14 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
                   ))}
                 </div>
               </div>
-              <div>
-                <label className={labelCls}>Farge</label>
-                <input className={inputCls} value={d.farge ?? ''}
-                  onChange={e => upd({ farge: e.target.value })}
-                  placeholder="F.eks. Hvit" />
-              </div>
-              {/* Glidelås: lengde-felt */}
+              {(!d.underkategori || d.underkategori === 'Sytråd' || d.underkategori === 'Glidelås') && (
+                <div>
+                  <label className={labelCls}>Farge</label>
+                  <input className={inputCls} value={d.farge ?? ''}
+                    onChange={e => upd({ farge: e.target.value })}
+                    placeholder="F.eks. Hvit" />
+                </div>
+              )}
               {d.underkategori === 'Glidelås' && (
                 <div>
                   <label className={labelCls}>Lengde</label>
