@@ -146,7 +146,25 @@ async function extractPdfText(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     parts.push(content.items.map((item: any) => (typeof item.str === 'string' ? item.str : '')).join(' '))
   }
-  return parts.join('\n')
+  return normalizePdfText(parts.join('\n'))
+}
+
+function normalizePdfText(text: string): string {
+  // Collapse spaced-out decorative fonts: 'H e i d i' → 'Heidi'
+  // Triggers only when ≥3 consecutive single letters are separated by single spaces,
+  // reducing the risk of mangling normal prose.
+  let normalized = text.replace(
+    /\b([a-zA-ZÀ-ÿ])\s([a-zA-ZÀ-ÿ])(?:\s([a-zA-ZÀ-ÿ]))+\b/g,
+    (match) => match.replace(/\s/g, '')
+  )
+  // Collapse multiple spaces to single (preserve newlines)
+  normalized = normalized.replace(/[^\S\n]+/g, ' ')
+  if (normalized !== text) {
+    console.log('[PDF] Spaced-out font detected – normalized text')
+    console.log('[PDF] Before:', text.slice(0, 200))
+    console.log('[PDF] After: ', normalized.slice(0, 200))
+  }
+  return normalized
 }
 
 // ── Shared UI ─────────────────────────────────────────────────────────────────
@@ -377,7 +395,7 @@ function NewRecipeModal({ onCreate, onClose }: {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         parts.push(content.items.map((item: any) => (typeof item.str === 'string' ? item.str : '')).join(' '))
       }
-      const text = parts.join('\n')
+      const text = normalizePdfText(parts.join('\n'))
 
       // 3. Claude analysis
       setProgress('Analyserer...')
