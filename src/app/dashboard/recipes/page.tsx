@@ -400,25 +400,12 @@ function SortableRecipeCard({ recipe, onEdit, onDelete, isDragMode }: {
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }}
       {...attributes}
+      {...listeners}
     >
       <RecipeCard
         recipe={recipe}
         onEdit={onEdit}
         onDelete={onDelete}
-        dragHandle={isDragMode ? (
-          <button
-            {...listeners}
-            className="p-1.5 bg-white/80 backdrop-blur-sm rounded-lg shadow-sm touch-none cursor-grab active:cursor-grabbing"
-            onClick={e => e.stopPropagation()}
-            aria-label="Dra for å sortere"
-          >
-            <svg className="w-4 h-4 text-stone-400" fill="currentColor" viewBox="0 0 20 20">
-              <circle cx="7" cy="5" r="1.5" /><circle cx="13" cy="5" r="1.5" />
-              <circle cx="7" cy="10" r="1.5" /><circle cx="13" cy="10" r="1.5" />
-              <circle cx="7" cy="15" r="1.5" /><circle cx="13" cy="15" r="1.5" />
-            </svg>
-          </button>
-        ) : undefined}
       />
     </div>
   )
