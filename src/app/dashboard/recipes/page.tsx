@@ -144,12 +144,19 @@ async function apiClaudePdf(prompt: string, pdfBase64: string): Promise<string> 
   return j.result
 }
 
-function uint8ToBase64(bytes: Uint8Array): string {
-  let binary = ''
-  const chunk = 8192
-  for (let i = 0; i < bytes.length; i += chunk)
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
-  return btoa(binary)
+function fileToBase64(file: File): Promise<string> {
+  // Read directly from the File object — the uint8/ArrayBuffer passed to pdfjs
+  // gets transferred (detached) by pdfjs internally, leaving it with length 0.
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = reader.result as string
+      // result = 'data:application/pdf;base64,XXXXX' — strip the prefix
+      resolve(result.split(',')[1] ?? '')
+    }
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(file)
+  })
 }
 
 function parseClaudeRecipe(raw: string): {
@@ -521,8 +528,10 @@ function NewRecipeModal({ onCreate, onClose }: {
           console.log('[PDF Fallback] Starter — PDF størrelse:', file.size, 'bytes')
           setProgress('Prøver dypere analyse...')
           try {
-            const base64 = uint8ToBase64(uint8)
-            console.log('[PDF Fallback] Base64-konvertering ferdig, lengde:', base64.length, '— sender til API')
+            const base64 = await fileToBase64(file)
+            console.log('[PDF Fallback] Base64-lengde:', base64.length)
+            if (!base64) throw new Error('Base64-konvertering ga tom streng')
+            console.log('[PDF Fallback] Sender til API...')
             const raw2 = await apiClaudePdf(prompt, base64)
             console.log('[PDF Fallback] Respons mottatt')
             console.log('[PDF Fallback] Claude raw response:', raw2.slice(0, 500))

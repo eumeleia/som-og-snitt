@@ -10,6 +10,7 @@ export async function POST(req: NextRequest) {
     let msg: Anthropic.Message
 
     if (pdfBase64) {
+      console.log('[/api/claude] Document-modus — base64-lengde:', pdfBase64.length)
       msg = await anthropic.messages.create({
         model: 'claude-sonnet-4-6',
         max_tokens: 2048,
