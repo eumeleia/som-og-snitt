@@ -146,23 +146,33 @@ async function extractPdfText(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     parts.push(content.items.map((item: any) => (typeof item.str === 'string' ? item.str : '')).join(' '))
   }
-  return normalizePdfText(parts.join('\n'))
+  const rawText = parts.join('\n')
+  console.log('[PDF] Raw text length:', rawText.length)
+  console.log('[PDF] Raw text (first 500 chars):', rawText.slice(0, 500))
+  return normalizePdfText(rawText)
 }
 
 function normalizePdfText(text: string): string {
   // Collapse spaced-out decorative fonts: 'H e i d i' → 'Heidi'
-  // Triggers only when ≥3 consecutive single letters are separated by single spaces,
-  // reducing the risk of mangling normal prose.
+  //
+  // Two fixes vs. the previous version:
+  //   1. Use \s+ instead of \s – pdfjs sometimes inserts spaces inside items too,
+  //      so letters may be separated by 2+ spaces rather than exactly 1.
+  //   2. Use negative look-around instead of \b – JS \b is based on \w=[a-zA-Z0-9_]
+  //      so it misses Nordic characters (Å, Ø, Æ, å, ø, æ etc.) as word chars.
+  //   3. Require ≥4 consecutive single-letter tokens for a safer threshold.
   let normalized = text.replace(
-    /\b([a-zA-ZÀ-ÿ])\s([a-zA-ZÀ-ÿ])(?:\s([a-zA-ZÀ-ÿ]))+\b/g,
-    (match) => match.replace(/\s/g, '')
+    /(?<![a-zA-ZÀ-ÿ])([a-zA-ZÀ-ÿ])(?:\s+([a-zA-ZÀ-ÿ])){3,}(?![a-zA-ZÀ-ÿ])/g,
+    (match) => match.replace(/\s+/g, '')
   )
   // Collapse multiple spaces to single (preserve newlines)
   normalized = normalized.replace(/[^\S\n]+/g, ' ')
+  console.log('[PDF] Normalized text length:', normalized.length)
+  console.log('[PDF] Normalized text (first 500 chars):', normalized.slice(0, 500))
   if (normalized !== text) {
-    console.log('[PDF] Spaced-out font detected – normalized text')
-    console.log('[PDF] Before:', text.slice(0, 200))
-    console.log('[PDF] After: ', normalized.slice(0, 200))
+    console.log('[PDF] Spaced-out font detected – text was modified by normalization')
+  } else {
+    console.log('[PDF] No spaced-out fonts detected – text unchanged by normalization')
   }
   return normalized
 }
@@ -395,7 +405,10 @@ function NewRecipeModal({ onCreate, onClose }: {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         parts.push(content.items.map((item: any) => (typeof item.str === 'string' ? item.str : '')).join(' '))
       }
-      const text = normalizePdfText(parts.join('\n'))
+      const rawText = parts.join('\n')
+      console.log('[PDF] Raw text length:', rawText.length)
+      console.log('[PDF] Raw text (first 500 chars):', rawText.slice(0, 500))
+      const text = normalizePdfText(rawText)
 
       // 3. Claude analysis
       setProgress('Analyserer...')
@@ -411,8 +424,12 @@ function NewRecipeModal({ onCreate, onClose }: {
         `- otherEquipment: liste over tilbehør på norsk, separert med komma (f.eks. 'Elastikk 1,2 cm, klisterinnlegg, sytråd')\n\n` +
         `Hvis et felt ikke finnes i oppskriften, bruk tom streng / tomt array. Ikke finn på.`
 
+      const textToClaude = text.slice(0, 50000)
+      console.log('[PDF] Text sent to Claude (first 1000 chars):', textToClaude.slice(0, 1000))
+
       try {
-        const raw = await apiClaude(prompt, text.slice(0, 50000))
+        const raw = await apiClaude(prompt, textToClaude)
+        console.log('[PDF] Claude raw response:', raw)
         const s = raw.indexOf('{')
         const e = raw.lastIndexOf('}')
         if (s !== -1 && e !== -1) {
