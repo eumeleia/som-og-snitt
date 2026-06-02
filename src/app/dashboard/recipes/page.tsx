@@ -223,6 +223,14 @@ function normalizePdfText(text: string): string {
   return normalized
 }
 
+function hasReadableText(text: string): boolean {
+  // Strip numbers, punctuation and whitespace; what's left must contain real words
+  const stripped = text.replace(/[0-9.,\s\-•·]/g, '')
+  if (stripped.length < 100) return false
+  const words = stripped.match(/[a-zA-ZÀ-ÿ]{3,}/g) ?? []
+  return words.length >= 5
+}
+
 // ── Shared UI ─────────────────────────────────────────────────────────────────
 
 const inputCls = 'w-full px-3 py-2 border border-stone-200 rounded-lg text-base sm:text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300 transition'
@@ -474,17 +482,22 @@ function NewRecipeModal({ onCreate, onClose }: {
 
       const PDF_FALLBACK_LIMIT = 30 * 1024 * 1024
 
-      // Step 1: text extraction
-      const textToClaude = text.slice(0, 50000)
-      console.log('[PDF] Text sent to Claude (first 1000 chars):', textToClaude.slice(0, 1000))
-
+      // Step 1: text extraction — skip entirely if the extracted text has no real words
       let step1Result: ReturnType<typeof parseClaudeRecipe> = null
-      try {
-        const raw1 = await apiClaude(prompt, textToClaude)
-        console.log('[PDF] Claude raw response (step 1):', raw1)
-        step1Result = parseClaudeRecipe(raw1)
-      } catch (err) {
-        console.log('[PDF] Step 1 failed:', err)
+      const textIsReadable = hasReadableText(text)
+
+      if (!textIsReadable) {
+        console.log('[PDF] Ingen lesbar tekst funnet, går direkte til fallback')
+      } else {
+        const textToClaude = text.slice(0, 50000)
+        console.log('[PDF] Text sent to Claude (first 1000 chars):', textToClaude.slice(0, 1000))
+        try {
+          const raw1 = await apiClaude(prompt, textToClaude)
+          console.log('[PDF] Claude raw response (step 1):', raw1)
+          step1Result = parseClaudeRecipe(raw1)
+        } catch (err) {
+          console.log('[PDF] Step 1 failed:', err)
+        }
       }
 
       const step1Ok = step1Result !== null &&
@@ -501,17 +514,20 @@ function NewRecipeModal({ onCreate, onClose }: {
       } else {
         // Step 2: fallback — send full PDF as base64 document
         if (file.size > PDF_FALLBACK_LIMIT) {
-          console.log('[PDF] PDF for stor for fallback:', file.size, 'bytes')
+          console.log('[PDF Fallback] PDF for stor for fallback:', file.size, 'bytes')
           recipeData.name = 'Ny oppskrift'
           setAnalysisNote('PDF er for stor for automatisk analyse — fyll inn feltene manuelt')
         } else {
-          console.log('[PDF] PDF-analyse: bruker fallback (full PDF til Claude)')
+          console.log('[PDF Fallback] Starter — PDF størrelse:', file.size, 'bytes')
           setProgress('Prøver dypere analyse...')
           try {
             const base64 = uint8ToBase64(uint8)
+            console.log('[PDF Fallback] Base64-konvertering ferdig, lengde:', base64.length, '— sender til API')
             const raw2 = await apiClaudePdf(prompt, base64)
-            console.log('[PDF] Claude raw response (fallback):', raw2)
+            console.log('[PDF Fallback] Respons mottatt')
+            console.log('[PDF Fallback] Claude raw response:', raw2.slice(0, 500))
             const step2Result = parseClaudeRecipe(raw2)
+            console.log('[PDF Fallback] Parsed data:', step2Result)
             if (step2Result) {
               recipeData.name              = step2Result.name || 'Ny oppskrift'
               recipeData.designer          = step2Result.designer
@@ -524,7 +540,7 @@ function NewRecipeModal({ onCreate, onClose }: {
               setAnalysisNote('Kunne ikke analysere PDF automatisk — fyll inn feltene manuelt')
             }
           } catch (err) {
-            console.log('[PDF] Fallback failed:', err)
+            console.error('[PDF Fallback] Feil:', err)
             recipeData.name = 'Ny oppskrift'
             setAnalysisNote('Kunne ikke analysere PDF automatisk — fyll inn feltene manuelt')
           }
