@@ -127,6 +127,52 @@ async function apiFetchPdf(url: string): Promise<string> {
   return j.data as string
 }
 
+async function apiClaudePdf(prompt: string, pdfBase64: string): Promise<string> {
+  const r = await fetch('/api/claude', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt, pdfBase64 }),
+  })
+  if (!r.ok) {
+    const text = await r.text()
+    let errMsg: string
+    try { errMsg = (JSON.parse(text) as { error?: string }).error ?? `HTTP ${r.status}` }
+    catch { errMsg = `HTTP ${r.status} – ${text.slice(0, 300)}` }
+    throw new Error(errMsg)
+  }
+  const j = await r.json()
+  if (j.error) throw new Error(j.error)
+  return j.result
+}
+
+function uint8ToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  const chunk = 8192
+  for (let i = 0; i < bytes.length; i += chunk)
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
+  return btoa(binary)
+}
+
+function parseClaudeRecipe(raw: string): {
+  name: string; designer: string; category: string
+  sizes: string[]; recommendedFabrics: string; otherEquipment: string
+} | null {
+  const s = raw.indexOf('{')
+  const e = raw.lastIndexOf('}')
+  if (s === -1 || e === -1) return null
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p: any = JSON.parse(raw.slice(s, e + 1))
+    return {
+      name:              typeof p.name === 'string' ? p.name.trim() : '',
+      designer:          typeof p.designer === 'string' ? p.designer.trim() : '',
+      category:          typeof p.category === 'string' ? p.category.trim() : '',
+      sizes:             Array.isArray(p.sizes) ? p.sizes.filter((v: unknown) => typeof v === 'string') : [],
+      recommendedFabrics: typeof p.recommendedFabrics === 'string' ? p.recommendedFabrics.trim() : '',
+      otherEquipment:    typeof p.otherEquipment === 'string' ? p.otherEquipment.trim() : '',
+    }
+  } catch { return null }
+}
+
 async function extractPdfText(
   data: Uint8Array,
   onProgress?: (page: number, total: number) => void
@@ -360,6 +406,7 @@ function NewRecipeModal({ onCreate, onClose }: {
   const [mode, setMode]         = useState<'choose' | 'pdf' | 'blank'>('choose')
   const [progress, setProgress] = useState('')
   const [error, setError]       = useState('')
+  const [analysisNote, setAnalysisNote] = useState('')
   const [blankName, setBlankName] = useState('')
   const [creating, setCreating] = useState(false)
   const fileInputRef            = useRef<HTMLInputElement>(null)
@@ -410,7 +457,8 @@ function NewRecipeModal({ onCreate, onClose }: {
       console.log('[PDF] Raw text (first 500 chars):', rawText.slice(0, 500))
       const text = normalizePdfText(rawText)
 
-      // 3. Claude analysis
+      // 3. Claude analysis — hybrid flow
+      //    Step 1: text extraction (cheap). Step 2: full PDF as base64 (fallback).
       setProgress('Analyserer...')
       const prompt =
         `Du får tekst fra en søm-oppskrift (PDF). Returner KUN gyldig JSON, ingen forklaring:\n\n` +
@@ -424,28 +472,63 @@ function NewRecipeModal({ onCreate, onClose }: {
         `- otherEquipment: liste over tilbehør på norsk, separert med komma (f.eks. 'Elastikk 1,2 cm, klisterinnlegg, sytråd')\n\n` +
         `Hvis et felt ikke finnes i oppskriften, bruk tom streng / tomt array. Ikke finn på.`
 
+      const PDF_FALLBACK_LIMIT = 30 * 1024 * 1024
+
+      // Step 1: text extraction
       const textToClaude = text.slice(0, 50000)
       console.log('[PDF] Text sent to Claude (first 1000 chars):', textToClaude.slice(0, 1000))
 
+      let step1Result: ReturnType<typeof parseClaudeRecipe> = null
       try {
-        const raw = await apiClaude(prompt, textToClaude)
-        console.log('[PDF] Claude raw response:', raw)
-        const s = raw.indexOf('{')
-        const e = raw.lastIndexOf('}')
-        if (s !== -1 && e !== -1) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const parsed: any = JSON.parse(raw.slice(s, e + 1))
-          recipeData.name             = (typeof parsed.name === 'string' && parsed.name.trim()) ? parsed.name.trim() : 'Ny oppskrift'
-          recipeData.designer         = typeof parsed.designer === 'string' ? parsed.designer.trim() : ''
-          recipeData.category         = typeof parsed.category === 'string' ? parsed.category.trim() : ''
-          recipeData.sizes            = Array.isArray(parsed.sizes) ? parsed.sizes.filter((v: unknown) => typeof v === 'string') : []
-          recipeData.recommendedFabrics = typeof parsed.recommendedFabrics === 'string' ? parsed.recommendedFabrics.trim() : ''
-          recipeData.otherEquipment   = typeof parsed.otherEquipment === 'string' ? parsed.otherEquipment.trim() : ''
-        } else {
+        const raw1 = await apiClaude(prompt, textToClaude)
+        console.log('[PDF] Claude raw response (step 1):', raw1)
+        step1Result = parseClaudeRecipe(raw1)
+      } catch (err) {
+        console.log('[PDF] Step 1 failed:', err)
+      }
+
+      const step1Ok = step1Result !== null &&
+        (!!step1Result.name || !!step1Result.designer || step1Result.sizes.length > 0)
+
+      if (step1Ok && step1Result) {
+        console.log('[PDF] PDF-analyse: tekstekstraksjon var nok')
+        recipeData.name              = step1Result.name || 'Ny oppskrift'
+        recipeData.designer          = step1Result.designer
+        recipeData.category          = step1Result.category
+        recipeData.sizes             = step1Result.sizes
+        recipeData.recommendedFabrics = step1Result.recommendedFabrics
+        recipeData.otherEquipment    = step1Result.otherEquipment
+      } else {
+        // Step 2: fallback — send full PDF as base64 document
+        if (file.size > PDF_FALLBACK_LIMIT) {
+          console.log('[PDF] PDF for stor for fallback:', file.size, 'bytes')
           recipeData.name = 'Ny oppskrift'
+          setAnalysisNote('PDF er for stor for automatisk analyse — fyll inn feltene manuelt')
+        } else {
+          console.log('[PDF] PDF-analyse: bruker fallback (full PDF til Claude)')
+          setProgress('Prøver dypere analyse...')
+          try {
+            const base64 = uint8ToBase64(uint8)
+            const raw2 = await apiClaudePdf(prompt, base64)
+            console.log('[PDF] Claude raw response (fallback):', raw2)
+            const step2Result = parseClaudeRecipe(raw2)
+            if (step2Result) {
+              recipeData.name              = step2Result.name || 'Ny oppskrift'
+              recipeData.designer          = step2Result.designer
+              recipeData.category          = step2Result.category
+              recipeData.sizes             = step2Result.sizes
+              recipeData.recommendedFabrics = step2Result.recommendedFabrics
+              recipeData.otherEquipment    = step2Result.otherEquipment
+            } else {
+              recipeData.name = 'Ny oppskrift'
+              setAnalysisNote('Kunne ikke analysere PDF automatisk — fyll inn feltene manuelt')
+            }
+          } catch (err) {
+            console.log('[PDF] Fallback failed:', err)
+            recipeData.name = 'Ny oppskrift'
+            setAnalysisNote('Kunne ikke analysere PDF automatisk — fyll inn feltene manuelt')
+          }
         }
-      } catch {
-        recipeData.name = 'Ny oppskrift'
       }
 
       // 4. Render cover image from first page
@@ -557,6 +640,11 @@ function NewRecipeModal({ onCreate, onClose }: {
             <div className="w-10 h-10 border-2 border-stone-200 border-t-stone-600 rounded-full animate-spin mx-auto mb-5" />
             <p className="font-serif text-lg text-stone-700 mb-1">Analyserer oppskrift…</p>
             <p className="text-sm text-stone-400">{progress}</p>
+            {analysisNote && (
+              <p className="mt-4 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                {analysisNote}
+              </p>
+            )}
           </div>
         )}
 
