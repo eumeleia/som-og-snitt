@@ -306,7 +306,7 @@ function RecipeCard({ recipe, onEdit, onDelete, dragHandle }: {
   return (
     <article
       onClick={onEdit}
-      className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col"
+      className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col h-full"
     >
       <div className="h-44 bg-stone-50 overflow-hidden flex-shrink-0 relative">
         {dragHandle && <div className="absolute top-2 left-2 z-10">{dragHandle}</div>}
@@ -399,6 +399,7 @@ function SortableRecipeCard({ recipe, onEdit, onDelete, isDragMode }: {
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }}
+      className="h-full"
       {...attributes}
       {...listeners}
     >
