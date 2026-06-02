@@ -85,13 +85,13 @@ const STATUS_STYLE: Record<Status, string> = {
   Fullført: 'bg-sky-50 text-sky-700 border-sky-200',
 }
 const CATEGORY_STYLE: Record<Category, string> = {
-  Klær:         'bg-rose-50 text-rose-700 border-rose-200',
+  Klær:         'bg-[#F5EFE6] text-[#8B6340] border-[#D4A574]',
   Interiør:     'bg-sky-50 text-sky-700 border-sky-200',
   Tilbehør:     'bg-teal-50 text-teal-700 border-teal-200',
   Reparasjoner: 'bg-orange-50 text-orange-700 border-orange-200',
 }
 const PDF_TYPE_STYLE: Record<PdfType, string> = {
-  Oppskrift: 'bg-rose-50 text-rose-700 border-rose-200',
+  Oppskrift: 'bg-[#F5EFE6] text-[#8B6340] border-[#D4A574]',
   Mønster:   'bg-teal-50 text-teal-700 border-teal-200',
   Annet:     'bg-stone-50 text-stone-500 border-stone-200',
 }
@@ -260,9 +260,9 @@ function ProjectCard({ project, onEdit, onDelete, dragHandle }: {
   return (
     <article
       onClick={onEdit}
-      className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col"
+      className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col h-full"
     >
-      <div className="h-44 bg-stone-50 overflow-hidden flex-shrink-0 relative">
+      <div className="h-52 bg-stone-50 overflow-hidden flex-shrink-0 relative">
         {dragHandle && <div className="absolute top-2 left-2 z-10">{dragHandle}</div>}
         {cover
           ? <img src={cover} alt={d.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
@@ -2969,7 +2969,7 @@ export default function ProjectsPage() {
         ) : (
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <SortableContext items={sortedFiltered.map(p => p.id)} strategy={rectSortingStrategy}>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+              <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-5">
                 {sortedFiltered.map(p => (
                   <SortableProjectCard key={p.id} project={p}
                     onEdit={() => openEdit(p)}

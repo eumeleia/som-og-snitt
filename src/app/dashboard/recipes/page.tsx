@@ -308,7 +308,7 @@ function RecipeCard({ recipe, onEdit, onDelete, dragHandle }: {
       onClick={onEdit}
       className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col h-full"
     >
-      <div className="h-44 bg-stone-50 overflow-hidden flex-shrink-0 relative">
+      <div className="h-52 bg-stone-50 overflow-hidden flex-shrink-0 relative">
         {dragHandle && <div className="absolute top-2 left-2 z-10">{dragHandle}</div>}
         {cover
           ? <img src={cover} alt={d.name}
@@ -329,13 +329,27 @@ function RecipeCard({ recipe, onEdit, onDelete, dragHandle }: {
         <h3 className="font-serif text-xl font-semibold text-stone-800 mb-1 truncate leading-tight">
           {d.name || <span className="text-stone-300 italic font-light">Uten navn</span>}
         </h3>
-        {d.designer && <p className="text-xs text-stone-400 mb-1.5">{d.designer}</p>}
-        <div className="mb-2 h-3.5">
+        {d.designer && <p className="text-xs text-stone-400 mb-1">{d.designer}</p>}
+        <div className="mb-1 h-3.5">
           {(d.rating ?? 0) > 0 && <StarRating rating={d.rating ?? 0} size="sm" />}
         </div>
         {d.category && (
-          <div className="flex flex-wrap gap-1.5 mb-3">
+          <div className="flex flex-wrap gap-1.5 mb-1.5">
             <Badge label={d.category} cls="bg-[#F5EFE6] text-[#8B6340] border-[#D4A574]" />
+          </div>
+        )}
+
+        {oppskriftPdf && (
+          <div className="mt-auto pt-2">
+            <a
+              href={oppskriftPdf.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={e => e.stopPropagation()}
+              className="text-xs text-[#C9A57A] hover:text-[#8B6340] hover:underline transition-colors"
+            >
+              Oppskrift ↗
+            </a>
           </div>
         )}
 
@@ -360,17 +374,6 @@ function RecipeCard({ recipe, onEdit, onDelete, dragHandle }: {
               </span>
             )}
           </div>
-          {oppskriftPdf && (
-            <a
-              href={oppskriftPdf.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={e => e.stopPropagation()}
-              className="text-xs text-[#C9A57A] hover:text-[#8B6340] hover:underline transition-colors"
-            >
-              Oppskrift ↗
-            </a>
-          )}
           <button
             onClick={e => { e.stopPropagation(); onDelete() }}
             className="p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors"
@@ -2087,7 +2090,7 @@ export default function RecipesPage() {
         ) : (
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <SortableContext items={sortedFiltered.map(r => r.id)} strategy={rectSortingStrategy}>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+              <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-5">
                 {sortedFiltered.map(r => (
                   <SortableRecipeCard key={r.id} recipe={r}
                     onEdit={() => openEdit(r)}
