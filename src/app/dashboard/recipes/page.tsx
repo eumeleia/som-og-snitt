@@ -52,7 +52,7 @@ const CATEGORY_SUGGESTIONS = [
 ]
 
 const PDF_TYPE_STYLE: Record<PdfType, string> = {
-  Oppskrift: 'bg-rose-50 text-rose-700 border-rose-200',
+  Oppskrift: 'bg-[#F5EFE6] text-[#8B6340] border-[#D4A574]',
   Mønster:   'bg-teal-50 text-teal-700 border-teal-200',
   Annet:     'bg-stone-50 text-stone-500 border-stone-200',
 }
@@ -335,7 +335,7 @@ function RecipeCard({ recipe, onEdit, onDelete, dragHandle }: {
         </div>
         {d.category && (
           <div className="flex flex-wrap gap-1.5 mb-3">
-            <Badge label={d.category} cls="bg-rose-50 text-rose-700 border-rose-200" />
+            <Badge label={d.category} cls="bg-[#F5EFE6] text-[#8B6340] border-[#D4A574]" />
           </div>
         )}
 
@@ -366,7 +366,7 @@ function RecipeCard({ recipe, onEdit, onDelete, dragHandle }: {
               target="_blank"
               rel="noopener noreferrer"
               onClick={e => e.stopPropagation()}
-              className="text-xs text-rose-400 hover:text-rose-600 hover:underline transition-colors"
+              className="text-xs text-[#C9A57A] hover:text-[#8B6340] hover:underline transition-colors"
             >
               Oppskrift ↗
             </a>
@@ -2022,7 +2022,7 @@ export default function RecipesPage() {
           onChange={e => setCategoryFilter(e.target.value)}
           className={`px-2.5 py-2 border rounded-xl text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-stone-300 transition-colors ${
             categoryFilter
-              ? 'bg-rose-50 text-rose-700 border-rose-300'
+              ? 'bg-[#F5EFE6] text-[#8B6340] border-[#D4A574]'
               : 'bg-white text-stone-600 border-stone-200'
           }`}
         >
