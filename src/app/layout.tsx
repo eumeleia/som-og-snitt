@@ -24,6 +24,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="no" className={`${cormorant.variable} ${lato.variable} h-full`}>
       <head>
         <link rel="manifest" href="/manifest.json" />
+        <link rel="apple-touch-icon" href="/icon-180.png" />
         <meta name="theme-color" content="#FAF7F4" />
       </head>
       <body className="min-h-full antialiased">{children}</body>
