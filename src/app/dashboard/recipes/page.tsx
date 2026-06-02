@@ -301,6 +301,7 @@ function RecipeCard({ recipe, onEdit, onDelete, dragHandle }: {
 }) {
   const d = recipe.data
   const cover = d.images[0]?.url
+  const oppskriftPdf = d.pdfs.find(p => p.type === 'Oppskrift')
 
   return (
     <article
@@ -359,6 +360,17 @@ function RecipeCard({ recipe, onEdit, onDelete, dragHandle }: {
               </span>
             )}
           </div>
+          {oppskriftPdf && (
+            <a
+              href={oppskriftPdf.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={e => e.stopPropagation()}
+              className="text-xs text-rose-400 hover:text-rose-600 hover:underline transition-colors"
+            >
+              Oppskrift ↗
+            </a>
+          )}
           <button
             onClick={e => { e.stopPropagation(); onDelete() }}
             className="p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors"
@@ -1819,6 +1831,7 @@ export default function RecipesPage() {
   const [orderSaved, setOrderSaved]         = useState(false)
   const [minRating, setMinRating]           = useState(0)
   const [starDropdownOpen, setStarDropdownOpen] = useState(false)
+  const [categoryFilter, setCategoryFilter] = useState('')
   const starDropdownRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -1878,11 +1891,20 @@ export default function RecipesPage() {
   function openEdit(r: Recipe) { setCurrentRecipe(r); setShowDetail(true) }
   function handleBack()        { setShowDetail(false); setCurrentRecipe(null); load() }
 
+  const allCategories = Array.from(
+    new Set(recipes.map(r => r.data.category).filter(Boolean))
+  ).sort((a, b) => a.localeCompare(b, 'nb'))
+
   const filtered = recipes.filter(r => {
     const q = search.trim().toLowerCase()
-    const matchesSearch = !q || r.data.name.toLowerCase().includes(q) || r.data.designer.toLowerCase().includes(q)
+    const matchesSearch = !q
+      || r.data.name.toLowerCase().includes(q)
+      || r.data.designer.toLowerCase().includes(q)
+      || r.data.category.toLowerCase().includes(q)
+      || r.data.sizes.some(sz => sz.toLowerCase().includes(q))
     const matchesRating = minRating === 0 || (r.data.rating ?? 0) >= minRating
-    return matchesSearch && matchesRating
+    const matchesCategory = !categoryFilter || r.data.category.toLowerCase() === categoryFilter.toLowerCase()
+    return matchesSearch && matchesRating && matchesCategory
   })
 
   const sortedFiltered = [...filtered].sort((a, b) => {
@@ -2007,6 +2029,21 @@ export default function RecipesPage() {
             </div>
           )}
         </div>
+
+        <select
+          value={categoryFilter}
+          onChange={e => setCategoryFilter(e.target.value)}
+          className={`px-2.5 py-2 border rounded-xl text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-stone-300 transition-colors ${
+            categoryFilter
+              ? 'bg-rose-50 text-rose-700 border-rose-300'
+              : 'bg-white text-stone-600 border-stone-200'
+          }`}
+        >
+          <option value="">Alle kategorier</option>
+          {allCategories.map(cat => (
+            <option key={cat} value={cat}>{cat}</option>
+          ))}
+        </select>
 
         <div className="flex items-center gap-2">
           <select
