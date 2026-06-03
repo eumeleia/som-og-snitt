@@ -324,13 +324,13 @@ function RecipeCard({ recipe, onEdit, onDelete, dragHandle }: {
           )
         }
         <div
-          className="absolute bottom-0 left-0 right-0 px-3 pt-6 pb-3 flex flex-col"
-          style={{ background: 'linear-gradient(to bottom, transparent, rgba(250,247,244,0.82) 40%, rgba(250,247,244,0.93))' }}
+          className="absolute bottom-0 left-0 right-0 px-3 pt-8 pb-1.5 flex flex-col"
+          style={{ background: 'linear-gradient(to bottom, rgba(250,247,244,0) 0%, rgba(250,247,244,0.88) 35%, rgba(250,247,244,0.96) 100%)' }}
         >
-          <h3 className="font-serif text-base font-semibold text-stone-800 truncate">
+          <h3 className="font-serif text-lg font-semibold text-stone-800 truncate">
             {d.name || <span className="text-stone-300 italic font-light">Uten navn</span>}
           </h3>
-          {d.designer && <p className="text-xs text-stone-500 truncate">{d.designer}</p>}
+          {d.designer && <p className="text-xs text-stone-500 truncate mb-0">{d.designer}</p>}
         </div>
       </div>
 
@@ -376,7 +376,7 @@ function RecipeCard({ recipe, onEdit, onDelete, dragHandle }: {
 
       <button
         onClick={e => { e.stopPropagation(); onDelete() }}
-        className="absolute bottom-2 right-2 z-10 p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors"
+        className="absolute bottom-1 right-1.5 z-10 p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors"
       >
         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
