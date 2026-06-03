@@ -385,6 +385,32 @@ export default function TechniquesPage() {
   const [currentItem,  setCurrentItem]  = useState<Technique | null>(null)
   const [showDetail,   setShowDetail]   = useState(false)
   const [deleteId,     setDeleteId]     = useState<string | null>(null)
+  const [katDropdownOpen,  setKatDropdownOpen]  = useState(false)
+  const [sortDropdownOpen, setSortDropdownOpen] = useState(false)
+  const katDropdownRef  = useRef<HTMLDivElement>(null)
+  const sortDropdownRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!katDropdownOpen) return
+    function handleClick(e: MouseEvent) {
+      if (katDropdownRef.current && !katDropdownRef.current.contains(e.target as Node)) {
+        setKatDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [katDropdownOpen])
+
+  useEffect(() => {
+    if (!sortDropdownOpen) return
+    function handleClick(e: MouseEvent) {
+      if (sortDropdownRef.current && !sortDropdownRef.current.contains(e.target as Node)) {
+        setSortDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [sortDropdownOpen])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -464,21 +490,8 @@ export default function TechniquesPage() {
 
   return (
     <>
-      {/* Header */}
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center gap-3">
-        <h1 className="font-serif text-3xl text-stone-700 flex-1">Teknikker</h1>
-        <button
-          onClick={() => setShowNew(true)}
-          className="flex items-center gap-2 px-4 py-2.5 min-h-[44px] bg-[#C9A57A] text-white text-sm rounded-xl hover:bg-[#b8925f] transition-colors font-medium whitespace-nowrap">
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          Ny teknikk
-        </button>
-      </div>
-
       {/* Search + filters */}
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 mb-4 space-y-3">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 mb-0 space-y-3">
         <div className="relative">
           <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 pointer-events-none"
             fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -493,31 +506,79 @@ export default function TechniquesPage() {
             className="w-full pl-9 pr-4 py-2 border border-stone-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300 shadow-sm"
           />
         </div>
-        <div className="flex gap-2 overflow-x-auto pb-0.5" style={{ scrollbarWidth: 'none' }}>
-          <div className="flex gap-1.5 flex-shrink-0">
-            {(['Alle', ...KATEGORIER] as string[]).map(k => (
-              <button key={k} onClick={() => setKatFilter(k)}
-                className={`px-3 py-1.5 rounded-lg text-xs whitespace-nowrap border transition-colors ${
-                  katFilter === k
-                    ? 'bg-stone-800 text-white border-stone-800'
-                    : 'bg-white text-stone-600 border-stone-200 hover:border-stone-400'
-                }`}>
-                {k}
-              </button>
-            ))}
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Category filter icon */}
+          <div className="relative" ref={katDropdownRef}>
+            <button
+              onClick={() => setKatDropdownOpen(o => !o)}
+              className={`relative w-9 h-9 flex items-center justify-center rounded-xl border transition-colors ${
+                katFilter !== 'Alle'
+                  ? 'bg-stone-100 text-stone-800 border-stone-300'
+                  : 'bg-white text-stone-500 border-stone-200 hover:border-stone-400'
+              }`}
+              title="Filter"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                  d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+              </svg>
+              {katFilter !== 'Alle' && (
+                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-[#C9A57A] rounded-full" />
+              )}
+            </button>
+            {katDropdownOpen && (
+              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-20 min-w-[160px] py-1">
+                <button
+                  onClick={() => { setKatFilter('Alle'); setKatDropdownOpen(false) }}
+                  className={`w-full text-left px-4 py-2 text-sm transition-colors hover:bg-stone-50 ${katFilter === 'Alle' ? 'text-stone-800 font-medium' : 'text-stone-600'}`}
+                >
+                  Alle
+                </button>
+                {KATEGORIER.map(k => (
+                  <button
+                    key={k}
+                    onClick={() => { setKatFilter(k); setKatDropdownOpen(false) }}
+                    className={`w-full text-left px-4 py-2 text-sm transition-colors hover:bg-stone-50 ${katFilter === k ? 'text-stone-800 font-medium bg-stone-50' : 'text-stone-600'}`}
+                  >
+                    {k}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-          <div className="w-px bg-stone-200 flex-shrink-0 mx-0.5 self-stretch" />
-          <div className="flex gap-1.5 flex-shrink-0">
-            {([['newest', 'Nyeste'], ['oldest', 'Eldste'], ['name', 'Navn A-Å']] as [SortOrder, string][]).map(([v, label]) => (
-              <button key={v} onClick={() => setSort(v)}
-                className={`px-3 py-1.5 rounded-lg text-xs whitespace-nowrap border transition-colors ${
-                  sort === v
-                    ? 'bg-stone-600 text-white border-stone-600'
-                    : 'bg-white text-stone-500 border-stone-200 hover:border-stone-400'
-                }`}>
-                {label}
-              </button>
-            ))}
+
+          {/* Sort icon */}
+          <div className="relative" ref={sortDropdownRef}>
+            <button
+              onClick={() => setSortDropdownOpen(o => !o)}
+              className={`relative w-9 h-9 flex items-center justify-center rounded-xl border transition-colors ${
+                sort !== 'newest'
+                  ? 'bg-stone-100 text-stone-800 border-stone-300'
+                  : 'bg-white text-stone-500 border-stone-200 hover:border-stone-400'
+              }`}
+              title="Sortering"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                  d="M3 7h18M6 12h12M9 17h6" />
+              </svg>
+              {sort !== 'newest' && (
+                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-stone-600 rounded-full" />
+              )}
+            </button>
+            {sortDropdownOpen && (
+              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-20 min-w-[160px] py-1">
+                {([['newest', 'Nyeste'], ['oldest', 'Eldste'], ['name', 'Navn A-Å']] as [SortOrder, string][]).map(([v, label]) => (
+                  <button
+                    key={v}
+                    onClick={() => { setSort(v); setSortDropdownOpen(false) }}
+                    className={`w-full text-left px-4 py-2 text-sm transition-colors hover:bg-stone-50 ${sort === v ? 'text-stone-800 font-medium bg-stone-50' : 'text-stone-600'}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -567,6 +628,17 @@ export default function TechniquesPage() {
           onCancel={() => setDeleteId(null)}
         />
       )}
+
+      {/* FAB */}
+      <button
+        onClick={() => setShowNew(true)}
+        className="fixed bottom-6 right-6 w-14 h-14 bg-[#C9A57A] text-white rounded-full shadow-lg hover:bg-[#b8925f] transition-all flex items-center justify-center cursor-pointer z-30"
+        aria-label="Ny teknikk"
+      >
+        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+        </svg>
+      </button>
     </>
   )
 }

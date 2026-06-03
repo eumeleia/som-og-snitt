@@ -75,7 +75,7 @@ interface Project { id: string; created_at: string; data: ProjectData }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const STATUSES:   Status[]   = ['Aktiv', 'Planlagt', 'Fullført']
+const STATUSES:   Status[]   = ['Planlagt', 'Aktiv', 'Fullført']
 const CATEGORIES: Category[] = ['Klær', 'Interiør', 'Tilbehør', 'Reparasjoner']
 const PDF_TYPES:  PdfType[]  = ['Oppskrift', 'Mønster', 'Annet']
 
@@ -268,7 +268,7 @@ function ProjectCard({ project, onEdit, onDelete }: {
         }
         <div
           className="absolute bottom-0 left-0 right-0 px-3 pt-2 pb-1.5 flex flex-col h-14 overflow-hidden"
-          style={{ backgroundColor: 'rgba(243,238,230,0.80)' }}
+          style={{ backgroundColor: 'rgba(250,247,244,0.78)' }}
         >
           <h3 className="font-serif text-base font-semibold text-stone-800 truncate mt-0">
             {d.name || <span className="text-stone-300 italic font-light">Uten navn</span>}
@@ -2667,11 +2667,37 @@ export default function ProjectsPage() {
   const [currentProject, setCurrentProject] = useState<Project | null>(null)
   const [showNewModal, setShowNewModal]     = useState(false)
   const [deleteId, setDeleteId]             = useState<string | null>(null)
-  const [statusFilter, setStatusFilter]     = useState<Status | 'Alle'>('Alle')
+  const [statusFilter, setStatusFilter]     = useState<Status>('Aktiv')
   const [catFilter, setCatFilter]           = useState<Category | 'Alle'>('Alle')
   const [sortBy, setSortBy]                 = useState<'Manuell' | 'Nyeste' | 'Eldste' | 'Navn'>('Manuell')
   const [orderSaving, setOrderSaving]       = useState(false)
   const [orderSaved, setOrderSaved]         = useState(false)
+  const [catDropdownOpen, setCatDropdownOpen]   = useState(false)
+  const [sortDropdownOpen, setSortDropdownOpen] = useState(false)
+  const catDropdownRef  = useRef<HTMLDivElement>(null)
+  const sortDropdownRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!catDropdownOpen) return
+    function handleClick(e: MouseEvent) {
+      if (catDropdownRef.current && !catDropdownRef.current.contains(e.target as Node)) {
+        setCatDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [catDropdownOpen])
+
+  useEffect(() => {
+    if (!sortDropdownOpen) return
+    function handleClick(e: MouseEvent) {
+      if (sortDropdownRef.current && !sortDropdownRef.current.contains(e.target as Node)) {
+        setSortDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [sortDropdownOpen])
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -2756,8 +2782,8 @@ export default function ProjectsPage() {
   function handleBack()         { setShowDetail(false); setCurrentProject(null); load() }
 
   const filtered = projects.filter(p =>
-    (statusFilter === 'Alle' || p.data.status   === statusFilter) &&
-    (catFilter    === 'Alle' || p.data.category === catFilter)
+    p.data.status === statusFilter &&
+    (catFilter === 'Alle' || p.data.category === catFilter)
   )
 
   const sortedFiltered = [...filtered].sort((a, b) => {
@@ -2830,69 +2856,119 @@ export default function ProjectsPage() {
 
   return (
     <>
-      {/* Filter bar + new button */}
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between gap-3">
-        <div className="flex-1 min-w-0 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
-          <div className="flex items-center gap-2 sm:gap-3 min-w-max">
-            <div className="flex gap-1 bg-white rounded-xl p-1 border border-stone-200 shadow-sm">
-              {(['Alle', ...STATUSES] as const).map(s => {
-                const count = counts[s as keyof typeof counts]
-                return (
-                  <button key={s} onClick={() => setStatusFilter(s as Status | 'Alle')}
-                    className={`px-2.5 sm:px-4 py-1.5 rounded-lg text-xs sm:text-sm whitespace-nowrap transition-colors ${
-                      statusFilter === s
-                        ? 'bg-stone-800 text-white shadow-sm'
-                        : 'text-stone-500 hover:text-stone-700'
-                    }`}>
-                    {s}
-                    <span className={`ml-1 text-xs ${statusFilter === s ? 'text-white/60' : 'text-stone-400'}`}>
-                      {count}
-                    </span>
-                  </button>
-                )
-              })}
-            </div>
-
-            <select value={catFilter} onChange={e => setCatFilter(e.target.value as Category | 'Alle')}
-              className="px-2.5 py-2 border border-stone-200 rounded-xl text-xs sm:text-sm bg-white text-stone-600 focus:outline-none focus:ring-2 focus:ring-stone-300 shadow-sm whitespace-nowrap">
-              <option value="Alle">Alle kategorier</option>
-              {CATEGORIES.map(c => <option key={c}>{c}</option>)}
-            </select>
-
-            {(statusFilter !== 'Alle' || catFilter !== 'Alle') && (
-              <button onClick={() => { setStatusFilter('Alle'); setCatFilter('Alle') }}
-                className="text-xs sm:text-sm text-stone-400 hover:text-stone-600 transition-colors whitespace-nowrap">
-                Nullstill ×
+      {/* Filter bar */}
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 space-y-3">
+        {/* Status pills */}
+        <div className="flex gap-1 bg-white rounded-xl p-1 border border-stone-200 shadow-sm w-fit">
+          {STATUSES.map(s => {
+            const count = counts[s as keyof typeof counts]
+            return (
+              <button key={s} onClick={() => setStatusFilter(s)}
+                className={`px-2.5 sm:px-4 py-1.5 rounded-lg text-xs sm:text-sm whitespace-nowrap transition-colors ${
+                  statusFilter === s
+                    ? 'bg-stone-800 text-white shadow-sm'
+                    : 'text-stone-500 hover:text-stone-700'
+                }`}>
+                {s}
+                <span className={`ml-1 text-xs ${statusFilter === s ? 'text-white/60' : 'text-stone-400'}`}>
+                  {count}
+                </span>
               </button>
-            )}
-
-            <div className="flex items-center gap-2">
-              <select
-                value={sortBy}
-                onChange={e => setSortBy(e.target.value as typeof sortBy)}
-                className="px-2.5 py-2 border border-stone-200 rounded-xl text-xs sm:text-sm bg-white text-stone-600 focus:outline-none focus:ring-2 focus:ring-stone-300 shadow-sm whitespace-nowrap"
-              >
-                <option value="Manuell">Manuell (min rekkefølge)</option>
-                <option value="Nyeste">Nyeste først</option>
-                <option value="Eldste">Eldste først</option>
-                <option value="Navn">Navn A–Å</option>
-              </select>
-              {orderSaving && <span className="text-xs text-stone-400">Lagrer…</span>}
-              {!orderSaving && orderSaved && <span className="text-xs text-emerald-500 font-medium">Lagret ✓</span>}
-            </div>
-          </div>
+            )
+          })}
         </div>
 
-        <button
-          onClick={() => setShowNewModal(true)}
-          className="flex-shrink-0 flex items-center gap-2 px-3 sm:px-4 py-2.5 min-h-[44px] bg-[#C9A57A] text-white text-sm rounded-xl hover:bg-[#b8925f] transition-colors font-medium whitespace-nowrap"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          <span className="hidden xs:inline">Nytt prosjekt</span>
-          <span className="inline xs:hidden">Nytt</span>
-        </button>
+        {/* Icon filter/sort row */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Category filter icon */}
+          <div className="relative" ref={catDropdownRef}>
+            <button
+              onClick={() => setCatDropdownOpen(o => !o)}
+              className={`relative w-9 h-9 flex items-center justify-center rounded-xl border transition-colors ${
+                catFilter !== 'Alle'
+                  ? 'bg-stone-100 text-stone-800 border-stone-300'
+                  : 'bg-white text-stone-500 border-stone-200 hover:border-stone-400'
+              }`}
+              title="Filtrer kategori"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                  d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+              </svg>
+              {catFilter !== 'Alle' && (
+                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-[#C9A57A] rounded-full" />
+              )}
+            </button>
+            {catDropdownOpen && (
+              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-20 min-w-[160px] py-1">
+                <button
+                  onClick={() => { setCatFilter('Alle'); setCatDropdownOpen(false) }}
+                  className={`w-full text-left px-4 py-2 text-sm transition-colors hover:bg-stone-50 ${catFilter === 'Alle' ? 'text-stone-800 font-medium' : 'text-stone-600'}`}
+                >
+                  Alle kategorier
+                </button>
+                {CATEGORIES.map(c => (
+                  <button
+                    key={c}
+                    onClick={() => { setCatFilter(c); setCatDropdownOpen(false) }}
+                    className={`w-full text-left px-4 py-2 text-sm transition-colors hover:bg-stone-50 ${catFilter === c ? 'text-stone-800 font-medium bg-stone-50' : 'text-stone-600'}`}
+                  >
+                    {c}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Sort icon */}
+          <div className="relative" ref={sortDropdownRef}>
+            <button
+              onClick={() => setSortDropdownOpen(o => !o)}
+              className={`relative w-9 h-9 flex items-center justify-center rounded-xl border transition-colors ${
+                sortBy !== 'Manuell'
+                  ? 'bg-stone-100 text-stone-800 border-stone-300'
+                  : 'bg-white text-stone-500 border-stone-200 hover:border-stone-400'
+              }`}
+              title="Sortering"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                  d="M3 7h18M6 12h12M9 17h6" />
+              </svg>
+              {sortBy !== 'Manuell' && (
+                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-stone-600 rounded-full" />
+              )}
+            </button>
+            {sortDropdownOpen && (
+              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-20 min-w-[210px] py-1">
+                {([
+                  ['Manuell', 'Manuell (min rekkefølge)'],
+                  ['Nyeste', 'Nyeste først'],
+                  ['Eldste', 'Eldste først'],
+                  ['Navn', 'Navn A–Å'],
+                ] as [typeof sortBy, string][]).map(([v, label]) => (
+                  <button
+                    key={v}
+                    onClick={() => { setSortBy(v); setSortDropdownOpen(false) }}
+                    className={`w-full text-left px-4 py-2 text-sm transition-colors hover:bg-stone-50 ${sortBy === v ? 'text-stone-800 font-medium bg-stone-50' : 'text-stone-600'}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {catFilter !== 'Alle' && (
+            <button onClick={() => setCatFilter('Alle')}
+              className="text-xs text-stone-400 hover:text-stone-600 transition-colors">
+              Nullstill ×
+            </button>
+          )}
+
+          {orderSaving && <span className="text-xs text-stone-400 ml-1">Lagrer…</span>}
+          {!orderSaving && orderSaved && <span className="text-xs text-emerald-500 font-medium ml-1">Lagret ✓</span>}
+        </div>
       </div>
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 pb-16">
@@ -2946,6 +3022,17 @@ export default function ProjectsPage() {
           onCancel={() => setDeleteId(null)}
         />
       )}
+
+      {/* FAB */}
+      <button
+        onClick={() => setShowNewModal(true)}
+        className="fixed bottom-6 right-6 w-14 h-14 bg-[#C9A57A] text-white rounded-full shadow-lg hover:bg-[#b8925f] transition-all flex items-center justify-center cursor-pointer z-30"
+        aria-label="Nytt prosjekt"
+      >
+        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+        </svg>
+      </button>
     </>
   )
 }

@@ -345,18 +345,9 @@ function RecipeCard({ recipe, onEdit, onDelete, dragHandle }: {
               {formatSizeRange(d.sizes)}
             </span>
           )}
-          {d.pdfs.length > 0 && (
-            <span className="flex items-center gap-1">
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414A1 1 0 0119 9.414V19a2 2 0 01-2 2z" />
-              </svg>
-              {d.pdfs.length}
-            </span>
-          )}
         </div>
-        {d.category && (
-          <Badge label={d.category} cls="bg-[#F5EFE6] text-[#8B6340] border-[#D4A574]" />
+        {(d.rating ?? 0) > 0 && (
+          <StarRating rating={d.rating ?? 0} size="sm" />
         )}
       </div>
 
@@ -1826,6 +1817,10 @@ export default function RecipesPage() {
   const [starDropdownOpen, setStarDropdownOpen] = useState(false)
   const [categoryFilter, setCategoryFilter] = useState('')
   const starDropdownRef = useRef<HTMLDivElement>(null)
+  const [catDropdownOpen, setCatDropdownOpen]   = useState(false)
+  const [sortDropdownOpen, setSortDropdownOpen] = useState(false)
+  const catDropdownRef  = useRef<HTMLDivElement>(null)
+  const sortDropdownRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!starDropdownOpen) return
@@ -1837,6 +1832,28 @@ export default function RecipesPage() {
     document.addEventListener('mousedown', handleClick)
     return () => document.removeEventListener('mousedown', handleClick)
   }, [starDropdownOpen])
+
+  useEffect(() => {
+    if (!catDropdownOpen) return
+    function handleClick(e: MouseEvent) {
+      if (catDropdownRef.current && !catDropdownRef.current.contains(e.target as Node)) {
+        setCatDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [catDropdownOpen])
+
+  useEffect(() => {
+    if (!sortDropdownOpen) return
+    function handleClick(e: MouseEvent) {
+      if (sortDropdownRef.current && !sortDropdownRef.current.contains(e.target as Node)) {
+        setSortDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [sortDropdownOpen])
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -1964,9 +1981,9 @@ export default function RecipesPage() {
 
   return (
     <>
-      {/* Search + sort + filter + new button */}
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex flex-wrap items-center gap-3">
-        <div className="flex-1 min-w-[200px] relative">
+      {/* Search + filter icons */}
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 space-y-3">
+        <div className="relative">
           <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 pointer-events-none"
             fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
@@ -1980,89 +1997,132 @@ export default function RecipesPage() {
             className="w-full pl-9 pr-4 py-2 border border-stone-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300 shadow-sm"
           />
         </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Star filter dropdown */}
+          <div className="relative" ref={starDropdownRef}>
+            <button
+              onClick={() => setStarDropdownOpen(o => !o)}
+              className={`relative w-9 h-9 flex items-center justify-center rounded-xl border text-sm transition-colors ${
+                minRating > 0
+                  ? 'bg-amber-50 text-amber-700 border-amber-300 font-medium'
+                  : 'bg-white text-stone-500 border-stone-200 hover:border-amber-200 hover:text-amber-500'
+              }`}
+              aria-label="Filtrer på stjernerangering"
+              title="Stjerner"
+            >
+              <span className="text-sm leading-none">★</span>
+              {minRating > 0 && (
+                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-400 rounded-full" />
+              )}
+            </button>
+            {starDropdownOpen && (
+              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-20 min-w-[160px] py-1">
+                {([
+                  { label: 'Alle', value: 0 },
+                  { label: 'Minst 1 ★', value: 1 },
+                  { label: 'Minst 2 ★★', value: 2 },
+                  { label: 'Minst 3 ★★★', value: 3 },
+                  { label: 'Minst 4 ★★★★', value: 4 },
+                  { label: 'Minst 5 ★★★★★', value: 5 },
+                ] as { label: string; value: number }[]).map(opt => (
+                  <button
+                    key={opt.value}
+                    onClick={() => { setMinRating(opt.value); setStarDropdownOpen(false) }}
+                    className={`w-full text-left px-4 py-2 text-sm transition-colors hover:bg-amber-50 hover:text-amber-700 ${
+                      minRating === opt.value ? 'text-amber-700 font-medium bg-amber-50' : 'text-stone-600'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
 
-        {/* Star filter dropdown */}
-        <div className="relative" ref={starDropdownRef}>
-          <button
-            onClick={() => setStarDropdownOpen(o => !o)}
-            className={`flex items-center gap-1.5 px-3 min-h-[44px] rounded-xl border text-sm transition-colors ${
-              minRating > 0
-                ? 'bg-amber-50 text-amber-700 border-amber-300 font-medium'
-                : 'bg-white text-stone-500 border-stone-200 hover:border-amber-200 hover:text-amber-500'
-            }`}
-            aria-label="Filtrer på stjernerangering"
-          >
-            <span className="text-base leading-none">
-              {minRating > 0 ? '★'.repeat(minRating) + '+' : '★'}
-            </span>
-            <svg className="w-3 h-3 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-            </svg>
-          </button>
-          {starDropdownOpen && (
-            <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-20 min-w-[160px] py-1">
-              {([
-                { label: 'Alle', value: 0 },
-                { label: 'Minst 1 ★', value: 1 },
-                { label: 'Minst 2 ★★', value: 2 },
-                { label: 'Minst 3 ★★★', value: 3 },
-                { label: 'Minst 4 ★★★★', value: 4 },
-                { label: 'Minst 5 ★★★★★', value: 5 },
-              ] as { label: string; value: number }[]).map(opt => (
+          {/* Category filter icon */}
+          <div className="relative" ref={catDropdownRef}>
+            <button
+              onClick={() => setCatDropdownOpen(o => !o)}
+              className={`relative w-9 h-9 flex items-center justify-center rounded-xl border transition-colors ${
+                categoryFilter
+                  ? 'bg-[#F5EFE6] text-[#8B6340] border-[#D4A574]'
+                  : 'bg-white text-stone-500 border-stone-200 hover:border-stone-400'
+              }`}
+              title="Filtrer kategori"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                  d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+              </svg>
+              {categoryFilter && (
+                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-[#C9A57A] rounded-full" />
+              )}
+            </button>
+            {catDropdownOpen && (
+              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-20 min-w-[160px] py-1">
                 <button
-                  key={opt.value}
-                  onClick={() => { setMinRating(opt.value); setStarDropdownOpen(false) }}
-                  className={`w-full text-left px-4 py-2 text-sm transition-colors hover:bg-amber-50 hover:text-amber-700 ${
-                    minRating === opt.value ? 'text-amber-700 font-medium bg-amber-50' : 'text-stone-600'
-                  }`}
+                  onClick={() => { setCategoryFilter(''); setCatDropdownOpen(false) }}
+                  className={`w-full text-left px-4 py-2 text-sm transition-colors hover:bg-stone-50 ${!categoryFilter ? 'text-stone-800 font-medium' : 'text-stone-600'}`}
                 >
-                  {opt.label}
+                  Alle kategorier
                 </button>
-              ))}
-            </div>
-          )}
-        </div>
+                {allCategories.map(cat => (
+                  <button
+                    key={cat}
+                    onClick={() => { setCategoryFilter(cat); setCatDropdownOpen(false) }}
+                    className={`w-full text-left px-4 py-2 text-sm transition-colors hover:bg-stone-50 ${categoryFilter === cat ? 'text-[#8B6340] font-medium bg-[#F5EFE6]' : 'text-stone-600'}`}
+                  >
+                    {cat}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
 
-        <select
-          value={categoryFilter}
-          onChange={e => setCategoryFilter(e.target.value)}
-          className={`px-2.5 py-2 border rounded-xl text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-stone-300 transition-colors ${
-            categoryFilter
-              ? 'bg-[#F5EFE6] text-[#8B6340] border-[#D4A574]'
-              : 'bg-white text-stone-600 border-stone-200'
-          }`}
-        >
-          <option value="">Alle kategorier</option>
-          {allCategories.map(cat => (
-            <option key={cat} value={cat}>{cat}</option>
-          ))}
-        </select>
+          {/* Sort icon */}
+          <div className="relative" ref={sortDropdownRef}>
+            <button
+              onClick={() => setSortDropdownOpen(o => !o)}
+              className={`relative w-9 h-9 flex items-center justify-center rounded-xl border transition-colors ${
+                sortBy !== 'Manuell'
+                  ? 'bg-stone-100 text-stone-800 border-stone-300'
+                  : 'bg-white text-stone-500 border-stone-200 hover:border-stone-400'
+              }`}
+              title="Sortering"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                  d="M3 7h18M6 12h12M9 17h6" />
+              </svg>
+              {sortBy !== 'Manuell' && (
+                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-stone-600 rounded-full" />
+              )}
+            </button>
+            {sortDropdownOpen && (
+              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-20 min-w-[210px] py-1">
+                {([
+                  ['Manuell', 'Manuell (min rekkefølge)'],
+                  ['Nyeste', 'Nyeste først'],
+                  ['Eldste', 'Eldste først'],
+                  ['Navn', 'Navn A–Å'],
+                  ['StjernerHøy', 'Stjerner: høyest først'],
+                  ['StjernerLav', 'Stjerner: lavest først'],
+                ] as [typeof sortBy, string][]).map(([v, label]) => (
+                  <button
+                    key={v}
+                    onClick={() => { setSortBy(v); setSortDropdownOpen(false) }}
+                    className={`w-full text-left px-4 py-2 text-sm transition-colors hover:bg-stone-50 ${sortBy === v ? 'text-stone-800 font-medium bg-stone-50' : 'text-stone-600'}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
 
-        <div className="flex items-center gap-2">
-          <select
-            value={sortBy}
-            onChange={e => setSortBy(e.target.value as typeof sortBy)}
-            className="px-2.5 py-2 border border-stone-200 rounded-xl text-sm bg-white text-stone-600 focus:outline-none focus:ring-2 focus:ring-stone-300 shadow-sm"
-          >
-            <option value="Manuell">Manuell (min rekkefølge)</option>
-            <option value="Nyeste">Nyeste først</option>
-            <option value="Eldste">Eldste først</option>
-            <option value="Navn">Navn A–Å</option>
-            <option value="StjernerHøy">Stjerner: høyest først</option>
-            <option value="StjernerLav">Stjerner: lavest først</option>
-          </select>
-          {orderSaving && <span className="text-xs text-stone-400">Lagrer…</span>}
-          {!orderSaving && orderSaved && <span className="text-xs text-emerald-500 font-medium">Lagret ✓</span>}
+          {orderSaving && <span className="text-xs text-stone-400 ml-1">Lagrer…</span>}
+          {!orderSaving && orderSaved && <span className="text-xs text-emerald-500 font-medium ml-1">Lagret ✓</span>}
         </div>
-        <button
-          onClick={() => setShowNewModal(true)}
-          className="flex items-center gap-2 px-4 py-2.5 min-h-[44px] bg-[#C9A57A] text-white text-sm rounded-xl hover:bg-[#b8925f] transition-colors font-medium whitespace-nowrap"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          Ny oppskrift
-        </button>
       </div>
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 pb-16">
@@ -2119,6 +2179,17 @@ export default function RecipesPage() {
           onCancel={() => setDeleteId(null)}
         />
       )}
+
+      {/* FAB */}
+      <button
+        onClick={() => setShowNewModal(true)}
+        className="fixed bottom-6 right-6 w-14 h-14 bg-[#C9A57A] text-white rounded-full shadow-lg hover:bg-[#b8925f] transition-all flex items-center justify-center cursor-pointer z-30"
+        aria-label="Ny oppskrift"
+      >
+        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+        </svg>
+      </button>
     </>
   )
 }
