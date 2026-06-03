@@ -1418,21 +1418,46 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
         <div className="space-y-3">
           {cover ? (
             <>
-              <div className="relative group rounded-2xl overflow-hidden bg-stone-100">
-                <img src={cover.url} alt="" className="w-full aspect-[5/4] object-cover"
-                  style={{ objectPosition: `${form.focalX ?? 50}% ${form.focalY ?? 50}%` }} />
-                <button onClick={() => removeImage(cover.id)}
-                  className="absolute top-3 right-3 p-2 bg-white/90 rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-50">
-                  <svg className="w-4 h-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-                <button onClick={() => setShowImgModal(true)}
-                  className="absolute bottom-3 right-3 p-2 bg-white/90 rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity hover:bg-stone-50">
-                  <svg className="w-4 h-4 text-stone-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                  </svg>
-                </button>
+              <div className="flex gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="relative group rounded-2xl overflow-hidden bg-stone-100">
+                    <img src={cover.url} alt="" className="w-full aspect-[5/4] object-cover"
+                      style={{ objectPosition: `${form.focalX ?? 50}% ${form.focalY ?? 50}%` }} />
+                    <button onClick={() => removeImage(cover.id)}
+                      className="absolute top-3 right-3 p-2 bg-white/90 rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-50">
+                      <svg className="w-4 h-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                    <button onClick={() => setShowImgModal(true)}
+                      className="absolute bottom-3 right-3 p-2 bg-white/90 rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity hover:bg-stone-50">
+                      <svg className="w-4 h-4 text-stone-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+                {form.images.length > 1 && (
+                  <div className="w-20 sm:w-24 flex-shrink-0 flex flex-col gap-2">
+                    {form.images.slice(1).map(img => (
+                      <div key={img.id} className="relative group aspect-square rounded-xl overflow-hidden bg-stone-100">
+                        <img src={img.url} alt="" className="w-full h-full object-cover" />
+                        <button onClick={() => removeImage(img.id)}
+                          className="absolute top-1 right-1 p-1 bg-white/90 rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-50">
+                          <svg className="w-2.5 h-2.5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                    ))}
+                    <button onClick={() => setShowImgModal(true)}
+                      className="aspect-square rounded-xl border-2 border-dashed border-stone-200 hover:border-stone-300 hover:bg-stone-50 transition-colors flex items-center justify-center text-stone-300 hover:text-stone-400">
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" />
+                      </svg>
+                    </button>
+                  </div>
+                )}
               </div>
               <div className="flex items-center gap-4 flex-wrap">
                 <button onClick={() => setShowFocalModal(true)}
@@ -1465,27 +1490,6 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
               </svg>
               <span className="text-sm font-medium text-stone-400">Legg til bilde</span>
             </button>
-          )}
-          {form.images.length > 1 && (
-            <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
-              {form.images.slice(1).map(img => (
-                <div key={img.id} className="relative group aspect-square rounded-xl overflow-hidden bg-stone-100">
-                  <img src={img.url} alt="" className="w-full h-full object-cover" />
-                  <button onClick={() => removeImage(img.id)}
-                    className="absolute top-1.5 right-1.5 p-1.5 bg-white/90 rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-50">
-                    <svg className="w-3 h-3 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-              ))}
-              <button onClick={() => setShowImgModal(true)}
-                className="aspect-square rounded-xl border-2 border-dashed border-stone-200 hover:border-stone-300 hover:bg-stone-50 transition-colors flex items-center justify-center text-stone-300 hover:text-stone-400">
-                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" />
-                </svg>
-              </button>
-            </div>
           )}
         </div>
 

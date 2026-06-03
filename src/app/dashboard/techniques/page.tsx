@@ -141,52 +141,51 @@ function TechniqueCard({ technique, onEdit, onDelete }: {
 }) {
   const d = technique.data
   return (
-    <div
+    <article
       onClick={onEdit}
-      className="bg-white rounded-2xl border border-stone-100 shadow-sm hover:shadow-md hover:border-stone-200 transition-all cursor-pointer p-5 group">
-      <div className="flex items-start justify-between gap-2 mb-3">
-        <div className="flex-1 min-w-0">
-          <h3 className="font-medium text-stone-800 text-sm leading-snug truncate">{d.navn}</h3>
-          {d.kategori && (
-            <span className="inline-block mt-1 px-2 py-0.5 bg-stone-100 text-stone-500 text-xs rounded-lg">
-              {d.kategori}
-            </span>
-          )}
-        </div>
-        <button
-          onClick={e => { e.stopPropagation(); onDelete() }}
-          className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 text-stone-300 hover:text-red-400 rounded-lg hover:bg-red-50 flex-shrink-0">
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-          </svg>
-        </button>
+      className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col h-full relative"
+    >
+      <div className="p-4 flex flex-col flex-1">
+        <h3 className="font-serif text-base font-semibold text-stone-800 truncate">
+          {d.navn || <span className="text-stone-300 italic font-light">Uten navn</span>}
+        </h3>
+        <p className="text-xs text-stone-500 truncate mt-0">{d.kategori || ' '}</p>
+        {(d.stingtype || d.trykkfot || d.naal) && (
+          <div className="flex flex-wrap gap-1.5 mt-2">
+            {d.stingtype && (
+              <span className="px-2 py-0.5 bg-[#F5EFE6] text-[#8B6340] text-xs rounded-lg border border-[#D4A574]">{d.stingtype}</span>
+            )}
+            {d.trykkfot && (
+              <span className="px-2 py-0.5 bg-stone-50 text-stone-500 text-xs rounded-lg border border-stone-100">{d.trykkfot}</span>
+            )}
+            {d.naal && (
+              <span className="px-2 py-0.5 bg-stone-50 text-stone-500 text-xs rounded-lg border border-stone-100">Nål: {d.naal}</span>
+            )}
+          </div>
+        )}
+        {d.fremgangsmaat && (
+          <p className="mt-2 text-xs text-stone-400 line-clamp-2 leading-relaxed flex-1">{d.fremgangsmaat}</p>
+        )}
+        {d.videoUrl && (
+          <div className="mt-2 flex items-center gap-1.5 text-xs text-[#C9A57A]">
+            <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+            Video
+          </div>
+        )}
       </div>
-      {(d.stingtype || d.trykkfot || d.naal) && (
-        <div className="flex flex-wrap gap-1.5 mt-2">
-          {d.stingtype && (
-            <span className="px-2 py-0.5 bg-[#C9A57A]/10 text-[#9a7a55] text-xs rounded-lg">{d.stingtype}</span>
-          )}
-          {d.trykkfot && (
-            <span className="px-2 py-0.5 bg-stone-50 text-stone-500 text-xs rounded-lg border border-stone-100">{d.trykkfot}</span>
-          )}
-          {d.naal && (
-            <span className="px-2 py-0.5 bg-stone-50 text-stone-500 text-xs rounded-lg border border-stone-100">Nål: {d.naal}</span>
-          )}
-        </div>
-      )}
-      {d.fremgangsmaat && (
-        <p className="mt-3 text-xs text-stone-400 line-clamp-2 leading-relaxed">{d.fremgangsmaat}</p>
-      )}
-      {d.videoUrl && (
-        <div className="mt-3 flex items-center gap-1.5 text-xs text-[#C9A57A]">
-          <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M8 5v14l11-7z" />
-          </svg>
-          Video
-        </div>
-      )}
-    </div>
+
+      <button
+        onClick={e => { e.stopPropagation(); onDelete() }}
+        className="absolute bottom-1 right-1.5 z-10 p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors"
+      >
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+        </svg>
+      </button>
+    </article>
   )
 }
 
@@ -548,7 +547,7 @@ export default function TechniquesPage() {
             )}
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-5">
             {filtered.map(item => (
               <TechniqueCard key={item.id} technique={item}
                 onEdit={() => { setCurrentItem(item); setShowDetail(true) }}

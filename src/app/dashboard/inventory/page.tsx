@@ -52,6 +52,12 @@ const STOFF_TYPES: StoffType[] = ['Hovedstoff', 'Fôr', 'Mellomlegg', 'Annet']
 const TILBEHOR_CHIPS = ['Sytråd', 'Glidelås', 'Vliselin', 'Knapper', 'Elastikk']
 const UTSTYR_CHIPS   = ['Nål', 'Symaskinfot', 'Saks', 'Måleband', 'Annet']
 
+const KATEGORI_STYLE: Record<Kategori, string> = {
+  Stoff:    'bg-[#F5EFE6] text-[#8B6340] border-[#D4A574]',
+  Tilbehør: 'bg-teal-50 text-teal-700 border-teal-200',
+  Utstyr:   'bg-sky-50 text-sky-700 border-sky-200',
+}
+
 function emptyData(kategori: Kategori): InventoryItemData {
   return { kategori, navn: '', bilde: '', notater: '', tenktTil: '', plassering: '', kjopsdato: '', kilde: '' }
 }
@@ -97,35 +103,34 @@ function SectionHeading({ children, first = false }: { children: ReactNode; firs
   )
 }
 
+function Badge({ label, cls }: { label: string; cls: string }) {
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded border text-xs font-medium ${cls}`}>
+      {label}
+    </span>
+  )
+}
+
 // ── InventoryCard ─────────────────────────────────────────────────────────────
 
 function InventoryCard({ item, onEdit, onDelete }: {
   item: InventoryItem; onEdit: () => void; onDelete: () => void
 }) {
   const d = item.data
-  const subtitle = d.kategori === 'Stoff' ? d.materiale
-    : d.kategori === 'Tilbehør' ? d.underkategori
-    : d.utstyrstype
+  const subtitle = d.kategori === 'Stoff' ? (d.materiale ?? '')
+    : d.kategori === 'Tilbehør' ? (d.underkategori ?? '')
+    : (d.utstyrstype ?? '')
+
   const badge = d.kategori === 'Stoff' ? d.mengde
     : d.kategori === 'Tilbehør' ? d.antall
     : null
 
-  let tilbehorExtra: string | null = null
-  if (d.kategori === 'Tilbehør') {
-    if (d.underkategori === 'Sytråd') {
-      tilbehorExtra = d.farge || null
-    } else if (d.underkategori === 'Glidelås') {
-      const parts = [d.lengde, d.farge].filter(Boolean)
-      tilbehorExtra = parts.length > 0 ? parts.join(' · ') : null
-    }
-  }
-
   return (
     <article
       onClick={onEdit}
-      className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col"
+      className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col h-full relative"
     >
-      <div className="h-44 bg-stone-50 overflow-hidden flex-shrink-0">
+      <div className="w-full aspect-[5/4] bg-stone-50 overflow-hidden relative">
         {d.bilde ? (
           <img src={d.bilde} alt={d.navn}
             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
@@ -137,42 +142,33 @@ function InventoryCard({ item, onEdit, onDelete }: {
             </svg>
           </div>
         )}
-      </div>
-
-      <div className="p-4 flex flex-col flex-1">
-        <h3 className="font-serif text-xl font-semibold text-stone-800 mb-0.5 truncate leading-tight">
-          {d.navn || <span className="text-stone-300 italic font-light">Uten navn</span>}
-        </h3>
-        {subtitle && <p className="text-xs text-stone-400 mb-1 truncate">{subtitle}</p>}
-        {d.kategori === 'Stoff' && d.tenktTil && (
-          <p className="text-xs text-stone-400 truncate mb-1">✎ Til: {d.tenktTil}</p>
-        )}
-        {tilbehorExtra && (
-          <p className="text-xs text-stone-400 truncate mb-1">{tilbehorExtra}</p>
-        )}
-        {d.kategori === 'Utstyr' && d.brukesTil && (
-          <p className="text-xs text-stone-400 line-clamp-2 mb-1">{d.brukesTil}</p>
-        )}
-
-        <div className="flex items-center justify-between mt-auto pt-3 border-t border-stone-100">
-          <div>
-            {badge && (
-              <span className="inline-flex items-center px-2 py-0.5 rounded border text-xs font-medium bg-amber-50 text-amber-700 border-amber-200">
-                {badge}
-              </span>
-            )}
-          </div>
-          <button
-            onClick={e => { e.stopPropagation(); onDelete() }}
-            className="p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-            </svg>
-          </button>
+        <div
+          className="absolute bottom-0 left-0 right-0 px-3 pt-2 pb-1.5 flex flex-col h-14 overflow-hidden"
+          style={{ backgroundColor: 'rgba(237,240,233,0.94)' }}
+        >
+          <h3 className="font-serif text-base font-semibold text-stone-800 truncate mt-0">
+            {d.navn || <span className="text-stone-300 italic font-light">Uten navn</span>}
+          </h3>
+          <p className="text-xs text-stone-500 truncate">{subtitle || ' '}</p>
         </div>
       </div>
+
+      <div className="px-3 py-2 flex items-center justify-between border-t border-stone-100">
+        <div className="text-xs text-stone-500">
+          {badge && <span className="font-medium">{badge}</span>}
+        </div>
+        <Badge label={d.kategori} cls={KATEGORI_STYLE[d.kategori]} />
+      </div>
+
+      <button
+        onClick={e => { e.stopPropagation(); onDelete() }}
+        className="absolute bottom-1 right-1.5 z-10 p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors"
+      >
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+        </svg>
+      </button>
     </article>
   )
 }
@@ -1197,7 +1193,7 @@ export default function InventoryPage() {
                         {groupName}
                         <span className="text-stone-400 font-normal">({groupItems.length})</span>
                       </h3>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-5">
                         {visible.map(item => (
                           <InventoryCard key={item.id} item={item}
                             onEdit={() => openEdit(item)}
@@ -1247,7 +1243,7 @@ export default function InventoryPage() {
                     Anbefalt: <strong>{matches[0].data.navn}</strong>
                   </div>
                 )}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-5">
                   {matches.map(item => (
                     <InventoryCard key={item.id} item={item}
                       onEdit={() => openEdit(item)}
@@ -1274,7 +1270,7 @@ export default function InventoryPage() {
             )}
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-5">
             {filtered.map(item => (
               <InventoryCard key={item.id} item={item}
                 onEdit={() => openEdit(item)}
