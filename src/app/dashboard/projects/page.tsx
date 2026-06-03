@@ -268,7 +268,7 @@ function ProjectCard({ project, onEdit, onDelete }: {
         }
         <div
           className="absolute bottom-0 left-0 right-0 px-3 pt-2 pb-1.5 flex flex-col h-14 overflow-hidden"
-          style={{ backgroundColor: 'rgba(243,238,230,0.94)' }}
+          style={{ backgroundColor: 'rgba(243,238,230,0.80)' }}
         >
           <h3 className="font-serif text-base font-semibold text-stone-800 truncate mt-0">
             {d.name || <span className="text-stone-300 italic font-light">Uten navn</span>}
