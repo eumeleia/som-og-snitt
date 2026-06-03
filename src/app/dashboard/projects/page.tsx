@@ -250,7 +250,7 @@ function ProjectCard({ project, onEdit, onDelete }: {
   return (
     <article
       onClick={onEdit}
-      className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col h-full relative"
+      className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col h-full relative min-w-0"
     >
       <div className="w-full aspect-[5/4] bg-stone-50 overflow-hidden relative">
         {cover
@@ -342,7 +342,7 @@ function SortableProjectCard({ project, onEdit, onDelete, isDragMode }: {
   return (
     <div
       ref={setNodeRef}
-      className="h-full"
+      className="h-full min-w-0"
       style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }}
       {...attributes}
       {...listeners}
@@ -2859,7 +2859,7 @@ export default function ProjectsPage() {
       {/* Filter bar */}
       <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 space-y-3">
         {/* Status pills */}
-        <div className="flex gap-1 bg-white rounded-xl p-1 border border-stone-200 shadow-sm w-fit">
+        <div className="flex gap-1 bg-white rounded-xl p-1 border border-stone-200 shadow-sm w-fit max-w-full">
           {STATUSES.map(s => {
             const count = counts[s as keyof typeof counts]
             return (
@@ -2971,7 +2971,7 @@ export default function ProjectsPage() {
         </div>
       </div>
 
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 pb-16">
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 pb-24">
         {loading ? (
           <div className="flex justify-center py-32">
             <div className="w-8 h-8 border-2 border-stone-300 border-t-stone-700 rounded-full animate-spin" />

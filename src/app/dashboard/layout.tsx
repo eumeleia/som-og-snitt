@@ -27,7 +27,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   return (
-    <div className="min-h-screen" style={{ backgroundColor: '#FAF7F4' }}>
+    <div className="min-h-screen overflow-x-hidden" style={{ backgroundColor: '#FAF7F4' }}>
       <header className="sticky top-0 z-20 bg-[#FAF7F4] border-b border-stone-200">
         {/* Brand + logout — h-12 = 48px */}
         <div className="flex items-center justify-between px-4 sm:px-8 h-12">

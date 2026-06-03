@@ -306,7 +306,7 @@ function RecipeCard({ recipe, onEdit, onDelete, dragHandle }: {
   return (
     <article
       onClick={onEdit}
-      className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col h-full relative"
+      className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col h-full relative min-w-0"
     >
       <div className="w-full aspect-[5/4] bg-stone-50 overflow-hidden relative">
         {dragHandle && <div className="absolute top-2 left-2 z-10">{dragHandle}</div>}
@@ -391,7 +391,7 @@ function SortableRecipeCard({ recipe, onEdit, onDelete, isDragMode }: {
     <div
       ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }}
-      className="h-full"
+      className="h-full min-w-0"
       {...attributes}
       {...listeners}
     >
@@ -2125,7 +2125,7 @@ export default function RecipesPage() {
         </div>
       </div>
 
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 pb-16">
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 pb-24">
         {loading ? (
           <div className="flex justify-center py-32">
             <div className="w-8 h-8 border-2 border-stone-300 border-t-stone-700 rounded-full animate-spin" />

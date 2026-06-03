@@ -143,7 +143,7 @@ function TechniqueCard({ technique, onEdit, onDelete }: {
   return (
     <article
       onClick={onEdit}
-      className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col h-full relative"
+      className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col h-full relative min-w-0"
     >
       <div className="p-4 flex flex-col flex-1">
         <h3 className="font-serif text-base font-semibold text-stone-800 truncate">
@@ -584,7 +584,7 @@ export default function TechniquesPage() {
       </div>
 
       {/* Grid */}
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 pb-16">
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 pb-24">
         {loading ? (
           <div className="flex justify-center py-32">
             <div className="w-8 h-8 border-2 border-stone-300 border-t-stone-700 rounded-full animate-spin" />
