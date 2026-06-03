@@ -491,7 +491,7 @@ export default function TechniquesPage() {
   return (
     <>
       {/* Search + filters */}
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 mb-0 space-y-3">
+      <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 py-4 mb-0 space-y-3 overflow-hidden">
         <div className="relative">
           <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 pointer-events-none"
             fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -584,7 +584,7 @@ export default function TechniquesPage() {
       </div>
 
       {/* Grid */}
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 pb-24">
+      <main className="w-full max-w-6xl mx-auto px-4 sm:px-6 pb-24 overflow-x-hidden">
         {loading ? (
           <div className="flex justify-center py-32">
             <div className="w-8 h-8 border-2 border-stone-300 border-t-stone-700 rounded-full animate-spin" />
@@ -608,7 +608,7 @@ export default function TechniquesPage() {
             )}
           </div>
         ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-5">
+          <div className="w-full grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-5 overflow-hidden">
             {filtered.map(item => (
               <TechniqueCard key={item.id} technique={item}
                 onEdit={() => { setCurrentItem(item); setShowDetail(true) }}

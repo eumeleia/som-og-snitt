@@ -1982,7 +1982,7 @@ export default function RecipesPage() {
   return (
     <>
       {/* Search + filter icons */}
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 space-y-3">
+      <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 py-4 space-y-3 overflow-hidden">
         <div className="relative">
           <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 pointer-events-none"
             fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2125,7 +2125,7 @@ export default function RecipesPage() {
         </div>
       </div>
 
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 pb-24">
+      <main className="w-full max-w-6xl mx-auto px-4 sm:px-6 pb-24 overflow-x-hidden">
         {loading ? (
           <div className="flex justify-center py-32">
             <div className="w-8 h-8 border-2 border-stone-300 border-t-stone-700 rounded-full animate-spin" />
@@ -2152,7 +2152,7 @@ export default function RecipesPage() {
         ) : (
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <SortableContext items={sortedFiltered.map(r => r.id)} strategy={rectSortingStrategy}>
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-5">
+              <div className="w-full grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-5 overflow-hidden">
                 {sortedFiltered.map(r => (
                   <SortableRecipeCard key={r.id} recipe={r}
                     onEdit={() => openEdit(r)}

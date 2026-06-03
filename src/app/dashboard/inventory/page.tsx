@@ -1088,7 +1088,7 @@ export default function InventoryPage() {
   return (
     <>
       {/* Tabs */}
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 mb-3">
+      <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 mb-3 overflow-hidden">
         <div className="flex gap-1 p-1 bg-stone-100 rounded-xl w-full sm:w-auto sm:inline-flex">
           {KATEGORIER.map(k => (
             <button key={k} onClick={() => setTab(k)}
@@ -1102,7 +1102,7 @@ export default function InventoryPage() {
       </div>
 
       {/* Search + filters */}
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 mb-4 space-y-3">
+      <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 mb-4 space-y-3 overflow-hidden">
         <div className="relative">
           <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 pointer-events-none"
             fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1216,7 +1216,7 @@ export default function InventoryPage() {
       )}
 
       {/* Grid */}
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 pb-24">
+      <main className="w-full max-w-6xl mx-auto px-4 sm:px-6 pb-24 overflow-x-hidden">
         {loading ? (
           <div className="flex justify-center py-32">
             <div className="w-8 h-8 border-2 border-stone-300 border-t-stone-700 rounded-full animate-spin" />
@@ -1253,7 +1253,7 @@ export default function InventoryPage() {
                         {groupName}
                         <span className="text-stone-400 font-normal">({groupItems.length})</span>
                       </h3>
-                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-5">
+                      <div className="w-full grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-5 overflow-hidden">
                         {visible.map(item => (
                           <InventoryCard key={item.id} item={item}
                             onEdit={() => openEdit(item)}
@@ -1303,7 +1303,7 @@ export default function InventoryPage() {
                     Anbefalt: <strong>{matches[0].data.navn}</strong>
                   </div>
                 )}
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-5">
+                <div className="w-full grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-5 overflow-hidden">
                   {matches.map(item => (
                     <InventoryCard key={item.id} item={item}
                       onEdit={() => openEdit(item)}
@@ -1330,7 +1330,7 @@ export default function InventoryPage() {
             )}
           </div>
         ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-5">
+          <div className="w-full grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-5 overflow-hidden">
             {filtered.map(item => (
               <InventoryCard key={item.id} item={item}
                 onEdit={() => openEdit(item)}

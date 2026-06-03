@@ -2857,7 +2857,7 @@ export default function ProjectsPage() {
   return (
     <>
       {/* Filter bar */}
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 space-y-3">
+      <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 py-4 space-y-3 overflow-hidden">
         {/* Status pills */}
         <div className="flex gap-1 bg-white rounded-xl p-1 border border-stone-200 shadow-sm w-fit max-w-full">
           {STATUSES.map(s => {
@@ -2971,7 +2971,7 @@ export default function ProjectsPage() {
         </div>
       </div>
 
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 pb-24">
+      <main className="w-full max-w-6xl mx-auto px-4 sm:px-6 pb-24 overflow-x-hidden">
         {loading ? (
           <div className="flex justify-center py-32">
             <div className="w-8 h-8 border-2 border-stone-300 border-t-stone-700 rounded-full animate-spin" />
@@ -2995,7 +2995,7 @@ export default function ProjectsPage() {
         ) : (
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <SortableContext items={sortedFiltered.map(p => p.id)} strategy={rectSortingStrategy}>
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-5">
+              <div className="w-full grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-5 overflow-hidden">
                 {sortedFiltered.map(p => (
                   <SortableProjectCard key={p.id} project={p}
                     onEdit={() => openEdit(p)}
