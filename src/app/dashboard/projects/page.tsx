@@ -262,7 +262,7 @@ function ProjectCard({ project, onEdit, onDelete, dragHandle }: {
       onClick={onEdit}
       className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col h-full"
     >
-      <div className="h-52 bg-stone-50 overflow-hidden flex-shrink-0 relative">
+      <div className="w-full aspect-[3/4] bg-stone-50 overflow-hidden flex-shrink-0 relative">
         {dragHandle && <div className="absolute top-2 left-2 z-10">{dragHandle}</div>}
         {cover
           ? <img src={cover} alt={d.name} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
@@ -380,6 +380,7 @@ function SortableProjectCard({ project, onEdit, onDelete, isDragMode }: {
   return (
     <div
       ref={setNodeRef}
+      className="h-full"
       style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }}
       {...attributes}
     >
@@ -2969,7 +2970,7 @@ export default function ProjectsPage() {
         ) : (
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <SortableContext items={sortedFiltered.map(p => p.id)} strategy={rectSortingStrategy}>
-              <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-5">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-5">
                 {sortedFiltered.map(p => (
                   <SortableProjectCard key={p.id} project={p}
                     onEdit={() => openEdit(p)}

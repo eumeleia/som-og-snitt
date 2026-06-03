@@ -308,7 +308,7 @@ function RecipeCard({ recipe, onEdit, onDelete, dragHandle }: {
       onClick={onEdit}
       className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col h-full"
     >
-      <div className="h-48 bg-stone-50 overflow-hidden flex-shrink-0 relative">
+      <div className="w-full aspect-[3/4] bg-stone-50 overflow-hidden flex-shrink-0 relative">
         {dragHandle && <div className="absolute top-2 left-2 z-10">{dragHandle}</div>}
         {cover
           ? <img src={cover} alt={d.name}
@@ -331,7 +331,7 @@ function RecipeCard({ recipe, onEdit, onDelete, dragHandle }: {
         </h3>
         {d.designer && <p className="text-xs text-stone-400 mb-0">{d.designer}</p>}
         {d.category && (
-          <div className="flex flex-wrap gap-1.5 pt-1.5 mb-0">
+          <div className="flex flex-wrap gap-1.5 pt-1.5 mb-0 justify-end">
             <Badge label={d.category} cls="bg-[#F5EFE6] text-[#8B6340] border-[#D4A574]" />
           </div>
         )}
