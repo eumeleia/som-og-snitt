@@ -306,9 +306,9 @@ function RecipeCard({ recipe, onEdit, onDelete, dragHandle }: {
   return (
     <article
       onClick={onEdit}
-      className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col h-full"
+      className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col h-full relative"
     >
-      <div className="w-full aspect-[5/4] bg-stone-50 overflow-hidden flex-shrink-0 relative">
+      <div className="w-full aspect-[5/4] bg-stone-50 overflow-hidden relative">
         {dragHandle && <div className="absolute top-2 left-2 z-10">{dragHandle}</div>}
         {cover
           ? <img src={cover} alt={d.name}
@@ -323,66 +323,66 @@ function RecipeCard({ recipe, onEdit, onDelete, dragHandle }: {
             </div>
           )
         }
-      </div>
-
-      <div className="p-4 flex flex-col flex-1">
-        <h3 className="font-serif text-xl font-semibold text-stone-800 mb-1 truncate leading-tight">
-          {d.name || <span className="text-stone-300 italic font-light">Uten navn</span>}
-        </h3>
-        {d.designer && <p className="text-xs text-stone-400 mb-0">{d.designer}</p>}
-        {d.category && (
-          <div className="flex flex-wrap gap-1.5 pt-1.5 mb-0 justify-end">
-            <Badge label={d.category} cls="bg-[#F5EFE6] text-[#8B6340] border-[#D4A574]" />
-          </div>
-        )}
-
-        <div className="flex-1" />
-
-        <div className="flex items-center justify-between mt-auto pt-3 border-t border-stone-100">
-          <div className="flex gap-3 text-xs text-stone-400">
-            {d.sizes.length > 0 && (
-              <span className="flex items-center gap-1">
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                    d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a2 2 0 012-2z" />
-                </svg>
-                {formatSizeRange(d.sizes)}
-              </span>
-            )}
-            {d.pdfs.length > 0 && (
-              <span className="flex items-center gap-1">
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                    d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414A1 1 0 0119 9.414V19a2 2 0 01-2 2z" />
-                </svg>
-                {d.pdfs.length}
-              </span>
-            )}
-          </div>
-          <button
-            onClick={e => { e.stopPropagation(); onDelete() }}
-            className="p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-            </svg>
-          </button>
+        <div
+          className="absolute bottom-0 left-0 right-0 px-3 pt-6 pb-3 flex flex-col"
+          style={{ background: 'linear-gradient(to bottom, transparent, rgba(250,247,244,0.82) 40%, rgba(250,247,244,0.93))' }}
+        >
+          <h3 className="font-serif text-base font-semibold text-stone-800 truncate">
+            {d.name || <span className="text-stone-300 italic font-light">Uten navn</span>}
+          </h3>
+          {d.designer && <p className="text-xs text-stone-500 truncate">{d.designer}</p>}
         </div>
-        {oppskriftPdf && (
-          <div className="pt-1.5">
-            <a
-              href={oppskriftPdf.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={e => e.stopPropagation()}
-              className="text-xs text-[#C9A57A] hover:text-[#8B6340] hover:underline transition-colors"
-            >
-              Oppskrift ↗
-            </a>
-          </div>
+      </div>
+
+      <div className="px-3 py-2 flex items-center justify-between border-t border-stone-100">
+        <div className="flex gap-3 text-xs text-stone-400">
+          {d.sizes.length > 0 && (
+            <span className="flex items-center gap-1">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                  d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a2 2 0 012-2z" />
+              </svg>
+              {formatSizeRange(d.sizes)}
+            </span>
+          )}
+          {d.pdfs.length > 0 && (
+            <span className="flex items-center gap-1">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414A1 1 0 0119 9.414V19a2 2 0 01-2 2z" />
+              </svg>
+              {d.pdfs.length}
+            </span>
+          )}
+        </div>
+        {d.category && (
+          <Badge label={d.category} cls="bg-[#F5EFE6] text-[#8B6340] border-[#D4A574]" />
         )}
       </div>
+
+      {oppskriftPdf && (
+        <div className="px-3 pb-2 text-xs">
+          <a
+            href={oppskriftPdf.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={e => e.stopPropagation()}
+            className="text-[#C9A57A] hover:text-[#8B6340] hover:underline transition-colors"
+          >
+            Oppskrift ↗
+          </a>
+        </div>
+      )}
+
+      <button
+        onClick={e => { e.stopPropagation(); onDelete() }}
+        className="absolute bottom-2 right-2 z-10 p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors"
+      >
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+        </svg>
+      </button>
     </article>
   )
 }
