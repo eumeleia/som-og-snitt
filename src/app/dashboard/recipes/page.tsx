@@ -324,13 +324,13 @@ function RecipeCard({ recipe, onEdit, onDelete, dragHandle }: {
           )
         }
         <div
-          className="absolute bottom-0 left-0 right-0 px-3 pt-8 pb-1.5 flex flex-col"
-          style={{ background: 'linear-gradient(to bottom, rgba(250,247,244,0) 0%, rgba(250,247,244,0.88) 35%, rgba(250,247,244,0.96) 100%)' }}
+          className="absolute bottom-0 left-0 right-0 px-3 pt-2 pb-1.5 flex flex-col h-20 overflow-hidden"
+          style={{ backgroundColor: 'rgba(250,247,244,0.93)' }}
         >
-          <h3 className="font-serif text-lg font-semibold text-stone-800 truncate">
+          <h3 className="font-serif text-lg font-semibold text-stone-800 truncate mt-1">
             {d.name || <span className="text-stone-300 italic font-light">Uten navn</span>}
           </h3>
-          {d.designer && <p className="text-xs text-stone-500 truncate mb-0">{d.designer}</p>}
+          <p className="text-xs text-stone-500 truncate">{d.designer || ' '}</p>
         </div>
       </div>
 
