@@ -308,7 +308,7 @@ function RecipeCard({ recipe, onEdit, onDelete, dragHandle }: {
       onClick={onEdit}
       className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col h-full"
     >
-      <div className="w-full aspect-[3/4] bg-stone-50 overflow-hidden flex-shrink-0 relative">
+      <div className="w-full aspect-video bg-stone-50 overflow-hidden flex-shrink-0 relative">
         {dragHandle && <div className="absolute top-2 left-2 z-10">{dragHandle}</div>}
         {cover
           ? <img src={cover} alt={d.name}
@@ -1418,8 +1418,8 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
         <div className="space-y-3">
           {cover ? (
             <>
-              <div className="relative group rounded-2xl overflow-hidden bg-stone-100" style={{ height: '300px' }}>
-                <img src={cover.url} alt="" className="w-full h-full object-cover"
+              <div className="relative group rounded-2xl overflow-hidden bg-stone-100">
+                <img src={cover.url} alt="" className="w-full aspect-video object-cover"
                   style={{ objectPosition: `${form.focalX ?? 50}% ${form.focalY ?? 50}%` }} />
                 <button onClick={() => removeImage(cover.id)}
                   className="absolute top-3 right-3 p-2 bg-white/90 rounded-full shadow opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-50">
