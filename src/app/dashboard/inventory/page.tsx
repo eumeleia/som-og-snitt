@@ -1103,7 +1103,7 @@ export default function InventoryPage() {
 
       {/* Search + filters */}
       <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 mb-4 space-y-3 overflow-hidden">
-        <div className="relative">
+        <div className="relative w-full min-w-0">
           <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 pointer-events-none"
             fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
@@ -1114,7 +1114,7 @@ export default function InventoryPage() {
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder={`Søk i ${emptyLabel}…`}
-            className="w-full pl-9 pr-4 py-2 border border-stone-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300 shadow-sm"
+            className="w-full min-w-0 pl-9 pr-4 py-2 border border-stone-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300 shadow-sm"
           />
         </div>
 
@@ -1197,8 +1197,8 @@ export default function InventoryPage() {
 
       {/* Utstyr smart search (5E) */}
       {tab === 'Utstyr' && (
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 mb-4">
-          <div className="relative">
+        <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 mb-4 overflow-hidden">
+          <div className="relative w-full min-w-0">
             <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#C9A57A] pointer-events-none"
               fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
@@ -1209,7 +1209,7 @@ export default function InventoryPage() {
               value={utstyrSearch}
               onChange={e => setUtstyrSearch(e.target.value)}
               placeholder="Anbefal utstyr for… (f.eks. «stretch», «overlokk»)"
-              className="w-full pl-9 pr-4 py-2 border border-[#C9A57A]/40 rounded-xl text-sm bg-[#C9A57A]/5 focus:outline-none focus:ring-2 focus:ring-[#C9A57A]/40 shadow-sm"
+              className="w-full min-w-0 pl-9 pr-4 py-2 border border-[#C9A57A]/40 rounded-xl text-sm bg-[#C9A57A]/5 focus:outline-none focus:ring-2 focus:ring-[#C9A57A]/40 shadow-sm"
             />
           </div>
         </div>
