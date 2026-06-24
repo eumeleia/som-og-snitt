@@ -11,6 +11,7 @@ const TABS = [
   { href: '/dashboard/projects',   label: 'Prosjekter' },
   { href: '/dashboard/inventory',  label: 'Lager' },
   { href: '/dashboard/techniques', label: 'Teknikker' },
+  { href: '/dashboard/embroidery',  label: 'Broderi' },
 ]
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
