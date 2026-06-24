@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/render-pes/index.py": {
+      "runtime": "vercel-python@0.0.0"
+    }
+  }
+}

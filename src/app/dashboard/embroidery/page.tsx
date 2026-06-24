@@ -78,38 +78,129 @@ function splitCamelCase(s: string): string {
   return s
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/([a-zA-Z])(\d)/g, '$1 $2')
+    .replace(/(\d)([a-zA-Z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
-function parseSizeFromFilename(filename: string): { baseName: string; sizeLabel: string } {
-  const nameNoExt = filename.replace(/\.[^.]+$/, '')
-  let baseName = nameNoExt
-  let sizeLabel = 'Standard'
+const SIZE_WORDS_ORDERED = ['smallest', 'small', 'medium', 'large', 'largest']
+const SIZE_ABBREVS = ['xxs', 'xs', 's', 'm', 'l', 'xl', 'xxl']
 
+function isSizeFolder(s: string): boolean {
+  const lower = s.toLowerCase()
+  if (SIZE_WORDS_ORDERED.includes(lower)) return true
+  if (SIZE_ABBREVS.includes(lower)) return true
+  if (/^\d+x\d+$/i.test(s)) return true
+  return false
+}
+
+function sizeOrder(label: string): number {
+  const lower = label.toLowerCase()
+  const wordIdx = SIZE_WORDS_ORDERED.indexOf(lower)
+  if (wordIdx >= 0) return wordIdx
+  const abbrevIdx = SIZE_ABBREVS.indexOf(lower)
+  if (abbrevIdx >= 0) return abbrevIdx + 10
+  const sizeNum = lower.match(/^size(\d+)$/)
+  if (sizeNum) return 20 + parseInt(sizeNum[1])
+  const pureNum = lower.match(/^\d+$/)
+  if (pureNum) return 30 + parseInt(lower)
+  if (lower === 'standard') return 3  // treat like medium
+  return 99
+}
+
+function normaliseSizeLabel(raw: string): string {
+  const lower = raw.toLowerCase()
+  if (SIZE_WORDS_ORDERED.includes(lower)) return lower.charAt(0).toUpperCase() + lower.slice(1)
+  if (SIZE_ABBREVS.includes(lower)) return raw.toUpperCase()
+  return raw
+}
+
+function parsePesPath(relativePath: string): { motifName: string; sizeLabel: string } {
+  const parts = relativePath.replace(/\\/g, '/').split('/')
+  const filename = parts[parts.length - 1]
+  const nameNoExt = filename.replace(/\.pes$/i, '')
+
+  // ── Folder-structure heuristic (e.g. 6 Summer Bouquets/1/medium/Design1 medium.PES)
+  if (parts.length >= 3) {
+    const sizeFolder = parts[parts.length - 2]
+    const motifFolder = parts[parts.length - 3]
+    if (isSizeFolder(sizeFolder)) {
+      const sizeLabel = normaliseSizeLabel(sizeFolder)
+      let motifName: string
+      // motifFolder is a bare number → derive name from filename
+      if (/^\d+$/.test(motifFolder)) {
+        const sizeLower = sizeFolder.toLowerCase()
+        const stripped = nameNoExt.replace(new RegExp('[\\s_]' + sizeLower + '$', 'i'), '').trim()
+        motifName = stripped ? splitCamelCase(stripped) : `Design ${motifFolder}`
+      } else {
+        motifName = splitCamelCase(motifFolder)
+      }
+      return { motifName: motifName.trim(), sizeLabel }
+    }
+  }
+
+  // ── Filename pattern heuristics (MiniFruits / similar naming)
   const sizeN = nameNoExt.match(/^(.+?)(Size\d+)$/i)
-  if (sizeN) {
-    baseName = sizeN[1]
-    sizeLabel = sizeN[2]
-    return { baseName: splitCamelCase(baseName), sizeLabel }
-  }
+  if (sizeN) return { motifName: splitCamelCase(sizeN[1]).trim(), sizeLabel: sizeN[2] }
+
   const nxn = nameNoExt.match(/^(.+?)(\d+x\d+)$/i)
-  if (nxn) {
-    baseName = nxn[1]
-    sizeLabel = nxn[2]
-    return { baseName: splitCamelCase(baseName), sizeLabel }
+  if (nxn) return { motifName: splitCamelCase(nxn[1]).trim(), sizeLabel: nxn[2] }
+
+  const sml = nameNoExt.match(/^(.+?)[ _]([SML]|X[SL]|XXL|XXS)$/i)
+  if (sml) return { motifName: splitCamelCase(sml[1]).trim(), sizeLabel: sml[2].toUpperCase() }
+
+  for (const sw of SIZE_WORDS_ORDERED) {
+    const m = nameNoExt.match(new RegExp(`^(.+?)[ _]${sw}$`, 'i'))
+    if (m) return { motifName: splitCamelCase(m[1]).trim(), sizeLabel: normaliseSizeLabel(sw) }
   }
-  const sml = nameNoExt.match(/^(.+?)_([SML]|XL)$/i)
-  if (sml) {
-    baseName = sml[1]
-    sizeLabel = sml[2].toUpperCase()
-    return { baseName: splitCamelCase(baseName), sizeLabel }
+
+  const numSuffix = nameNoExt.match(/^(.+?)[ _](\d+)$/)
+  if (numSuffix) return { motifName: splitCamelCase(numSuffix[1]).trim(), sizeLabel: numSuffix[2] }
+
+  // ── Fallback
+  return { motifName: splitCamelCase(nameNoExt).trim(), sizeLabel: 'Standard' }
+}
+
+// ── PES rendering helpers ──────────────────────────────────────────────────────
+
+interface RenderResult {
+  png_base64: string
+  width_mm?: number
+  height_mm?: number
+}
+
+function uint8ToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  const len = bytes.byteLength
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i])
   }
-  const numSuffix = nameNoExt.match(/^(.+?)_(\d+)$/)
-  if (numSuffix) {
-    baseName = numSuffix[1]
-    sizeLabel = numSuffix[2]
-    return { baseName: splitCamelCase(baseName), sizeLabel }
+  return btoa(binary)
+}
+
+function base64ToBlob(b64: string, mimeType: string): Blob {
+  const binary = atob(b64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return new Blob([bytes], { type: mimeType })
+}
+
+async function renderPesPreview(pesData: Uint8Array): Promise<RenderResult | null> {
+  try {
+    const b64 = uint8ToBase64(pesData)
+    const res = await fetch('/api/render-pes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pes_data: b64 }),
+    })
+    if (!res.ok) return null
+    const result = await res.json()
+    if (result.error || !result.png_base64) return null
+    return result as RenderResult
+  } catch {
+    return null
   }
-  return { baseName: splitCamelCase(nameNoExt), sizeLabel: 'Standard' }
 }
 
 function bmpToDataUrl(data: Uint8Array<ArrayBuffer>): Promise<string | null> {
@@ -378,10 +469,13 @@ function UploadModal({ onDone, onClose }: {
 
         const motifMap = new Map<string, { sizeLabel: string; pesFile: PesEntry }[]>()
         for (const pf of pesFiles) {
-          const nameNoExt = pf.name.replace(/\.pes$/i, '')
-          const { baseName, sizeLabel } = parseSizeFromFilename(nameNoExt)
-          if (!motifMap.has(baseName)) motifMap.set(baseName, [])
-          motifMap.get(baseName)!.push({ sizeLabel, pesFile: pf })
+          const { motifName, sizeLabel } = parsePesPath(pf.path)
+          if (!motifMap.has(motifName)) motifMap.set(motifName, [])
+          motifMap.get(motifName)!.push({ sizeLabel, pesFile: pf })
+        }
+        // Sort sizes within each motif group
+        for (const sizes of motifMap.values()) {
+          sizes.sort((a, b) => sizeOrder(a.sizeLabel) - sizeOrder(b.sizeLabel))
         }
 
         let motifIdx = 0
@@ -393,8 +487,12 @@ function UploadModal({ onDone, onClose }: {
           setProgress(`Laster opp ${motifName} (${motifIdx}/${totalMotifs})…`)
 
           const embSizes: EmbroiderySize[] = []
+          // Keep raw PES bytes for the representative size so we can render if no BMP
+          const pesDataCache = new Map<string, Uint8Array>()
+
           for (const { sizeLabel, pesFile } of sizes) {
             const pesData = await pesFile.getData()
+            pesDataCache.set(sizeLabel, pesData)
             const storageFilename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${pesFile.name}`
             const { error: upErr } = await supabase.storage
               .from('embroidery-files')
@@ -426,11 +524,12 @@ function UploadModal({ onDone, onClose }: {
           })
 
           if (matchedBmp) {
+            // BMP path (MiniFruits-style)
             const bmpData = await matchedBmp.getData()
             const dataUrl = await bmpToDataUrl(bmpData as Uint8Array<ArrayBuffer>)
             if (dataUrl) {
-              const res = await fetch(dataUrl)
-              const pngBlob = await res.blob()
+              const res2 = await fetch(dataUrl)
+              const pngBlob = await res2.blob()
               const pngFilename = `embroidery-bmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`
               const { error: bmpErr } = await supabase.storage
                 .from('embroidery-files')
@@ -439,6 +538,39 @@ function UploadModal({ onDone, onClose }: {
                 const { data: bmpUrlData } = supabase.storage.from('embroidery-files').getPublicUrl(pngFilename)
                 coverImage = bmpUrlData.publicUrl
                 bmpPreview = bmpUrlData.publicUrl
+              }
+            }
+          } else {
+            // PES rendering path — pick the representative (middle) size
+            const repIdx = Math.floor(sizes.length / 2)
+            const repSize = sizes[repIdx]
+            const repPesData = pesDataCache.get(repSize.sizeLabel)
+            if (repPesData) {
+              setProgress(`Rendrer forhåndsvisning for ${motifName}…`)
+              try {
+                const renderResult = await renderPesPreview(repPesData)
+                if (renderResult?.png_base64) {
+                  const pngBlob = base64ToBlob(renderResult.png_base64, 'image/png')
+                  const pngFilename = `embroidery-rendered-${Date.now()}-${uid()}.png`
+                  const { error: renderErr } = await supabase.storage
+                    .from('embroidery-files')
+                    .upload(pngFilename, pngBlob, { contentType: 'image/png' })
+                  if (!renderErr) {
+                    const { data: renderUrl } = supabase.storage.from('embroidery-files').getPublicUrl(pngFilename)
+                    coverImage = renderUrl.publicUrl
+                    bmpPreview = renderUrl.publicUrl
+                    // Store dimensions on the representative size entry
+                    if (renderResult.width_mm && renderResult.height_mm) {
+                      const repEmb = embSizes.find(s => s.sizeLabel === repSize.sizeLabel)
+                      if (repEmb) {
+                        repEmb.widthMm = renderResult.width_mm
+                        repEmb.heightMm = renderResult.height_mm
+                      }
+                    }
+                  }
+                }
+              } catch (renderErr) {
+                console.warn('[Embroidery] PES rendering feilet for', motifName, renderErr)
               }
             }
           }
@@ -1007,7 +1139,12 @@ function EmbroideryDetail({ item, onBack, onSaved, onDelete }: {
                   <input value={size.sizeLabel} onChange={e => updateSize(size.id, { sizeLabel: e.target.value })}
                     className="w-24 flex-shrink-0 px-2.5 py-1.5 border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-stone-200"
                     placeholder="Størrelse" />
-                  <span className="flex-1 text-xs text-stone-400 truncate min-w-0">{size.pesFilename}</span>
+                  <span className="flex-1 text-xs text-stone-400 truncate min-w-0">
+                    {size.pesFilename}
+                    {size.widthMm && size.heightMm && (
+                      <span className="ml-1.5 text-stone-300">{size.widthMm} × {size.heightMm} mm</span>
+                    )}
+                  </span>
                   <a href={size.pesUrl} download={size.pesFilename} onClick={e => e.stopPropagation()}
                     className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs bg-[#F5EFE6] text-[#8B6340] rounded-lg hover:bg-[#e8d5c0] border border-[#D4A574] transition-colors whitespace-nowrap">
                     <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
