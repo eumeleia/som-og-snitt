@@ -2,10 +2,10 @@
 
 export const dynamic = 'force-dynamic'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { supabase } from '@/lib/supabase'
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ── Types ──────────────────────────────────────────────────────────────────────
 
 interface EmbroiderySize {
   id: string
@@ -28,6 +28,7 @@ interface EmbroideryData {
   notater: string
   rating?: number
   sortOrder?: number
+  bundleId?: string
 }
 
 interface Embroidery {
@@ -36,15 +37,38 @@ interface Embroidery {
   data: EmbroideryData
 }
 
+interface EmbroideryBundleData {
+  navn: string
+  designer: string
+  kategori: string
+  coverImage: string
+  customImage: string
+  useCustomImage: boolean
+  notater: string
+  rating?: number
+  sortOrder?: number
+}
+
+interface EmbroideryBundle {
+  id: string
+  created_at: string
+  data: EmbroideryBundleData
+}
+
+type GalleryItem =
+  | { type: 'bundle'; bundle: EmbroideryBundle; motifCount: number }
+  | { type: 'motif'; item: Embroidery }
+
 type SortOrder = 'newest' | 'oldest' | 'name'
 type SaveStatus = 'idle' | 'saving' | 'saved'
+type View = 'gallery' | 'bundle' | 'motif'
 
 const KATEGORIER = ['Frukt', 'Dyr', 'Blomster', 'Bokstaver', 'Monogram', 'Annet']
 
 const STAR_PATH =
   'M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z'
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────────
 
 function uid() {
   return Math.random().toString(36).slice(2, 10)
@@ -116,7 +140,7 @@ function bmpToDataUrl(data: Uint8Array<ArrayBuffer>): Promise<string | null> {
   })
 }
 
-// ── Shared UI ─────────────────────────────────────────────────────────────────
+// ── Shared UI ──────────────────────────────────────────────────────────────────
 
 function StarRating({
   rating,
@@ -163,7 +187,7 @@ function SaveIndicator({ status }: { status: SaveStatus }) {
   )
 }
 
-// ── Delete Dialog ─────────────────────────────────────────────────────────────
+// ── Delete Dialog (motiv) ──────────────────────────────────────────────────────
 
 function DeleteDialog({ onConfirm, onCancel }: { onConfirm: () => void; onCancel: () => void }) {
   return (
@@ -190,7 +214,123 @@ function DeleteDialog({ onConfirm, onCancel }: { onConfirm: () => void; onCancel
   )
 }
 
-// ── Upload Modal ──────────────────────────────────────────────────────────────
+// ── Bundle Delete Dialog ───────────────────────────────────────────────────────
+
+function BundleDeleteDialog({
+  bundleName,
+  onConfirm,
+  onCancel,
+}: {
+  bundleName: string
+  onConfirm: (detachOnly: boolean) => void
+  onCancel: () => void
+}) {
+  const [detachOnly, setDetachOnly] = useState(true)
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+        <p className="text-stone-700 font-medium mb-1">Slett bundle «{bundleName}»?</p>
+        <p className="text-stone-400 text-sm mb-4">Hva skal skje med motivene?</p>
+        <div className="space-y-3 mb-6">
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="radio"
+              checked={detachOnly}
+              onChange={() => setDetachOnly(true)}
+              className="mt-0.5 accent-[#C9A57A]"
+            />
+            <div>
+              <div className="text-sm font-medium text-stone-700">Løsriv motivene (anbefalt)</div>
+              <div className="text-xs text-stone-400">Motivene beholdes som løse motiver i galleriet</div>
+            </div>
+          </label>
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="radio"
+              checked={!detachOnly}
+              onChange={() => setDetachOnly(false)}
+              className="mt-0.5 accent-red-500"
+            />
+            <div>
+              <div className="text-sm font-medium text-stone-700">Slett motivene også</div>
+              <div className="text-xs text-red-400">Dette kan ikke angres</div>
+            </div>
+          </label>
+        </div>
+        <div className="flex gap-3">
+          <button
+            onClick={onCancel}
+            className="flex-1 py-2.5 border border-stone-200 rounded-xl text-sm text-stone-600 hover:bg-stone-50 transition-colors"
+          >
+            Avbryt
+          </button>
+          <button
+            onClick={() => onConfirm(detachOnly)}
+            className="flex-1 py-2.5 bg-red-600 text-white rounded-xl text-sm font-medium hover:bg-red-700 transition-colors"
+          >
+            Slett bundle
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Create Bundle Modal ────────────────────────────────────────────────────────
+
+function CreateBundleModal({
+  suggestedName,
+  motifCount,
+  onConfirm,
+  onCancel,
+}: {
+  suggestedName?: string
+  motifCount: number
+  onConfirm: (name: string) => void
+  onCancel: () => void
+}) {
+  const [name, setName] = useState(suggestedName || '')
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+        <h2 className="font-serif text-xl text-stone-700 mb-1">Lag bundle</h2>
+        <p className="text-stone-400 text-sm mb-5">
+          {motifCount} {motifCount === 1 ? 'motiv' : 'motiver'} samles i én bundle.
+        </p>
+        <div className="mb-5">
+          <label className="block text-xs text-stone-500 mb-1">Bundle-navn</label>
+          <input
+            autoFocus
+            value={name}
+            onChange={e => setName(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && name.trim()) onConfirm(name.trim()) }}
+            placeholder="F.eks. Mini Fruits"
+            className="w-full px-3 py-2 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-200"
+          />
+        </div>
+        <div className="flex gap-3">
+          <button
+            onClick={onCancel}
+            className="flex-1 py-2.5 border border-stone-200 rounded-xl text-sm text-stone-600 hover:bg-stone-50 transition-colors"
+          >
+            Avbryt
+          </button>
+          <button
+            onClick={() => { if (name.trim()) onConfirm(name.trim()) }}
+            disabled={!name.trim()}
+            className="flex-1 py-2.5 bg-[#C9A57A] text-white rounded-xl text-sm font-medium hover:bg-[#b8925f] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Lag bundle
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Upload Modal ───────────────────────────────────────────────────────────────
 
 function UploadModal({ onDone, onClose }: {
   onDone: (results: Embroidery[], summary: string) => void
@@ -199,6 +339,8 @@ function UploadModal({ onDone, onClose }: {
   const [progress, setProgress] = useState('')
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [uploadMode, setUploadMode] = useState<'loose' | 'bundle'>('loose')
+  const [bundleName, setBundleName] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
 
   async function handleFiles(files: FileList) {
@@ -211,6 +353,9 @@ function UploadModal({ onDone, onClose }: {
 
       for (let fi = 0; fi < files.length; fi++) {
         const file = files[fi]
+        const zipBundleName = bundleName.trim() ||
+          file.name.replace(/\.zip$/i, '').replace(/[-_]/g, ' ')
+
         setProgress(`Pakker ut ${file.name}…`)
         const zip = await JSZip.loadAsync(file)
 
@@ -241,6 +386,8 @@ function UploadModal({ onDone, onClose }: {
 
         let motifIdx = 0
         const totalMotifs = motifMap.size
+        const zipResults: Embroidery[] = []
+
         for (const [motifName, sizes] of motifMap) {
           motifIdx++
           setProgress(`Laster opp ${motifName} (${motifIdx}/${totalMotifs})…`)
@@ -258,12 +405,11 @@ function UploadModal({ onDone, onClose }: {
               continue
             }
             const { data: urlData } = supabase.storage.from('embroidery-files').getPublicUrl(storageFilename)
-            console.log('[Embroidery] Lastet opp', storageFilename, '→', urlData.publicUrl)
             embSizes.push({ id: uid(), sizeLabel, pesUrl: urlData.publicUrl, pesFilename: pesFile.name })
           }
 
           if (embSizes.length === 0) {
-            console.warn('[Embroidery] Ingen PES-filer ble lastet opp for motiv', motifName, '— hopper over')
+            console.warn('[Embroidery] Ingen PES-filer ble lastet opp for motiv', motifName)
             continue
           }
 
@@ -289,16 +435,11 @@ function UploadModal({ onDone, onClose }: {
               const { error: bmpErr } = await supabase.storage
                 .from('embroidery-files')
                 .upload(pngFilename, pngBlob, { contentType: 'image/png' })
-              if (bmpErr) {
-                console.error('[Embroidery] BMP-upload-feil for', matchedBmp.name, bmpErr)
-              } else {
+              if (!bmpErr) {
                 const { data: bmpUrlData } = supabase.storage.from('embroidery-files').getPublicUrl(pngFilename)
-                console.log('[Embroidery] Lastet opp BMP-preview', pngFilename, '→', bmpUrlData.publicUrl)
                 coverImage = bmpUrlData.publicUrl
                 bmpPreview = bmpUrlData.publicUrl
               }
-            } else {
-              console.warn('[Embroidery] BMP-konvertering feilet for', matchedBmp.name, '— fortsetter uten forside')
             }
           }
 
@@ -314,7 +455,6 @@ function UploadModal({ onDone, onClose }: {
             notater: '',
           }
 
-          console.log('[Embroidery] Oppretter rad for motiv', motifName, 'med', embSizes.length, 'størrelser')
           const { data: rows, error: insErr } = await supabase
             .from('embroidery')
             .insert({ data: embData })
@@ -322,16 +462,45 @@ function UploadModal({ onDone, onClose }: {
           if (insErr) {
             console.error('[Embroidery] DB insert-feil:', insErr)
           } else if (rows?.[0]) {
-            results.push(rows[0] as Embroidery)
+            zipResults.push(rows[0] as Embroidery)
           }
         }
+
+        // If bundle mode: create bundle and link motifs
+        if (uploadMode === 'bundle' && zipResults.length > 0) {
+          setProgress(`Oppretter bundle «${zipBundleName}»…`)
+          const firstCover = zipResults[0]?.data.coverImage || ''
+          const bundleData: EmbroideryBundleData = {
+            navn: zipBundleName,
+            designer: '',
+            kategori: '',
+            coverImage: firstCover,
+            customImage: '',
+            useCustomImage: false,
+            notater: '',
+          }
+          const { data: bundleRows, error: bundleErr } = await supabase
+            .from('embroidery_bundles')
+            .insert({ data: bundleData })
+            .select()
+          if (!bundleErr && bundleRows?.[0]) {
+            const bundle = bundleRows[0] as EmbroideryBundle
+            for (const motif of zipResults) {
+              await supabase
+                .from('embroidery')
+                .update({ data: { ...motif.data, bundleId: bundle.id } })
+                .eq('id', motif.id)
+            }
+          }
+        }
+
+        results.push(...zipResults)
       }
 
       setUploading(false)
       const summary = failedFiles > 0
         ? `${results.length} motiver lagt til, ${failedFiles} filer feilet`
         : `${results.length} motiver lagt til`
-      console.log('[Embroidery] Ferdig:', summary)
       onDone(results, summary)
     } catch (err) {
       setUploading(false)
@@ -353,10 +522,55 @@ function UploadModal({ onDone, onClose }: {
           )}
         </div>
 
-        <p className="text-sm text-stone-500 mb-5">
+        <p className="text-sm text-stone-500 mb-4">
           ZIP-filen bør inneholde <span className="font-medium">.PES</span>-filer og eventuelt
           tilhørende <span className="font-medium">.BMP</span>-forhåndsvisninger.
         </p>
+
+        {!uploading && (
+          <>
+            {/* Mode toggle */}
+            <div className="mb-4">
+              <p className="text-xs text-stone-500 mb-2">Legg til som:</p>
+              <div className="flex rounded-xl border border-stone-200 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setUploadMode('loose')}
+                  className={`flex-1 py-2 text-sm transition-colors ${
+                    uploadMode === 'loose'
+                      ? 'bg-stone-800 text-white'
+                      : 'bg-white text-stone-500 hover:bg-stone-50'
+                  }`}
+                >
+                  Løse motiver
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUploadMode('bundle')}
+                  className={`flex-1 py-2 text-sm transition-colors ${
+                    uploadMode === 'bundle'
+                      ? 'bg-stone-800 text-white'
+                      : 'bg-white text-stone-500 hover:bg-stone-50'
+                  }`}
+                >
+                  Bundle
+                </button>
+              </div>
+            </div>
+
+            {uploadMode === 'bundle' && (
+              <div className="mb-4">
+                <label className="block text-xs text-stone-500 mb-1">Bundle-navn (valgfritt — hentes fra filnavn)</label>
+                <input
+                  value={bundleName}
+                  onChange={e => setBundleName(e.target.value)}
+                  placeholder="F.eks. Mini Fruits"
+                  className="w-full px-3 py-2 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-200"
+                />
+              </div>
+            )}
+          </>
+        )}
 
         {error && (
           <div className="mb-4 px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
@@ -402,28 +616,44 @@ function UploadModal({ onDone, onClose }: {
   )
 }
 
-// ── Embroidery Card ───────────────────────────────────────────────────────────
+// ── Embroidery Card ────────────────────────────────────────────────────────────
 
-function EmbroideryCard({ item, onEdit, onDelete }: {
+function EmbroideryCard({
+  item,
+  onEdit,
+  onDelete,
+  selectionMode = false,
+  selected = false,
+  onToggleSelect,
+}: {
   item: Embroidery
   onEdit: () => void
   onDelete: () => void
+  selectionMode?: boolean
+  selected?: boolean
+  onToggleSelect?: () => void
 }) {
   const d = item.data
   const imgSrc = d.useCustomImage ? d.customImage : (d.coverImage || d.bmpPreview)
 
+  function handleClick() {
+    if (selectionMode) {
+      onToggleSelect?.()
+    } else {
+      onEdit()
+    }
+  }
+
   return (
     <article
-      onClick={onEdit}
-      className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col relative min-w-0"
+      onClick={handleClick}
+      className={`group bg-white rounded-xl border shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col relative min-w-0 ${
+        selected ? 'border-[#C9A57A] ring-2 ring-[#C9A57A]/30' : 'border-stone-200'
+      }`}
     >
       <div className="relative aspect-[5/4] overflow-hidden bg-stone-50">
         {imgSrc ? (
-          <img
-            src={imgSrc}
-            alt={d.navn}
-            className="w-full h-full object-cover"
-          />
+          <img src={imgSrc} alt={d.navn} className="w-full h-full object-cover" />
         ) : (
           <div className="w-full h-full flex items-center justify-center">
             <svg className="w-10 h-10 text-stone-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -432,6 +662,19 @@ function EmbroideryCard({ item, onEdit, onDelete }: {
             </svg>
           </div>
         )}
+
+        {selectionMode && (
+          <div className={`absolute top-2 left-2 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${
+            selected ? 'bg-[#C9A57A] border-[#C9A57A]' : 'bg-white/80 border-stone-300'
+          }`}>
+            {selected && (
+              <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+              </svg>
+            )}
+          </div>
+        )}
+
         <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/50 to-transparent px-3 py-2.5">
           <h3 className="font-serif text-sm font-semibold text-white leading-tight truncate">
             {d.navn || <span className="italic font-light opacity-70">Uten navn</span>}
@@ -451,21 +694,129 @@ function EmbroideryCard({ item, onEdit, onDelete }: {
             <span className="text-xs text-stone-400 truncate">{d.kategori}</span>
           )}
         </div>
-        <button
-          onClick={e => { e.stopPropagation(); onDelete() }}
-          className="flex-shrink-0 p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-          </svg>
-        </button>
+        {!selectionMode && (
+          <button
+            onClick={e => { e.stopPropagation(); onDelete() }}
+            className="flex-shrink-0 p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+          </button>
+        )}
       </div>
     </article>
   )
 }
 
-// ── Embroidery Detail ─────────────────────────────────────────────────────────
+// ── Bundle Card ────────────────────────────────────────────────────────────────
+
+function BundleCard({ bundle, motifCount, onClick }: {
+  bundle: EmbroideryBundle
+  motifCount: number
+  onClick: () => void
+}) {
+  const d = bundle.data
+  const imgSrc = d.useCustomImage ? d.customImage : d.coverImage
+
+  return (
+    <article
+      onClick={onClick}
+      className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col relative min-w-0"
+    >
+      <div className="relative aspect-[5/4] overflow-hidden bg-stone-50">
+        {imgSrc ? (
+          <img src={imgSrc} alt={d.navn} className="w-full h-full object-cover" />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <svg className="w-10 h-10 text-stone-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1}
+                d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+            </svg>
+          </div>
+        )}
+
+        {/* Bundle badge */}
+        <div className="absolute top-2 left-2 bg-black/55 text-white text-[10px] px-2 py-0.5 rounded-full backdrop-blur-sm flex items-center gap-1">
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+          </svg>
+          Bundle
+        </div>
+
+        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/50 to-transparent px-3 py-2.5">
+          <h3 className="font-serif text-sm font-semibold text-white leading-tight truncate">
+            {d.navn || <span className="italic font-light opacity-70">Uten navn</span>}
+          </h3>
+          <p className="text-xs text-white/70">{motifCount} {motifCount === 1 ? 'motiv' : 'motiver'}</p>
+        </div>
+      </div>
+
+      <div className="flex items-center px-3 py-2 min-w-0">
+        <div className="flex items-center gap-2 min-w-0">
+          {d.rating ? (
+            <StarRating rating={d.rating} size="sm" />
+          ) : (
+            <span className="text-xs text-stone-300">{motifCount} {motifCount === 1 ? 'motiv' : 'motiver'}</span>
+          )}
+          {d.kategori && (
+            <span className="text-xs text-stone-400 truncate">{d.kategori}</span>
+          )}
+        </div>
+      </div>
+    </article>
+  )
+}
+
+// ── Bundle Motif Card (used inside BundleDetail) ───────────────────────────────
+
+function BundleMotifCard({ item, onClick, onRemove }: {
+  item: Embroidery
+  onClick: () => void
+  onRemove: () => void
+}) {
+  const d = item.data
+  const imgSrc = d.useCustomImage ? d.customImage : (d.coverImage || d.bmpPreview)
+
+  return (
+    <div className="relative">
+      <article
+        onClick={onClick}
+        className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden min-w-0"
+      >
+        <div className="relative aspect-[5/4] overflow-hidden bg-stone-50">
+          {imgSrc ? (
+            <img src={imgSrc} alt={d.navn} className="w-full h-full object-cover" />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center">
+              <svg className="w-8 h-8 text-stone-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1}
+                  d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z" />
+              </svg>
+            </div>
+          )}
+          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/50 to-transparent px-2.5 py-2">
+            <h3 className="font-serif text-xs font-semibold text-white leading-tight truncate">{d.navn || 'Uten navn'}</h3>
+            <p className="text-[10px] text-white/70">{d.sizes.length} str.</p>
+          </div>
+        </div>
+      </article>
+      <button
+        onClick={e => { e.stopPropagation(); onRemove() }}
+        className="absolute top-1.5 right-1.5 p-1 bg-white/85 rounded-lg hover:bg-white text-stone-400 hover:text-orange-500 transition-colors shadow-sm"
+        title="Fjern fra bundle"
+      >
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      </button>
+    </div>
+  )
+}
+
+// ── Embroidery Detail ──────────────────────────────────────────────────────────
 
 function EmbroideryDetail({ item, onBack, onSaved, onDelete }: {
   item: Embroidery
@@ -548,7 +899,6 @@ function EmbroideryDetail({ item, onBack, onSaved, onDelete }: {
 
   return (
     <>
-      {/* Sub-header */}
       <div className="max-w-3xl mx-auto px-4 sm:px-6 py-3 flex items-center gap-3">
         <button
           onClick={() => {
@@ -577,18 +927,13 @@ function EmbroideryDetail({ item, onBack, onSaved, onDelete }: {
       </div>
 
       <div className="max-w-3xl mx-auto px-4 sm:px-6 pb-24 space-y-6">
-
-        {/* Forsidebilde */}
         <section className="bg-white rounded-2xl border border-stone-100 shadow-sm p-5">
           <h3 className="font-serif text-lg text-stone-700 mb-4">Forsidebilde</h3>
           <div className="flex flex-col sm:flex-row gap-5">
             <div className="flex-shrink-0">
               {displayImg ? (
-                <img
-                  src={displayImg}
-                  alt={d.navn}
-                  className="w-full sm:w-60 h-48 object-cover rounded-xl border border-stone-100"
-                />
+                <img src={displayImg} alt={d.navn}
+                  className="w-full sm:w-60 h-48 object-cover rounded-xl border border-stone-100" />
               ) : (
                 <div className="w-full sm:w-60 h-48 rounded-xl border-2 border-dashed border-stone-200 flex flex-col items-center justify-center text-stone-300 gap-2">
                   <svg className="w-10 h-10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -600,24 +945,15 @@ function EmbroideryDetail({ item, onBack, onSaved, onDelete }: {
               )}
             </div>
             <div className="flex flex-col gap-3 justify-center">
-              <input
-                ref={customImgRef}
-                type="file"
-                accept="image/jpeg,image/png,image/webp"
-                className="hidden"
-                onChange={handleCustomImage}
-              />
-              <button
-                onClick={() => customImgRef.current?.click()}
-                className="px-4 py-2 text-sm border border-stone-200 rounded-xl hover:bg-stone-50 text-stone-600 transition-colors"
-              >
+              <input ref={customImgRef} type="file" accept="image/jpeg,image/png,image/webp"
+                className="hidden" onChange={handleCustomImage} />
+              <button onClick={() => customImgRef.current?.click()}
+                className="px-4 py-2 text-sm border border-stone-200 rounded-xl hover:bg-stone-50 text-stone-600 transition-colors">
                 Last opp eget bilde
               </button>
               {d.customImage && (
-                <button
-                  onClick={() => update({ useCustomImage: !d.useCustomImage })}
-                  className="px-4 py-2 text-sm border border-[#D4A574] rounded-xl bg-[#F5EFE6] text-[#8B6340] hover:bg-[#e8d5c0] transition-colors"
-                >
+                <button onClick={() => update({ useCustomImage: !d.useCustomImage })}
+                  className="px-4 py-2 text-sm border border-[#D4A574] rounded-xl bg-[#F5EFE6] text-[#8B6340] hover:bg-[#e8d5c0] transition-colors">
                   {d.useCustomImage ? 'Bruk original (BMP)' : 'Bruk eget bilde'}
                 </button>
               )}
@@ -625,41 +961,30 @@ function EmbroideryDetail({ item, onBack, onSaved, onDelete }: {
           </div>
         </section>
 
-        {/* Grunninfo */}
         <section className="bg-white rounded-2xl border border-stone-100 shadow-sm p-5 space-y-4">
           <h3 className="font-serif text-lg text-stone-700">Grunninfo</h3>
           <div>
             <label className="block text-xs text-stone-500 mb-1">Motivnavn</label>
-            <input
-              value={d.navn}
-              onChange={e => update({ navn: e.target.value })}
+            <input value={d.navn} onChange={e => update({ navn: e.target.value })}
               placeholder="Navn på motivet"
-              className="w-full px-3 py-2 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-200"
-            />
+              className="w-full px-3 py-2 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-200" />
           </div>
           <div>
             <label className="block text-xs text-stone-500 mb-1">Designer</label>
-            <input
-              value={d.designer}
-              onChange={e => update({ designer: e.target.value })}
+            <input value={d.designer} onChange={e => update({ designer: e.target.value })}
               placeholder="Navn på designer eller merkevare"
-              className="w-full px-3 py-2 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-200"
-            />
+              className="w-full px-3 py-2 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-200" />
           </div>
           <div>
             <label className="block text-xs text-stone-500 mb-2">Kategori</label>
             <div className="flex flex-wrap gap-2">
               {KATEGORIER.map(k => (
-                <button
-                  key={k}
-                  type="button"
-                  onClick={() => update({ kategori: d.kategori === k ? '' : k })}
+                <button key={k} type="button" onClick={() => update({ kategori: d.kategori === k ? '' : k })}
                   className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${
                     d.kategori === k
                       ? 'bg-stone-800 text-white border-stone-800'
                       : 'bg-white text-stone-600 border-stone-200 hover:border-stone-400'
-                  }`}
-                >
+                  }`}>
                   {k}
                 </button>
               ))}
@@ -671,7 +996,6 @@ function EmbroideryDetail({ item, onBack, onSaved, onDelete }: {
           </div>
         </section>
 
-        {/* Størrelser */}
         <section className="bg-white rounded-2xl border border-stone-100 shadow-sm p-5">
           <h3 className="font-serif text-lg text-stone-700 mb-4">Størrelser</h3>
           {d.sizes.length === 0 ? (
@@ -680,30 +1004,20 @@ function EmbroideryDetail({ item, onBack, onSaved, onDelete }: {
             <div className="space-y-2">
               {d.sizes.map(size => (
                 <div key={size.id} className="flex items-center gap-3 py-2 border-b border-stone-50 last:border-0 min-w-0">
-                  <input
-                    value={size.sizeLabel}
-                    onChange={e => updateSize(size.id, { sizeLabel: e.target.value })}
+                  <input value={size.sizeLabel} onChange={e => updateSize(size.id, { sizeLabel: e.target.value })}
                     className="w-24 flex-shrink-0 px-2.5 py-1.5 border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-stone-200"
-                    placeholder="Størrelse"
-                  />
+                    placeholder="Størrelse" />
                   <span className="flex-1 text-xs text-stone-400 truncate min-w-0">{size.pesFilename}</span>
-                  <a
-                    href={size.pesUrl}
-                    download={size.pesFilename}
-                    onClick={e => e.stopPropagation()}
-                    className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs bg-[#F5EFE6] text-[#8B6340] rounded-lg hover:bg-[#e8d5c0] border border-[#D4A574] transition-colors whitespace-nowrap"
-                  >
+                  <a href={size.pesUrl} download={size.pesFilename} onClick={e => e.stopPropagation()}
+                    className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs bg-[#F5EFE6] text-[#8B6340] rounded-lg hover:bg-[#e8d5c0] border border-[#D4A574] transition-colors whitespace-nowrap">
                     <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
                         d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                     </svg>
                     Last ned
                   </a>
-                  <button
-                    onClick={() => removeSize(size.id)}
-                    className="flex-shrink-0 p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors"
-                    title="Fjern størrelse"
-                  >
+                  <button onClick={() => removeSize(size.id)}
+                    className="flex-shrink-0 p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors" title="Fjern størrelse">
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
                         d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -715,35 +1029,230 @@ function EmbroideryDetail({ item, onBack, onSaved, onDelete }: {
           )}
         </section>
 
-        {/* Notater */}
         <section className="bg-white rounded-2xl border border-stone-100 shadow-sm p-5">
           <h3 className="font-serif text-lg text-stone-700 mb-3">Notater</h3>
-          <textarea
-            value={d.notater}
-            onChange={e => update({ notater: e.target.value })}
+          <textarea value={d.notater} onChange={e => update({ notater: e.target.value })}
             placeholder="Egne notater, tips, stoff som passer…"
             rows={5}
-            className="w-full px-3 py-2.5 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-200 resize-y leading-relaxed"
-          />
+            className="w-full px-3 py-2.5 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-200 resize-y leading-relaxed" />
         </section>
-
       </div>
     </>
   )
 }
 
-// ── Main Page ─────────────────────────────────────────────────────────────────
+// ── Bundle Detail ──────────────────────────────────────────────────────────────
+
+function BundleDetail({ bundle, motifs, onBack, onSaved, onDelete, onMotifClick, onRemoveMotif }: {
+  bundle: EmbroideryBundle
+  motifs: Embroidery[]
+  onBack: () => void
+  onSaved: () => void
+  onDelete: () => void
+  onMotifClick: (item: Embroidery) => void
+  onRemoveMotif: (motifId: string) => void
+}) {
+  const [form, setForm] = useState<EmbroideryBundleData>(bundle.data)
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
+  const pendingRef = useRef<EmbroideryBundleData>(bundle.data)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const idRef = useRef(bundle.id)
+  const customImgRef = useRef<HTMLInputElement>(null)
+
+  function update(patch: Partial<EmbroideryBundleData>) {
+    setForm(f => {
+      const next = { ...f, ...patch }
+      pendingRef.current = next
+      return next
+    })
+    if (timerRef.current) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(flush, 1500)
+  }
+
+  async function flush() {
+    setSaveStatus('saving')
+    await supabase.from('embroidery_bundles').update({ data: pendingRef.current }).eq('id', idRef.current)
+    setSaveStatus('saved')
+    onSaved()
+    setTimeout(() => setSaveStatus('idle'), 2000)
+  }
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current)
+        flush()
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function handleCustomImage(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const filename = `embroidery-bundle-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${file.name.split('.').pop()}`
+    const { error } = await supabase.storage
+      .from('embroidery-files')
+      .upload(filename, file, { contentType: file.type })
+    if (error) return
+    const { data: urlData } = supabase.storage.from('embroidery-files').getPublicUrl(filename)
+    update({ customImage: urlData.publicUrl, useCustomImage: true })
+  }
+
+  const d = form
+  const displayImg = d.useCustomImage ? d.customImage : d.coverImage
+
+  return (
+    <>
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-3 flex items-center gap-3">
+        <button
+          onClick={() => {
+            if (timerRef.current) { clearTimeout(timerRef.current); flush() }
+            onBack()
+          }}
+          className="p-2 rounded-xl hover:bg-stone-100 text-stone-500 transition-colors"
+        >
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 19l-7-7 7-7" />
+          </svg>
+        </button>
+        <div className="flex-1 min-w-0">
+          <h2 className="font-serif text-xl text-stone-700 truncate">{d.navn || 'Uten navn'}</h2>
+          <p className="text-xs text-stone-400">{motifs.length} {motifs.length === 1 ? 'motiv' : 'motiver'}</p>
+        </div>
+        <SaveIndicator status={saveStatus} />
+        <button
+          onClick={onDelete}
+          className="p-2 rounded-xl text-stone-300 hover:text-red-400 hover:bg-red-50 transition-colors"
+        >
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
+        </button>
+      </div>
+
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 pb-24 space-y-6">
+        <section className="bg-white rounded-2xl border border-stone-100 shadow-sm p-5">
+          <h3 className="font-serif text-lg text-stone-700 mb-4">Forsidebilde</h3>
+          <div className="flex flex-col sm:flex-row gap-5">
+            <div className="flex-shrink-0">
+              {displayImg ? (
+                <img src={displayImg} alt={d.navn}
+                  className="w-full sm:w-60 h-48 object-cover rounded-xl border border-stone-100" />
+              ) : (
+                <div className="w-full sm:w-60 h-48 rounded-xl border-2 border-dashed border-stone-200 flex flex-col items-center justify-center text-stone-300 gap-2">
+                  <svg className="w-10 h-10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1}
+                      d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                  <span className="text-xs">Ingen forside ennå</span>
+                </div>
+              )}
+            </div>
+            <div className="flex flex-col gap-3 justify-center">
+              <input ref={customImgRef} type="file" accept="image/jpeg,image/png,image/webp"
+                className="hidden" onChange={handleCustomImage} />
+              <button onClick={() => customImgRef.current?.click()}
+                className="px-4 py-2 text-sm border border-stone-200 rounded-xl hover:bg-stone-50 text-stone-600 transition-colors">
+                Last opp eget bilde
+              </button>
+              {d.customImage && (
+                <button onClick={() => update({ useCustomImage: !d.useCustomImage })}
+                  className="px-4 py-2 text-sm border border-[#D4A574] rounded-xl bg-[#F5EFE6] text-[#8B6340] hover:bg-[#e8d5c0] transition-colors">
+                  {d.useCustomImage ? 'Bruk original' : 'Bruk eget bilde'}
+                </button>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section className="bg-white rounded-2xl border border-stone-100 shadow-sm p-5 space-y-4">
+          <h3 className="font-serif text-lg text-stone-700">Bundle-info</h3>
+          <div>
+            <label className="block text-xs text-stone-500 mb-1">Bundle-navn</label>
+            <input value={d.navn} onChange={e => update({ navn: e.target.value })}
+              placeholder="Navn på bundelen"
+              className="w-full px-3 py-2 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-200" />
+          </div>
+          <div>
+            <label className="block text-xs text-stone-500 mb-1">Designer</label>
+            <input value={d.designer} onChange={e => update({ designer: e.target.value })}
+              placeholder="Navn på designer eller merkevare"
+              className="w-full px-3 py-2 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-200" />
+          </div>
+          <div>
+            <label className="block text-xs text-stone-500 mb-2">Kategori</label>
+            <div className="flex flex-wrap gap-2">
+              {KATEGORIER.map(k => (
+                <button key={k} type="button" onClick={() => update({ kategori: d.kategori === k ? '' : k })}
+                  className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${
+                    d.kategori === k
+                      ? 'bg-stone-800 text-white border-stone-800'
+                      : 'bg-white text-stone-600 border-stone-200 hover:border-stone-400'
+                  }`}>
+                  {k}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-stone-500 mb-1.5">Vurdering</label>
+            <StarRating rating={d.rating} onRate={r => update({ rating: r })} />
+          </div>
+        </section>
+
+        <section className="bg-white rounded-2xl border border-stone-100 shadow-sm p-5">
+          <h3 className="font-serif text-lg text-stone-700 mb-4">
+            Motiver ({motifs.length})
+          </h3>
+          {motifs.length === 0 ? (
+            <p className="text-sm text-stone-400 italic">Ingen motiver i denne bundelen ennå.</p>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {motifs.map(motif => (
+                <BundleMotifCard
+                  key={motif.id}
+                  item={motif}
+                  onClick={() => onMotifClick(motif)}
+                  onRemove={() => onRemoveMotif(motif.id)}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="bg-white rounded-2xl border border-stone-100 shadow-sm p-5">
+          <h3 className="font-serif text-lg text-stone-700 mb-3">Notater</h3>
+          <textarea value={d.notater} onChange={e => update({ notater: e.target.value })}
+            placeholder="Egne notater om bundelen…"
+            rows={4}
+            className="w-full px-3 py-2.5 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-200 resize-y leading-relaxed" />
+        </section>
+      </div>
+    </>
+  )
+}
+
+// ── Main Page ──────────────────────────────────────────────────────────────────
 
 export default function EmbroideryPage() {
   const [items, setItems] = useState<Embroidery[]>([])
+  const [bundles, setBundles] = useState<EmbroideryBundle[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [katFilter, setKatFilter] = useState('Alle')
   const [sort, setSort] = useState<SortOrder>('newest')
   const [showUpload, setShowUpload] = useState(false)
-  const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [view, setView] = useState<View>('gallery')
+  const [prevView, setPrevView] = useState<View>('gallery')
+  const [currentBundle, setCurrentBundle] = useState<EmbroideryBundle | null>(null)
   const [currentItem, setCurrentItem] = useState<Embroidery | null>(null)
-  const [showDetail, setShowDetail] = useState(false)
+  const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [deleteBundleId, setDeleteBundleId] = useState<string | null>(null)
+  const [selectionMode, setSelectionMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [showCreateBundle, setShowCreateBundle] = useState(false)
   const [katDropdownOpen, setKatDropdownOpen] = useState(false)
   const [sortDropdownOpen, setSortDropdownOpen] = useState(false)
   const [uploadSummary, setUploadSummary] = useState<string | null>(null)
@@ -775,12 +1284,14 @@ export default function EmbroideryPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const { data, error } = await supabase
-        .from('embroidery')
-        .select('*')
-        .order('created_at', { ascending: false })
-      if (error) throw error
-      setItems((data as Embroidery[]) || [])
+      const [embRes, bundleRes] = await Promise.all([
+        supabase.from('embroidery').select('*').order('created_at', { ascending: false }),
+        supabase.from('embroidery_bundles').select('*').order('created_at', { ascending: false }),
+      ])
+      if (embRes.error) throw embRes.error
+      if (bundleRes.error) throw bundleRes.error
+      setItems((embRes.data as Embroidery[]) || [])
+      setBundles((bundleRes.data as EmbroideryBundle[]) || [])
     } catch (err) {
       console.error('embroidery load error:', err)
     } finally {
@@ -814,37 +1325,208 @@ export default function EmbroideryPage() {
     setItems(prev => prev.filter(i => i.id !== id))
     setDeleteId(null)
     setCurrentItem(null)
-    setShowDetail(false)
+    if (view === 'motif') setView(prevView)
   }
 
-  function handleUploadDone(results: Embroidery[], summary: string) {
+  async function deleteBundle(bundleId: string, detachOnly: boolean) {
+    const bundleMotifs = items.filter(i => i.data.bundleId === bundleId)
+    if (detachOnly) {
+      for (const motif of bundleMotifs) {
+        const newData = { ...motif.data }
+        delete newData.bundleId
+        await supabase.from('embroidery').update({ data: newData }).eq('id', motif.id)
+      }
+    } else {
+      for (const motif of bundleMotifs) {
+        const filesToDelete: string[] = []
+        for (const size of motif.data.sizes) {
+          const filename = size.pesUrl.split('/').pop()
+          if (filename) filesToDelete.push(filename)
+        }
+        if (motif.data.coverImage) {
+          const f = motif.data.coverImage.split('/').pop()
+          if (f) filesToDelete.push(f)
+        }
+        if (motif.data.customImage) {
+          const f = motif.data.customImage.split('/').pop()
+          if (f) filesToDelete.push(f)
+        }
+        if (filesToDelete.length > 0) {
+          await supabase.storage.from('embroidery-files').remove(filesToDelete)
+        }
+        await supabase.from('embroidery').delete().eq('id', motif.id)
+      }
+    }
+    await supabase.from('embroidery_bundles').delete().eq('id', bundleId)
+    setDeleteBundleId(null)
+    setCurrentBundle(null)
+    setView('gallery')
+    load()
+  }
+
+  async function removeMotifFromBundle(motifId: string) {
+    const item = items.find(i => i.id === motifId)
+    if (!item) return
+    const newData = { ...item.data }
+    delete newData.bundleId
+    await supabase.from('embroidery').update({ data: newData }).eq('id', motifId)
+    load()
+  }
+
+  async function createBundleFromSelection(bundleName: string) {
+    const selected = items.filter(i => selectedIds.has(i.id))
+    if (selected.length === 0) return
+    const firstCover = selected[0]?.data.coverImage || ''
+    const bundleData: EmbroideryBundleData = {
+      navn: bundleName,
+      designer: '',
+      kategori: '',
+      coverImage: firstCover,
+      customImage: '',
+      useCustomImage: false,
+      notater: '',
+    }
+    const { data: bundleRows, error: bundleErr } = await supabase
+      .from('embroidery_bundles')
+      .insert({ data: bundleData })
+      .select()
+    if (bundleErr || !bundleRows?.[0]) return
+    const bundle = bundleRows[0] as EmbroideryBundle
+    for (const motif of selected) {
+      await supabase
+        .from('embroidery')
+        .update({ data: { ...motif.data, bundleId: bundle.id } })
+        .eq('id', motif.id)
+    }
+    setSelectionMode(false)
+    setSelectedIds(new Set())
+    setShowCreateBundle(false)
+    load()
+    setUploadSummary(`Bundle «${bundleName}» opprettet med ${selected.length} motiver`)
+  }
+
+  function handleUploadDone(_results: Embroidery[], summary: string) {
     setShowUpload(false)
     load()
     if (summary) setUploadSummary(summary)
   }
 
-  const filtered = items
-    .filter(i => {
-      if (katFilter !== 'Alle' && i.data.kategori !== katFilter) return false
-      if (!search.trim()) return true
-      const q = search.toLowerCase()
-      return (
-        i.data.navn.toLowerCase().includes(q) ||
-        i.data.designer.toLowerCase().includes(q)
-      )
-    })
-    .sort((a, b) => {
-      if (sort === 'name') return a.data.navn.localeCompare(b.data.navn, 'nb')
-      if (sort === 'oldest') return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    })
+  function openBundle(bundle: EmbroideryBundle) {
+    setCurrentBundle(bundle)
+    setView('bundle')
+  }
 
-  if (showDetail && currentItem) {
+  function openMotifFromGallery(item: Embroidery) {
+    setCurrentItem(item)
+    setPrevView('gallery')
+    setView('motif')
+  }
+
+  function openMotifFromBundle(item: Embroidery) {
+    setCurrentItem(item)
+    setPrevView('bundle')
+    setView('motif')
+  }
+
+  function toggleSelection(id: string) {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const galleryItems = useMemo((): GalleryItem[] => {
+    const looseMotifs = items
+      .filter(i => !i.data.bundleId)
+      .map(i => ({ type: 'motif' as const, item: i }))
+
+    const bundleItems = bundles.map(b => ({
+      type: 'bundle' as const,
+      bundle: b,
+      motifCount: items.filter(i => i.data.bundleId === b.id).length,
+    }))
+
+    const combined: GalleryItem[] = [...bundleItems, ...looseMotifs]
+
+    return combined
+      .filter(gi => {
+        if (katFilter !== 'Alle') {
+          const kat = gi.type === 'bundle' ? gi.bundle.data.kategori : gi.item.data.kategori
+          if (kat !== katFilter) return false
+        }
+        if (!search.trim()) return true
+        const q = search.toLowerCase()
+        if (gi.type === 'bundle') {
+          const bundleMatch = gi.bundle.data.navn.toLowerCase().includes(q)
+          const motifMatch = items
+            .filter(i => i.data.bundleId === gi.bundle.id)
+            .some(i => i.data.navn.toLowerCase().includes(q) || i.data.designer.toLowerCase().includes(q))
+          return bundleMatch || motifMatch
+        }
+        return (
+          gi.item.data.navn.toLowerCase().includes(q) ||
+          gi.item.data.designer.toLowerCase().includes(q)
+        )
+      })
+      .sort((a, b) => {
+        const aDate = a.type === 'bundle' ? a.bundle.created_at : a.item.created_at
+        const bDate = b.type === 'bundle' ? b.bundle.created_at : b.item.created_at
+        const aName = a.type === 'bundle' ? a.bundle.data.navn : a.item.data.navn
+        const bName = b.type === 'bundle' ? b.bundle.data.navn : b.item.data.navn
+        if (sort === 'name') return aName.localeCompare(bName, 'nb')
+        if (sort === 'oldest') return new Date(aDate).getTime() - new Date(bDate).getTime()
+        return new Date(bDate).getTime() - new Date(aDate).getTime()
+      })
+  }, [items, bundles, search, katFilter, sort])
+
+  const bundleMotifs = useMemo(
+    () => currentBundle ? items.filter(i => i.data.bundleId === currentBundle.id) : [],
+    [items, currentBundle]
+  )
+
+  // ── Bundle detail view ───────────────────────────────────────────────────────
+
+  if (view === 'bundle' && currentBundle) {
+    return (
+      <>
+        <BundleDetail
+          bundle={currentBundle}
+          motifs={bundleMotifs}
+          onBack={() => { setCurrentBundle(null); setView('gallery') }}
+          onSaved={() => load()}
+          onDelete={() => setDeleteBundleId(currentBundle.id)}
+          onMotifClick={openMotifFromBundle}
+          onRemoveMotif={removeMotifFromBundle}
+        />
+        {deleteBundleId && (
+          <BundleDeleteDialog
+            bundleName={currentBundle.data.navn}
+            onConfirm={(detachOnly) => deleteBundle(deleteBundleId, detachOnly)}
+            onCancel={() => setDeleteBundleId(null)}
+          />
+        )}
+      </>
+    )
+  }
+
+  // ── Motif detail view ────────────────────────────────────────────────────────
+
+  if (view === 'motif' && currentItem) {
     return (
       <>
         <EmbroideryDetail
           item={currentItem}
-          onBack={() => { setShowDetail(false); setCurrentItem(null); load() }}
+          onBack={() => {
+            if (prevView === 'bundle' && currentBundle) {
+              setView('bundle')
+            } else {
+              setCurrentItem(null)
+              setView('gallery')
+              load()
+            }
+          }}
           onSaved={() => load()}
           onDelete={() => setDeleteId(currentItem.id)}
         />
@@ -857,6 +1539,8 @@ export default function EmbroideryPage() {
       </>
     )
   }
+
+  // ── Gallery view ─────────────────────────────────────────────────────────────
 
   return (
     <>
@@ -950,6 +1634,42 @@ export default function EmbroideryPage() {
               </div>
             )}
           </div>
+
+          {/* Selection mode toggle */}
+          {(items.filter(i => !i.data.bundleId).length > 0) && (
+            <button
+              onClick={() => {
+                if (selectionMode) {
+                  setSelectionMode(false)
+                  setSelectedIds(new Set())
+                } else {
+                  setSelectionMode(true)
+                }
+              }}
+              className={`h-9 px-3 flex items-center gap-1.5 rounded-xl border text-sm transition-colors ${
+                selectionMode
+                  ? 'bg-stone-800 text-white border-stone-800'
+                  : 'bg-white text-stone-500 border-stone-200 hover:border-stone-400'
+              }`}
+            >
+              {selectionMode ? (
+                <>
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                  Avbryt
+                </>
+              ) : (
+                <>
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                      d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+                  </svg>
+                  Velg motiver
+                </>
+              )}
+            </button>
+          )}
         </div>
       </div>
 
@@ -959,7 +1679,7 @@ export default function EmbroideryPage() {
           <div className="flex justify-center py-32">
             <div className="w-8 h-8 border-2 border-stone-300 border-t-stone-700 rounded-full animate-spin" />
           </div>
-        ) : filtered.length === 0 ? (
+        ) : galleryItems.length === 0 ? (
           <div className="text-center py-28">
             <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-stone-100 mb-6">
               <svg className="w-8 h-8 text-stone-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -968,9 +1688,9 @@ export default function EmbroideryPage() {
               </svg>
             </div>
             <p className="font-serif text-2xl text-stone-400 font-light">
-              {items.length === 0 ? 'Ingen broderi ennå.' : 'Ingen treff'}
+              {items.length === 0 && bundles.length === 0 ? 'Ingen broderi ennå.' : 'Ingen treff'}
             </p>
-            {items.length === 0 && (
+            {items.length === 0 && bundles.length === 0 && (
               <button
                 onClick={() => setShowUpload(true)}
                 className="mt-5 px-6 py-2.5 bg-[#C9A57A] text-white text-sm rounded-xl hover:bg-[#b8925f] transition-colors font-medium"
@@ -981,26 +1701,77 @@ export default function EmbroideryPage() {
           </div>
         ) : (
           <div className="w-full grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-5 overflow-hidden">
-            {filtered.map(item => (
-              <EmbroideryCard
-                key={item.id}
-                item={item}
-                onEdit={() => { setCurrentItem(item); setShowDetail(true) }}
-                onDelete={() => setDeleteId(item.id)}
-              />
-            ))}
+            {galleryItems.map(gi => {
+              if (gi.type === 'bundle') {
+                return (
+                  <BundleCard
+                    key={`bundle-${gi.bundle.id}`}
+                    bundle={gi.bundle}
+                    motifCount={gi.motifCount}
+                    onClick={() => openBundle(gi.bundle)}
+                  />
+                )
+              }
+              return (
+                <EmbroideryCard
+                  key={gi.item.id}
+                  item={gi.item}
+                  onEdit={() => openMotifFromGallery(gi.item)}
+                  onDelete={() => setDeleteId(gi.item.id)}
+                  selectionMode={selectionMode}
+                  selected={selectedIds.has(gi.item.id)}
+                  onToggleSelect={() => toggleSelection(gi.item.id)}
+                />
+              )
+            })}
           </div>
         )}
       </main>
+
+      {/* Selection mode floating bar */}
+      {selectionMode && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 px-5 py-3 bg-stone-800 text-white text-sm rounded-2xl shadow-xl">
+          <span className="text-stone-300">
+            {selectedIds.size} {selectedIds.size === 1 ? 'valgt' : 'valgte'}
+          </span>
+          <button
+            onClick={() => { if (selectedIds.size > 0) setShowCreateBundle(true) }}
+            disabled={selectedIds.size === 0}
+            className="px-4 py-1.5 bg-[#C9A57A] text-white rounded-xl text-sm font-medium hover:bg-[#b8925f] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Lag bundle
+          </button>
+        </div>
+      )}
 
       {showUpload && (
         <UploadModal onDone={handleUploadDone} onClose={() => setShowUpload(false)} />
       )}
 
-      {deleteId && !showDetail && (
+      {deleteId && (
         <DeleteDialog
           onConfirm={() => deleteItem(deleteId)}
           onCancel={() => setDeleteId(null)}
+        />
+      )}
+
+      {deleteBundleId && (() => {
+        const b = bundles.find(x => x.id === deleteBundleId)
+        if (!b) return null
+        return (
+          <BundleDeleteDialog
+            bundleName={b.data.navn}
+            onConfirm={(detachOnly) => deleteBundle(deleteBundleId, detachOnly)}
+            onCancel={() => setDeleteBundleId(null)}
+          />
+        )
+      })()}
+
+      {showCreateBundle && (
+        <CreateBundleModal
+          motifCount={selectedIds.size}
+          onConfirm={createBundleFromSelection}
+          onCancel={() => setShowCreateBundle(false)}
         />
       )}
 
@@ -1017,15 +1788,17 @@ export default function EmbroideryPage() {
       )}
 
       {/* FAB */}
-      <button
-        onClick={() => setShowUpload(true)}
-        className="fixed bottom-6 right-6 w-14 h-14 bg-[#C9A57A] text-white rounded-full shadow-lg hover:bg-[#b8925f] transition-all flex items-center justify-center cursor-pointer z-30"
-        aria-label="Last opp broderi"
-      >
-        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-        </svg>
-      </button>
+      {!selectionMode && (
+        <button
+          onClick={() => setShowUpload(true)}
+          className="fixed bottom-6 right-6 w-14 h-14 bg-[#C9A57A] text-white rounded-full shadow-lg hover:bg-[#b8925f] transition-all flex items-center justify-center cursor-pointer z-30"
+          aria-label="Last opp broderi"
+        >
+          <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+          </svg>
+        </button>
+      )}
     </>
   )
 }
