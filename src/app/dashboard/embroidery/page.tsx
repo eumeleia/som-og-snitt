@@ -193,7 +193,7 @@ function DeleteDialog({ onConfirm, onCancel }: { onConfirm: () => void; onCancel
 // ── Upload Modal ──────────────────────────────────────────────────────────────
 
 function UploadModal({ onDone, onClose }: {
-  onDone: (results: Embroidery[]) => void
+  onDone: (results: Embroidery[], summary: string) => void
   onClose: () => void
 }) {
   const [progress, setProgress] = useState('')
@@ -207,6 +207,7 @@ function UploadModal({ onDone, onClose }: {
     try {
       const JSZip = (await import('jszip')).default
       const results: Embroidery[] = []
+      let failedFiles = 0
 
       for (let fi = 0; fi < files.length; fi++) {
         const file = files[fi]
@@ -251,12 +252,20 @@ function UploadModal({ onDone, onClose }: {
             const { error: upErr } = await supabase.storage
               .from('embroidery-files')
               .upload(storageFilename, pesData, { contentType: 'application/octet-stream' })
-            if (upErr) continue
+            if (upErr) {
+              console.error('[Embroidery] Upload-feil for', storageFilename, upErr)
+              failedFiles++
+              continue
+            }
             const { data: urlData } = supabase.storage.from('embroidery-files').getPublicUrl(storageFilename)
+            console.log('[Embroidery] Lastet opp', storageFilename, '→', urlData.publicUrl)
             embSizes.push({ id: uid(), sizeLabel, pesUrl: urlData.publicUrl, pesFilename: pesFile.name })
           }
 
-          if (embSizes.length === 0) continue
+          if (embSizes.length === 0) {
+            console.warn('[Embroidery] Ingen PES-filer ble lastet opp for motiv', motifName, '— hopper over')
+            continue
+          }
 
           let coverImage = ''
           let bmpPreview = ''
@@ -280,11 +289,16 @@ function UploadModal({ onDone, onClose }: {
               const { error: bmpErr } = await supabase.storage
                 .from('embroidery-files')
                 .upload(pngFilename, pngBlob, { contentType: 'image/png' })
-              if (!bmpErr) {
+              if (bmpErr) {
+                console.error('[Embroidery] BMP-upload-feil for', matchedBmp.name, bmpErr)
+              } else {
                 const { data: bmpUrlData } = supabase.storage.from('embroidery-files').getPublicUrl(pngFilename)
+                console.log('[Embroidery] Lastet opp BMP-preview', pngFilename, '→', bmpUrlData.publicUrl)
                 coverImage = bmpUrlData.publicUrl
                 bmpPreview = bmpUrlData.publicUrl
               }
+            } else {
+              console.warn('[Embroidery] BMP-konvertering feilet for', matchedBmp.name, '— fortsetter uten forside')
             }
           }
 
@@ -300,18 +314,25 @@ function UploadModal({ onDone, onClose }: {
             notater: '',
           }
 
+          console.log('[Embroidery] Oppretter rad for motiv', motifName, 'med', embSizes.length, 'størrelser')
           const { data: rows, error: insErr } = await supabase
             .from('embroidery')
             .insert({ data: embData })
             .select()
-          if (!insErr && rows?.[0]) {
+          if (insErr) {
+            console.error('[Embroidery] DB insert-feil:', insErr)
+          } else if (rows?.[0]) {
             results.push(rows[0] as Embroidery)
           }
         }
       }
 
       setUploading(false)
-      onDone(results)
+      const summary = failedFiles > 0
+        ? `${results.length} motiver lagt til, ${failedFiles} filer feilet`
+        : `${results.length} motiver lagt til`
+      console.log('[Embroidery] Ferdig:', summary)
+      onDone(results, summary)
     } catch (err) {
       setUploading(false)
       setError(err instanceof Error ? err.message : 'Noe gikk galt')
@@ -725,6 +746,7 @@ export default function EmbroideryPage() {
   const [showDetail, setShowDetail] = useState(false)
   const [katDropdownOpen, setKatDropdownOpen] = useState(false)
   const [sortDropdownOpen, setSortDropdownOpen] = useState(false)
+  const [uploadSummary, setUploadSummary] = useState<string | null>(null)
   const katDropdownRef = useRef<HTMLDivElement>(null)
   const sortDropdownRef = useRef<HTMLDivElement>(null)
 
@@ -795,11 +817,10 @@ export default function EmbroideryPage() {
     setShowDetail(false)
   }
 
-  function handleUploadDone(results: Embroidery[]) {
+  function handleUploadDone(results: Embroidery[], summary: string) {
     setShowUpload(false)
-    if (results.length > 0) {
-      load()
-    }
+    load()
+    if (summary) setUploadSummary(summary)
   }
 
   const filtered = items
@@ -981,6 +1002,18 @@ export default function EmbroideryPage() {
           onConfirm={() => deleteItem(deleteId)}
           onCancel={() => setDeleteId(null)}
         />
+      )}
+
+      {/* Upload summary toast */}
+      {uploadSummary && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-40 px-5 py-3 bg-stone-800 text-white text-sm rounded-2xl shadow-xl flex items-center gap-3 max-w-xs text-center">
+          <span>{uploadSummary}</span>
+          <button onClick={() => setUploadSummary(null)} className="text-stone-400 hover:text-white transition-colors flex-shrink-0">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
       )}
 
       {/* FAB */}
