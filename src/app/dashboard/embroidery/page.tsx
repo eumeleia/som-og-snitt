@@ -299,7 +299,8 @@ function SaveIndicator({ status }: { status: SaveStatus }) {
 
 // ── Delete Dialog (motiv) ──────────────────────────────────────────────────────
 
-function DeleteDialog({ onConfirm, onCancel }: { onConfirm: () => void; onCancel: () => void }) {
+function DeleteDialog({ onConfirm, onCancel }: { onConfirm: () => Promise<void>; onCancel: () => void }) {
+  const [isDeleting, setIsDeleting] = useState(false)
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center">
@@ -308,15 +309,17 @@ function DeleteDialog({ onConfirm, onCancel }: { onConfirm: () => void; onCancel
         <div className="flex gap-3">
           <button
             onClick={onCancel}
-            className="flex-1 py-2.5 border border-stone-200 rounded-xl text-sm text-stone-600 hover:bg-stone-50 transition-colors"
+            disabled={isDeleting}
+            className="flex-1 py-2.5 border border-stone-200 rounded-xl text-sm text-stone-600 hover:bg-stone-50 transition-colors disabled:opacity-50"
           >
             Avbryt
           </button>
           <button
-            onClick={onConfirm}
-            className="flex-1 py-2.5 bg-red-600 text-white rounded-xl text-sm font-medium hover:bg-red-700 transition-colors"
+            onClick={async () => { setIsDeleting(true); await onConfirm() }}
+            disabled={isDeleting}
+            className="flex-1 py-2.5 bg-red-600 text-white rounded-xl text-sm font-medium hover:bg-red-700 transition-colors disabled:opacity-70 flex items-center justify-center gap-1.5"
           >
-            Slett
+            {isDeleting ? <><Spinner /> Sletter…</> : 'Slett'}
           </button>
         </div>
       </div>
@@ -332,10 +335,11 @@ function BundleDeleteDialog({
   onCancel,
 }: {
   bundleName: string
-  onConfirm: (detachOnly: boolean) => void
+  onConfirm: (detachOnly: boolean) => Promise<void>
   onCancel: () => void
 }) {
   const [detachOnly, setDetachOnly] = useState(true)
+  const [isDeleting, setIsDeleting] = useState(false)
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-4">
@@ -348,6 +352,7 @@ function BundleDeleteDialog({
               type="radio"
               checked={detachOnly}
               onChange={() => setDetachOnly(true)}
+              disabled={isDeleting}
               className="mt-0.5 accent-[#C9A57A]"
             />
             <div>
@@ -360,6 +365,7 @@ function BundleDeleteDialog({
               type="radio"
               checked={!detachOnly}
               onChange={() => setDetachOnly(false)}
+              disabled={isDeleting}
               className="mt-0.5 accent-red-500"
             />
             <div>
@@ -371,15 +377,17 @@ function BundleDeleteDialog({
         <div className="flex gap-3">
           <button
             onClick={onCancel}
-            className="flex-1 py-2.5 border border-stone-200 rounded-xl text-sm text-stone-600 hover:bg-stone-50 transition-colors"
+            disabled={isDeleting}
+            className="flex-1 py-2.5 border border-stone-200 rounded-xl text-sm text-stone-600 hover:bg-stone-50 transition-colors disabled:opacity-50"
           >
             Avbryt
           </button>
           <button
-            onClick={() => onConfirm(detachOnly)}
-            className="flex-1 py-2.5 bg-red-600 text-white rounded-xl text-sm font-medium hover:bg-red-700 transition-colors"
+            onClick={async () => { setIsDeleting(true); await onConfirm(detachOnly) }}
+            disabled={isDeleting}
+            className="flex-1 py-2.5 bg-red-600 text-white rounded-xl text-sm font-medium hover:bg-red-700 transition-colors disabled:opacity-70 flex items-center justify-center gap-1.5"
           >
-            Slett bundle
+            {isDeleting ? <><Spinner /> Sletter…</> : 'Slett bundle'}
           </button>
         </div>
       </div>
@@ -1415,6 +1423,7 @@ export default function EmbroideryPage() {
   const viewRef = useRef<View>('gallery')
   const prevViewRef = useRef<View>('gallery')
   const currentBundleRef = useRef<EmbroideryBundle | null>(null)
+  const bundlesRef = useRef<EmbroideryBundle[]>([])
 
   useEffect(() => {
     if (!katDropdownOpen) return
@@ -1462,20 +1471,30 @@ export default function EmbroideryPage() {
   useEffect(() => { viewRef.current = view }, [view])
   useEffect(() => { prevViewRef.current = prevView }, [prevView])
   useEffect(() => { currentBundleRef.current = currentBundle }, [currentBundle])
+  useEffect(() => { bundlesRef.current = bundles }, [bundles])
 
   useEffect(() => {
     window.history.replaceState({ emb: 'gallery' }, '')
     function handlePopState(e: PopStateEvent) {
-      const state = e.state as { emb?: string } | null
+      const state = e.state as { emb?: string; bid?: string } | null
       if (!state?.emb) return
       if (state.emb === 'gallery') {
         setView('gallery')
         setCurrentItem(null)
         setCurrentBundle(null)
       } else if (state.emb === 'bundle') {
-        // back from motif → bundle
-        setView('bundle')
-        setCurrentItem(null)
+        // browser back from motif → bundle; restore bundle by bid in case state is stale
+        const bundle = (state.bid ? bundlesRef.current.find(b => b.id === state.bid) : null)
+          || currentBundleRef.current
+        if (bundle) {
+          setCurrentBundle(bundle)
+          setView('bundle')
+          setCurrentItem(null)
+        } else {
+          setView('gallery')
+          setCurrentItem(null)
+          setCurrentBundle(null)
+        }
       }
     }
     window.addEventListener('popstate', handlePopState)
@@ -1678,7 +1697,7 @@ export default function EmbroideryPage() {
         <BundleDetail
           bundle={currentBundle}
           motifs={bundleMotifs}
-          onBack={() => window.history.back()}
+          onBack={() => { setCurrentBundle(null); setView('gallery') }}
           onSaved={() => load()}
           onDelete={() => setDeleteBundleId(currentBundle.id)}
           onMotifClick={openMotifFromBundle}
@@ -1702,7 +1721,15 @@ export default function EmbroideryPage() {
       <>
         <EmbroideryDetail
           item={currentItem}
-          onBack={() => window.history.back()}
+          onBack={() => {
+            if (prevView === 'bundle' && currentBundle) {
+              setView('bundle')
+              setCurrentItem(null)
+            } else {
+              setCurrentItem(null)
+              setView('gallery')
+            }
+          }}
           onSaved={() => load()}
           onDelete={() => setDeleteId(currentItem.id)}
         />
