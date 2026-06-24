@@ -203,6 +203,25 @@ async function renderPesPreview(pesData: Uint8Array): Promise<RenderResult | nul
   }
 }
 
+async function fetchPesBounds(pesData: Uint8Array): Promise<{ widthMm: number; heightMm: number } | null> {
+  try {
+    const b64 = uint8ToBase64(pesData)
+    const res = await fetch('/api/render-pes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pes_data: b64, bounds_only: true }),
+    })
+    if (!res.ok) return null
+    const result = await res.json()
+    if (result.width_mm && result.height_mm) {
+      return { widthMm: result.width_mm, heightMm: result.height_mm }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 function bmpToDataUrl(data: Uint8Array<ArrayBuffer>): Promise<string | null> {
   return new Promise(resolve => {
     const blob = new Blob([data], { type: 'image/bmp' })
@@ -503,7 +522,13 @@ function UploadModal({ onDone, onClose }: {
               continue
             }
             const { data: urlData } = supabase.storage.from('embroidery-files').getPublicUrl(storageFilename)
-            embSizes.push({ id: uid(), sizeLabel, pesUrl: urlData.publicUrl, pesFilename: pesFile.name })
+            let widthMm: number | undefined
+            let heightMm: number | undefined
+            try {
+              const bounds = await fetchPesBounds(pesData)
+              if (bounds) { widthMm = bounds.widthMm; heightMm = bounds.heightMm }
+            } catch { /* ignore per-file failure */ }
+            embSizes.push({ id: uid(), sizeLabel, pesUrl: urlData.publicUrl, pesFilename: pesFile.name, widthMm, heightMm })
           }
 
           if (embSizes.length === 0) {
@@ -559,14 +584,6 @@ function UploadModal({ onDone, onClose }: {
                     const { data: renderUrl } = supabase.storage.from('embroidery-files').getPublicUrl(pngFilename)
                     coverImage = renderUrl.publicUrl
                     bmpPreview = renderUrl.publicUrl
-                    // Store dimensions on the representative size entry
-                    if (renderResult.width_mm && renderResult.height_mm) {
-                      const repEmb = embSizes.find(s => s.sizeLabel === repSize.sizeLabel)
-                      if (repEmb) {
-                        repEmb.widthMm = renderResult.width_mm
-                        repEmb.heightMm = renderResult.height_mm
-                      }
-                    }
                   }
                 }
               } catch (renderErr) {
@@ -1395,6 +1412,9 @@ export default function EmbroideryPage() {
   const [uploadSummary, setUploadSummary] = useState<string | null>(null)
   const katDropdownRef = useRef<HTMLDivElement>(null)
   const sortDropdownRef = useRef<HTMLDivElement>(null)
+  const viewRef = useRef<View>('gallery')
+  const prevViewRef = useRef<View>('gallery')
+  const currentBundleRef = useRef<EmbroideryBundle | null>(null)
 
   useEffect(() => {
     if (!katDropdownOpen) return
@@ -1437,6 +1457,30 @@ export default function EmbroideryPage() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // Keep refs in sync so the popstate handler can read latest state without stale closure
+  useEffect(() => { viewRef.current = view }, [view])
+  useEffect(() => { prevViewRef.current = prevView }, [prevView])
+  useEffect(() => { currentBundleRef.current = currentBundle }, [currentBundle])
+
+  useEffect(() => {
+    window.history.replaceState({ emb: 'gallery' }, '')
+    function handlePopState(e: PopStateEvent) {
+      const state = e.state as { emb?: string } | null
+      if (!state?.emb) return
+      if (state.emb === 'gallery') {
+        setView('gallery')
+        setCurrentItem(null)
+        setCurrentBundle(null)
+      } else if (state.emb === 'bundle') {
+        // back from motif → bundle
+        setView('bundle')
+        setCurrentItem(null)
+      }
+    }
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [])
 
   async function deleteItem(id: string) {
     const item = items.find(i => i.id === id)
@@ -1549,17 +1593,20 @@ export default function EmbroideryPage() {
   }
 
   function openBundle(bundle: EmbroideryBundle) {
+    window.history.pushState({ emb: 'bundle', bid: bundle.id }, '')
     setCurrentBundle(bundle)
     setView('bundle')
   }
 
   function openMotifFromGallery(item: Embroidery) {
+    window.history.pushState({ emb: 'motif', mid: item.id, from: 'gallery' }, '')
     setCurrentItem(item)
     setPrevView('gallery')
     setView('motif')
   }
 
   function openMotifFromBundle(item: Embroidery) {
+    window.history.pushState({ emb: 'motif', mid: item.id, from: 'bundle' }, '')
     setCurrentItem(item)
     setPrevView('bundle')
     setView('motif')
@@ -1631,7 +1678,7 @@ export default function EmbroideryPage() {
         <BundleDetail
           bundle={currentBundle}
           motifs={bundleMotifs}
-          onBack={() => { setCurrentBundle(null); setView('gallery') }}
+          onBack={() => window.history.back()}
           onSaved={() => load()}
           onDelete={() => setDeleteBundleId(currentBundle.id)}
           onMotifClick={openMotifFromBundle}
@@ -1655,15 +1702,7 @@ export default function EmbroideryPage() {
       <>
         <EmbroideryDetail
           item={currentItem}
-          onBack={() => {
-            if (prevView === 'bundle' && currentBundle) {
-              setView('bundle')
-            } else {
-              setCurrentItem(null)
-              setView('gallery')
-              load()
-            }
-          }}
+          onBack={() => window.history.back()}
           onSaved={() => load()}
           onDelete={() => setDeleteId(currentItem.id)}
         />

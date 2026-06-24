@@ -105,6 +105,50 @@ def render_pes(pes_bytes: bytes):
             pass
 
 
+def get_pes_bounds(pes_bytes: bytes):
+    """Parse PES and return physical dimensions only — no PNG rendering."""
+    import pyembroidery
+
+    with tempfile.NamedTemporaryFile(suffix='.pes', delete=False) as f:
+        f.write(pes_bytes)
+        tmp_pes = f.name
+    try:
+        pattern = pyembroidery.read(tmp_pes)
+        if pattern is None:
+            return {}
+        width_mm, height_mm = _extract_extents(pattern)
+        if width_mm is not None:
+            return {'width_mm': width_mm, 'height_mm': height_mm}
+        return {}
+    except Exception:
+        return {}
+    finally:
+        try:
+            os.unlink(tmp_pes)
+        except Exception:
+            pass
+
+
+def _extract_extents(pattern):
+    """Return (width_mm, height_mm) from a pyembroidery pattern, or (None, None)."""
+    try:
+        if hasattr(pattern, 'extents'):
+            ext = pattern.extents()
+            if ext and len(ext) >= 4:
+                w = abs(ext[2] - ext[0])
+                h = abs(ext[3] - ext[1])
+                if w > 0 and h > 0:
+                    return round(w / 10.0, 1), round(h / 10.0, 1)
+        if hasattr(pattern, 'min_x') and hasattr(pattern, 'max_x'):
+            w = abs(pattern.max_x - pattern.min_x)
+            h = abs(pattern.max_y - pattern.min_y)
+            if w > 0 and h > 0:
+                return round(w / 10.0, 1), round(h / 10.0, 1)
+    except Exception:
+        pass
+    return None, None
+
+
 class handler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
@@ -120,8 +164,6 @@ class handler(BaseHTTPRequestHandler):
                 return
 
             raw_body = self.rfile.read(content_length)
-
-            # Accept JSON with base64-encoded PES data
             body = json.loads(raw_body)
             pes_b64 = body.get('pes_data', '')
             if not pes_b64:
@@ -129,6 +171,12 @@ class handler(BaseHTTPRequestHandler):
                 return
 
             pes_bytes = base64.b64decode(pes_b64)
+
+            # Lightweight bounds-only mode — skip PNG rendering
+            if body.get('bounds_only'):
+                result = get_pes_bounds(pes_bytes)
+                self._json(200, result)
+                return
 
             png_bytes, width_mm, height_mm = render_pes(pes_bytes)
             png_b64 = base64.b64encode(png_bytes).decode('utf-8')
