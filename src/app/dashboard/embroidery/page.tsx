@@ -595,14 +595,35 @@ function UploadModal({ onDone, onClose }: {
         })
 
         const motifMap = new Map<string, { sizeLabel: string; pesFile: PesEntry }[]>()
-        for (const pf of pesFiles) {
-          const { motifName, sizeLabel } = parsePesPath(pf.path)
-          if (!motifMap.has(motifName)) motifMap.set(motifName, [])
-          motifMap.get(motifName)!.push({ sizeLabel, pesFile: pf })
-        }
-        // Sort sizes within each motif group
-        for (const sizes of motifMap.values()) {
+
+        if (uploadMode === 'loose') {
+          // All PES files in this ZIP belong to ONE motif — the user said so.
+          // Use the ZIP filename as the motif name; derive a per-file size label
+          // from the filename heuristic (falls back to a running counter).
+          const looseName = file.name.replace(/\.zip$/i, '').replace(/[-_]/g, ' ').trim()
+          const sizes: { sizeLabel: string; pesFile: PesEntry }[] = []
+          let counter = 1
+          for (const pf of pesFiles) {
+            const { sizeLabel: guessed } = parsePesPath(pf.path)
+            // Only use the guessed label if it looks like a real size (not fallback 'Standard')
+            const sizeLabel = guessed === 'Standard'
+              ? (pesFiles.length === 1 ? 'Standard' : String(counter))
+              : guessed
+            counter++
+            sizes.push({ sizeLabel, pesFile: pf })
+          }
           sizes.sort((a, b) => sizeOrder(a.sizeLabel) - sizeOrder(b.sizeLabel))
+          if (sizes.length > 0) motifMap.set(looseName, sizes)
+        } else {
+          // Bundle mode: group by motif name derived from path/filename (existing logic)
+          for (const pf of pesFiles) {
+            const { motifName, sizeLabel } = parsePesPath(pf.path)
+            if (!motifMap.has(motifName)) motifMap.set(motifName, [])
+            motifMap.get(motifName)!.push({ sizeLabel, pesFile: pf })
+          }
+          for (const sizes of motifMap.values()) {
+            sizes.sort((a, b) => sizeOrder(a.sizeLabel) - sizeOrder(b.sizeLabel))
+          }
         }
 
         let motifIdx = 0
