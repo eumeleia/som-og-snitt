@@ -728,6 +728,7 @@ function UploadModal({ onDone, onClose }: {
   onClose: () => void
 }) {
   const [progress, setProgress] = useState('')
+  const [progressPct, setProgressPct] = useState(0)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [uploadMode, setUploadMode] = useState<'loose' | 'bundle'>('loose')
@@ -758,7 +759,8 @@ function UploadModal({ onDone, onClose }: {
       async function processBatch(
         pesFiles: PesEntry[],
         imageFiles: ImgEntry[],
-        batchName: string
+        batchName: string,
+        onFileDone: () => void = () => {}
       ) {
         if (pesFiles.length === 0) return
         const zipBundleName = bundleName.trim() || batchName
@@ -821,6 +823,7 @@ function UploadModal({ onDone, onClose }: {
             const { error: upErr } = await supabase.storage
               .from('embroidery-files')
               .upload(storageFilename, pesData, { contentType: 'application/octet-stream' })
+            onFileDone()
             if (upErr) {
               console.error('[Embroidery] Upload-feil for', storageFilename, upErr)
               failedFiles++
@@ -981,14 +984,18 @@ function UploadModal({ onDone, onClose }: {
       const pesRawFiles = files.filter(f => /\.pes$/i.test(f.name))
       const imgRawFiles = files.filter(f => /\.(bmp|jpg|jpeg|png)$/i.test(f.name))
 
-      // Process each ZIP file
+      // ── Phase 1: Collect all batches (unzip ZIPs) without processing them yet.
+      //    This lets us count total PES files across the whole job before starting.
+      type Batch = { pes: PesEntry[]; img: ImgEntry[]; name: string }
+      const batches: Batch[] = []
+
       const JSZip = (await import('jszip')).default
       for (const zipFile of zipFiles) {
         setProgress(`Pakker ut ${zipFile.name}…`)
         const zip = await JSZip.loadAsync(zipFile)
 
-        const zipPes: { name: string; path: string; getData: () => Promise<Uint8Array> }[] = []
-        const zipImg: { name: string; path: string; ext: string; getData: () => Promise<Uint8Array> }[] = []
+        const zipPes: PesEntry[] = []
+        const zipImg: ImgEntry[] = []
 
         // JSZip reads entry names directly from ZIP binary headers — original case is preserved.
         zip.forEach((relativePath, zipEntry) => {
@@ -1005,34 +1012,41 @@ function UploadModal({ onDone, onClose }: {
 
         const batchName = bundleName.trim() ||
           zipFile.name.replace(/\.zip$/i, '').replace(/[-_]/g, ' ')
-        await processBatch(zipPes, zipImg, batchName)
+        batches.push({ pes: zipPes, img: zipImg, name: batchName })
       }
 
-      // Process loose PES files
       if (pesRawFiles.length > 0) {
-        const pesBatch: { name: string; path: string; getData: () => Promise<Uint8Array> }[] =
-          pesRawFiles.map(f => ({
-            name: f.name,
-            path: f.webkitRelativePath || f.name,
-            getData: () => fileBytes(f),
-          }))
-        const imgBatch: { name: string; path: string; ext: string; getData: () => Promise<Uint8Array> }[] =
-          imgRawFiles.map(f => {
-            const ext = f.name.toLowerCase().split('.').pop()!
-            return {
-              name: f.name,
-              path: f.webkitRelativePath || f.name,
-              ext,
-              getData: () => fileBytes(f),
-            }
-          })
+        const pesBatch: PesEntry[] = pesRawFiles.map(f => ({
+          name: f.name,
+          path: f.webkitRelativePath || f.name,
+          getData: () => fileBytes(f),
+        }))
+        const imgBatch: ImgEntry[] = imgRawFiles.map(f => {
+          const ext = f.name.toLowerCase().split('.').pop()!
+          return { name: f.name, path: f.webkitRelativePath || f.name, ext, getData: () => fileBytes(f) }
+        })
         const firstRelative = pesRawFiles[0].webkitRelativePath
         const looseDefaultName = firstRelative
           ? firstRelative.split('/')[0]
           : pesRawFiles[0].name.replace(/\.pes$/i, '')
-        const looseBatchName = bundleName.trim() || looseDefaultName
-        await processBatch(pesBatch, imgBatch, looseBatchName)
+        batches.push({ pes: pesBatch, img: imgBatch, name: bundleName.trim() || looseDefaultName })
       }
+
+      // ── Phase 2: Count total PES files, then process all batches with progress tracking.
+      const totalPes = Math.max(1, batches.reduce((s, b) => s + b.pes.length, 0))
+      let donePes = 0
+      setProgressPct(0)
+
+      for (const batch of batches) {
+        await processBatch(batch.pes, batch.img, batch.name, () => {
+          donePes++
+          setProgressPct(Math.round(donePes / totalPes * 100))
+        })
+      }
+
+      setProgressPct(100)
+      setProgress('Ferdig!')
+      await new Promise(r => setTimeout(r, 400))
 
       setUploading(false)
       const summary = failedFiles > 0
@@ -1120,9 +1134,22 @@ function UploadModal({ onDone, onClose }: {
         )}
 
         {uploading ? (
-          <div className="flex items-center gap-3 py-4 text-stone-600 text-sm">
-            <Spinner />
-            <span>{progress || 'Behandler…'}</span>
+          <div className="py-5 space-y-3">
+            <div className="flex items-center gap-3">
+              <div className="flex-1 bg-stone-200 rounded-full h-2 overflow-hidden">
+                <div
+                  className="h-2 rounded-full transition-all duration-300 ease-out"
+                  style={{ width: `${progressPct}%`, backgroundColor: '#C9A57A' }}
+                />
+              </div>
+              <span className="text-sm font-medium text-stone-500 tabular-nums w-14 text-right flex-shrink-0">
+                {progressPct === 100 ? 'Ferdig ✓' : `${progressPct} %`}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 text-stone-500 text-sm min-h-[1.25rem]">
+              {progressPct < 100 && <Spinner />}
+              <span className="truncate">{progress || 'Behandler…'}</span>
+            </div>
           </div>
         ) : (
           <div className="space-y-3">
