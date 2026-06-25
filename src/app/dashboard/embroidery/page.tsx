@@ -129,6 +129,20 @@ function sizeOrder(label: string): number {
   return 99
 }
 
+// Sort bundle motifs: capitals A–Å first, then lowercase a–å, then numbers 0–9, then rest.
+function sortBundleMotifs(motifs: Embroidery[]): Embroidery[] {
+  return [...motifs].sort((a, b) => {
+    const aName = a.data.navn || ''
+    const bName = b.data.navn || ''
+    const group = (n: string) =>
+      / \(stor\)$/.test(n) ? 0 : / \(liten\)$/.test(n) ? 1 : /^\d+$/.test(n.trim()) ? 2 : 3
+    const ag = group(aName), bg = group(bName)
+    if (ag !== bg) return ag - bg
+    if (ag === 2) return parseInt(aName.trim()) - parseInt(bName.trim())
+    return aName.localeCompare(bName, 'nb')
+  })
+}
+
 // Sort sizes smallest-to-largest at render time (does not mutate state).
 // Priority: (1) physical area when both have mm data, (2) sizeOrder label heuristic, (3) alphabetical.
 function sortedSizes(sizes: EmbroiderySize[]): EmbroiderySize[] {
@@ -162,6 +176,22 @@ function parsePesPath(relativePath: string): { motifName: string; sizeLabel: str
   const parts = relativePath.replace(/\\/g, '/').split('/')
   const filename = parts[parts.length - 1]
   const nameNoExt = filename.replace(/\.pes$/i, '')
+
+  // ── SIZES X intermediate folder (alphabet packs: CAPITAL/PES/SIZES 2.5/A.PES)
+  // Trust the top-level folder (CAPITAL/SMALL/NUMBERS) for char-type identity, not filename case,
+  // so a misfiled "w.PES" under CAPITAL still becomes "w (stor)".
+  const sizesIdx = parts.findIndex(p => /^sizes\s+\d+(?:\.\d+)?$/i.test(p))
+  if (sizesIdx >= 0) {
+    const sizeVal = parts[sizesIdx].match(/^sizes\s+(\d+(?:\.\d+)?)$/i)![1]
+    const sizeLabel = `${sizeVal}"`
+    let suffix = ''
+    for (const part of parts) {
+      if (/^(capitals?|uppercase)$/i.test(part)) { suffix = ' (stor)'; break }
+      if (/^(small|lowercase)$/i.test(part)) { suffix = ' (liten)'; break }
+      if (/^(numbers?|tall)$/i.test(part)) break
+    }
+    return { motifName: `${nameNoExt}${suffix}`, sizeLabel }
+  }
 
   // ── Folder-structure heuristic (e.g. 6 Summer Bouquets/1/medium/Design1 medium.PES)
   if (parts.length >= 3) {
@@ -1666,7 +1696,7 @@ function BundleDetail({ bundle, motifs, onBack, onSaved, onDelete, onMotifClick,
             <p className="text-sm text-stone-400 italic">Ingen motiver i denne bundelen ennå.</p>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-              {motifs.map(motif => (
+              {sortBundleMotifs(motifs).map(motif => (
                 <BundleMotifCard
                   key={motif.id}
                   item={motif}
