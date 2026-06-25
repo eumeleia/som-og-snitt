@@ -129,6 +129,20 @@ function sizeOrder(label: string): number {
   return 99
 }
 
+// Sort sizes smallest-to-largest at render time (does not mutate state).
+// Priority: (1) physical area when both have mm data, (2) sizeOrder label heuristic, (3) alphabetical.
+function sortedSizes(sizes: EmbroiderySize[]): EmbroiderySize[] {
+  return [...sizes].sort((a, b) => {
+    const aArea = (a.widthMm && a.heightMm) ? a.widthMm * a.heightMm : null
+    const bArea = (b.widthMm && b.heightMm) ? b.widthMm * b.heightMm : null
+    if (aArea !== null && bArea !== null) return aArea - bArea
+    const aOrd = sizeOrder(a.sizeLabel)
+    const bOrd = sizeOrder(b.sizeLabel)
+    if (aOrd !== bOrd) return aOrd - bOrd
+    return a.sizeLabel.localeCompare(b.sizeLabel, 'nb')
+  })
+}
+
 function normaliseSizeLabel(raw: string): string {
   const lower = raw.toLowerCase()
   if (SIZE_WORDS_ORDERED.includes(lower)) return lower.charAt(0).toUpperCase() + lower.slice(1)
@@ -1306,7 +1320,7 @@ function EmbroideryDetail({ item, onBack, onSaved, onDelete }: {
             <p className="text-sm text-stone-400 italic">Ingen størrelser registrert.</p>
           ) : (
             <div className="space-y-2">
-              {d.sizes.map(size => (
+              {sortedSizes(d.sizes).map(size => (
                 <div key={size.id} className="flex items-center gap-3 py-2 border-b border-stone-50 last:border-0 min-w-0">
                   <input value={size.sizeLabel} onChange={e => updateSize(size.id, { sizeLabel: e.target.value })}
                     className="w-24 flex-shrink-0 px-2.5 py-1.5 border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-stone-200"
