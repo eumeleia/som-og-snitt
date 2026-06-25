@@ -565,6 +565,59 @@ function CreateBundleModal({
   )
 }
 
+// ── Merge Bundles Modal ────────────────────────────────────────────────────────
+
+function MergeBundlesModal({
+  suggestedName,
+  bundleCount,
+  onConfirm,
+  onCancel,
+}: {
+  suggestedName?: string
+  bundleCount: number
+  onConfirm: (name: string) => void
+  onCancel: () => void
+}) {
+  const [name, setName] = useState(suggestedName || '')
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+        <h2 className="font-serif text-xl text-stone-700 mb-1">Slå sammen bundles</h2>
+        <p className="text-stone-400 text-sm mb-5">
+          {bundleCount} bundles og alle motivene deres samles til én flat bundle.
+        </p>
+        <div className="mb-5">
+          <label className="block text-xs text-stone-500 mb-1">Navn på sammenslått bundle</label>
+          <input
+            autoFocus
+            value={name}
+            onChange={e => setName(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && name.trim()) onConfirm(name.trim()) }}
+            placeholder="F.eks. BX Floral Alphabet"
+            className="w-full px-3 py-2 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-200"
+          />
+        </div>
+        <div className="flex gap-3">
+          <button
+            onClick={onCancel}
+            className="flex-1 py-2.5 border border-stone-200 rounded-xl text-sm text-stone-600 hover:bg-stone-50 transition-colors"
+          >
+            Avbryt
+          </button>
+          <button
+            onClick={() => { if (name.trim()) onConfirm(name.trim()) }}
+            disabled={!name.trim()}
+            className="flex-1 py-2.5 bg-[#C9A57A] text-white rounded-xl text-sm font-medium hover:bg-[#b8925f] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Slå sammen
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Kategori Editor ────────────────────────────────────────────────────────────
 
 function KategoriEditor({ kategorier, onChange }: {
@@ -1219,18 +1272,28 @@ function EmbroideryCard({
 
 // ── Bundle Card ────────────────────────────────────────────────────────────────
 
-function BundleCard({ bundle, motifCount, onClick }: {
+function BundleCard({ bundle, motifCount, onClick, selectionMode = false, selected = false, onToggleSelect }: {
   bundle: EmbroideryBundle
   motifCount: number
   onClick: () => void
+  selectionMode?: boolean
+  selected?: boolean
+  onToggleSelect?: () => void
 }) {
   const d = bundle.data
   const imgSrc = d.useCustomImage ? d.customImage : d.coverImage
 
+  function handleClick() {
+    if (selectionMode) onToggleSelect?.()
+    else onClick()
+  }
+
   return (
     <article
-      onClick={onClick}
-      className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col relative min-w-0"
+      onClick={handleClick}
+      className={`group bg-white rounded-xl border shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col relative min-w-0 ${
+        selected ? 'border-[#C9A57A] ring-2 ring-[#C9A57A]/30' : 'border-stone-200'
+      }`}
     >
       <div className="relative aspect-[5/4] overflow-hidden bg-stone-50">
         {imgSrc ? (
@@ -1241,6 +1304,18 @@ function BundleCard({ bundle, motifCount, onClick }: {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1}
                 d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
             </svg>
+          </div>
+        )}
+
+        {selectionMode && (
+          <div className={`absolute top-2 right-2 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${
+            selected ? 'bg-[#C9A57A] border-[#C9A57A]' : 'bg-white/80 border-stone-300'
+          }`}>
+            {selected && (
+              <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+              </svg>
+            )}
           </div>
         )}
 
@@ -1775,6 +1850,9 @@ export default function EmbroideryPage() {
   const [selectionMode, setSelectionMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [showCreateBundle, setShowCreateBundle] = useState(false)
+  const [bundleSelectionMode, setBundleSelectionMode] = useState(false)
+  const [selectedBundleIds, setSelectedBundleIds] = useState<Set<string>>(new Set())
+  const [showMergeBundles, setShowMergeBundles] = useState(false)
   const [katDropdownOpen, setKatDropdownOpen] = useState(false)
   const [sortDropdownOpen, setSortDropdownOpen] = useState(false)
   const [uploadSummary, setUploadSummary] = useState<string | null>(null)
@@ -2023,6 +2101,51 @@ export default function EmbroideryPage() {
     })
   }
 
+  function toggleBundleSelection(id: string) {
+    setSelectedBundleIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  async function mergeBundles(name: string) {
+    const toBeMerged = bundles.filter(b => selectedBundleIds.has(b.id))
+    if (toBeMerged.length < 2) return
+    const firstCover = toBeMerged.find(b => b.data.coverImage)?.data.coverImage || ''
+    const bundleData: EmbroideryBundleData = {
+      navn: name,
+      designer: toBeMerged[0].data.designer || '',
+      kategori: '',
+      coverImage: firstCover,
+      customImage: '',
+      useCustomImage: false,
+      notater: '',
+    }
+    const { data: newRows, error: newErr } = await supabase
+      .from('embroidery_bundles')
+      .insert({ data: bundleData })
+      .select()
+    if (newErr || !newRows?.[0]) return
+    const newBundle = newRows[0] as EmbroideryBundle
+    for (const b of toBeMerged) {
+      const motifsInBundle = items.filter(i => i.data.bundleId === b.id)
+      for (const motif of motifsInBundle) {
+        await supabase
+          .from('embroidery')
+          .update({ data: { ...motif.data, bundleId: newBundle.id } })
+          .eq('id', motif.id)
+      }
+      await supabase.from('embroidery_bundles').delete().eq('id', b.id)
+    }
+    setBundleSelectionMode(false)
+    setSelectedBundleIds(new Set())
+    setShowMergeBundles(false)
+    await load()
+    setUploadSummary(`${toBeMerged.length} bundles slått sammen til «${name}»`)
+  }
+
   const galleryItems = useMemo((): GalleryItem[] => {
     const looseMotifs = items
       .filter(i => !i.data.bundleId)
@@ -2234,8 +2357,8 @@ export default function EmbroideryPage() {
             )}
           </div>
 
-          {/* Selection mode toggle */}
-          {(items.filter(i => !i.data.bundleId).length > 0) && (
+          {/* Motif selection mode toggle — hidden when bundle selection is active */}
+          {!bundleSelectionMode && (items.filter(i => !i.data.bundleId).length > 0) && (
             <button
               onClick={() => {
                 if (selectionMode) {
@@ -2265,6 +2388,42 @@ export default function EmbroideryPage() {
                       d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
                   </svg>
                   Velg motiver
+                </>
+              )}
+            </button>
+          )}
+
+          {/* Bundle selection mode toggle — hidden when motif selection is active */}
+          {!selectionMode && bundles.length >= 2 && (
+            <button
+              onClick={() => {
+                if (bundleSelectionMode) {
+                  setBundleSelectionMode(false)
+                  setSelectedBundleIds(new Set())
+                } else {
+                  setBundleSelectionMode(true)
+                }
+              }}
+              className={`h-9 px-3 flex items-center gap-1.5 rounded-xl border text-sm transition-colors ${
+                bundleSelectionMode
+                  ? 'bg-stone-800 text-white border-stone-800'
+                  : 'bg-white text-stone-500 border-stone-200 hover:border-stone-400'
+              }`}
+            >
+              {bundleSelectionMode ? (
+                <>
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                  Avbryt
+                </>
+              ) : (
+                <>
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                      d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                  </svg>
+                  Velg bundles
                 </>
               )}
             </button>
@@ -2308,6 +2467,9 @@ export default function EmbroideryPage() {
                     bundle={gi.bundle}
                     motifCount={gi.motifCount}
                     onClick={() => openBundle(gi.bundle)}
+                    selectionMode={bundleSelectionMode}
+                    selected={selectedBundleIds.has(gi.bundle.id)}
+                    onToggleSelect={() => toggleBundleSelection(gi.bundle.id)}
                   />
                 )
               }
@@ -2381,6 +2543,35 @@ export default function EmbroideryPage() {
           onCancel={() => setShowCreateBundle(false)}
         />
       )}
+
+      {/* Bundle selection floating bar */}
+      {bundleSelectionMode && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 px-5 py-3 bg-stone-800 text-white text-sm rounded-2xl shadow-xl">
+          <span className="text-stone-300 whitespace-nowrap">
+            {selectedBundleIds.size} {selectedBundleIds.size === 1 ? 'bundle valgt' : 'bundles valgt'}
+          </span>
+          <button
+            onClick={() => { if (selectedBundleIds.size >= 2) setShowMergeBundles(true) }}
+            disabled={selectedBundleIds.size < 2}
+            className="px-4 py-1.5 bg-[#C9A57A] text-white rounded-xl text-sm font-medium hover:bg-[#b8925f] transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+          >
+            Slå sammen bundles
+          </button>
+        </div>
+      )}
+
+      {showMergeBundles && (() => {
+        const selectedBundles = bundles.filter(b => selectedBundleIds.has(b.id))
+        const suggested = selectedBundles[0]?.data.navn || ''
+        return (
+          <MergeBundlesModal
+            suggestedName={suggested}
+            bundleCount={selectedBundles.length}
+            onConfirm={mergeBundles}
+            onCancel={() => setShowMergeBundles(false)}
+          />
+        )
+      })()}
 
       {/* Upload summary toast */}
       {uploadSummary && (
