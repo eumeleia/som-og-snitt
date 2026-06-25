@@ -129,19 +129,23 @@ function sizeOrder(label: string): number {
   return 99
 }
 
-// Sort bundle motifs: capitals first (group 0), lowercase+unsuffixed (group 1), numbers last (group 2).
-// Numbers get group 2 so they sort after all letters regardless of suffix presence.
+// Sort bundle motifs: paired by letter (A stor, a liten, B stor, b liten…), numbers last.
 function sortBundleMotifs(motifs: Embroidery[]): Embroidery[] {
   return [...motifs].sort((a, b) => {
     const aName = a.data.navn || ''
     const bName = b.data.navn || ''
     const charA = aName.replace(/ \(.*?\)$/, '').trim()
     const charB = bName.replace(/ \(.*?\)$/, '').trim()
-    const groupA = / \(stor\)$/.test(aName) ? 0 : /^\d+$/.test(charA) ? 2 : 1
-    const groupB = / \(stor\)$/.test(bName) ? 0 : /^\d+$/.test(charB) ? 2 : 1
-    if (groupA !== groupB) return groupA - groupB
-    if (groupA === 2) return parseInt(charA) - parseInt(charB)
-    return charA.localeCompare(charB, 'nb', { sensitivity: 'base' })
+    const isNumA = /^\d+$/.test(charA)
+    const isNumB = /^\d+$/.test(charB)
+    if (isNumA && !isNumB) return 1
+    if (!isNumA && isNumB) return -1
+    if (isNumA && isNumB) return parseInt(charA) - parseInt(charB)
+    const letterCmp = charA.localeCompare(charB, 'nb', { sensitivity: 'base' })
+    if (letterCmp !== 0) return letterCmp
+    const rankA = / \(stor\)$/.test(aName) ? 0 : / \(liten\)$/.test(aName) ? 1 : 2
+    const rankB = / \(stor\)$/.test(bName) ? 0 : / \(liten\)$/.test(bName) ? 1 : 2
+    return rankA - rankB
   })
 }
 
