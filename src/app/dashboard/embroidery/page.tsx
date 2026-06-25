@@ -143,6 +143,14 @@ function sortedSizes(sizes: EmbroiderySize[]): EmbroiderySize[] {
   })
 }
 
+// Adds "(stor)"/"(liten)" to single-letter names so uppercase A and lowercase a
+// are visually distinct on small gallery cards.
+function displayMotifName(navn: string): string {
+  if (/^[A-ZÆØÅ]$/.test(navn)) return `${navn} (stor)`
+  if (/^[a-zæøå]$/.test(navn)) return `${navn} (liten)`
+  return navn
+}
+
 function normaliseSizeLabel(raw: string): string {
   const lower = raw.toLowerCase()
   if (SIZE_WORDS_ORDERED.includes(lower)) return lower.charAt(0).toUpperCase() + lower.slice(1)
@@ -168,7 +176,19 @@ function parsePesPath(relativePath: string): { motifName: string; sizeLabel: str
         const stripped = nameNoExt.replace(new RegExp('[\\s_]' + sizeLower + '$', 'i'), '').trim()
         motifName = stripped ? splitCamelCase(stripped) : `Design ${motifFolder}`
       } else {
-        motifName = splitCamelCase(motifFolder)
+        // Derive motif name from filename (strip pack-name prefix and size suffix) so that
+        // Pack/4x4/A.pes and Pack/4x4/a.pes become separate motifs "A" and "a" instead
+        // of both collapsing to the pack name.
+        const sfEsc = sizeFolder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        const packRegex = motifFolder.split(/\s+/).filter(Boolean)
+          .map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+          .join('[\\s_-]*')
+        const fileBase = nameNoExt
+          .replace(new RegExp('[\\s_-]+' + sfEsc + '$', 'i'), '')   // strip size from end
+          .replace(new RegExp('^' + packRegex + '[\\s_-]*', 'i'), '') // strip pack from start
+          .replace(/^[\s_-]+|[\s_-]+$/g, '')                          // trim separators
+          .trim()
+        motifName = splitCamelCase(fileBase || motifFolder)
       }
       return { motifName: motifName.trim(), sizeLabel }
     }
@@ -596,6 +616,7 @@ function UploadModal({ onDone, onClose }: {
         const pesFiles: PesEntry[] = []
         const imageFiles: ImgEntry[] = []
 
+        // JSZip reads entry names directly from ZIP binary headers — original case is preserved.
         zip.forEach((relativePath, zipEntry) => {
           if (zipEntry.dir) return
           const lower = relativePath.toLowerCase()
@@ -985,7 +1006,7 @@ function EmbroideryCard({
 
         <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/50 to-transparent px-3 py-2.5">
           <h3 className="font-serif text-sm font-semibold text-white leading-tight truncate">
-            {d.navn || <span className="italic font-light opacity-70">Uten navn</span>}
+            {d.navn ? displayMotifName(d.navn) : <span className="italic font-light opacity-70">Uten navn</span>}
           </h3>
           <p className="text-xs text-white/70">{d.sizes.length} {d.sizes.length === 1 ? 'størrelse' : 'størrelser'}</p>
         </div>
@@ -1110,7 +1131,7 @@ function BundleMotifCard({ item, onClick, onRemove }: {
             </div>
           )}
           <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/50 to-transparent px-2.5 py-2">
-            <h3 className="font-serif text-xs font-semibold text-white leading-tight truncate">{d.navn || 'Uten navn'}</h3>
+            <h3 className="font-serif text-xs font-semibold text-white leading-tight truncate">{d.navn ? displayMotifName(d.navn) : 'Uten navn'}</h3>
             <p className="text-[10px] text-white/70">{d.sizes.length} str.</p>
           </div>
         </div>
@@ -1238,7 +1259,7 @@ function EmbroideryDetail({ item, onBack, onSaved, onDelete }: {
           </svg>
         </button>
         <div className="flex-1 min-w-0">
-          <h2 className="font-serif text-xl text-stone-700 truncate">{d.navn || 'Uten navn'}</h2>
+          <h2 className="font-serif text-xl text-stone-700 truncate">{d.navn ? displayMotifName(d.navn) : 'Uten navn'}</h2>
         </div>
         <SaveIndicator status={saveStatus} />
         <button
