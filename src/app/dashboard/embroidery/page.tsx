@@ -129,16 +129,16 @@ function sizeOrder(label: string): number {
   return 99
 }
 
-// Sort bundle motifs: capitals A–Å first (group 0), lowercase a–å (group 1), numbers 0–9 (group 2), rest (group 3).
-// Extracts the bare character before any " (stor)"/" (liten)" suffix for clean alphabetical comparison.
+// Sort bundle motifs: capitals first (group 0), lowercase+unsuffixed (group 1), numbers last (group 2).
+// Numbers get group 2 so they sort after all letters regardless of suffix presence.
 function sortBundleMotifs(motifs: Embroidery[]): Embroidery[] {
   return [...motifs].sort((a, b) => {
     const aName = a.data.navn || ''
     const bName = b.data.navn || ''
     const charA = aName.replace(/ \(.*?\)$/, '').trim()
     const charB = bName.replace(/ \(.*?\)$/, '').trim()
-    const groupA = / \(stor\)$/.test(aName) ? 0 : / \(liten\)$/.test(aName) ? 1 : /^\d+$/.test(charA) ? 2 : 3
-    const groupB = / \(stor\)$/.test(bName) ? 0 : / \(liten\)$/.test(bName) ? 1 : /^\d+$/.test(charB) ? 2 : 3
+    const groupA = / \(stor\)$/.test(aName) ? 0 : /^\d+$/.test(charA) ? 2 : 1
+    const groupB = / \(stor\)$/.test(bName) ? 0 : /^\d+$/.test(charB) ? 2 : 1
     if (groupA !== groupB) return groupA - groupB
     if (groupA === 2) return parseInt(charA) - parseInt(charB)
     return charA.localeCompare(charB, 'nb', { sensitivity: 'base' })
@@ -753,6 +753,7 @@ function UploadModal({ onDone, onClose }: {
           })
 
           if (matchedImg) {
+            console.log('[Embroidery] Cover for motiv', motifName, 'hentet fra', matchedImg.name)
             const imgData = await matchedImg.getData()
             let imgBlob: Blob | null = null
             let uploadFilename = ''
@@ -785,6 +786,7 @@ function UploadModal({ onDone, onClose }: {
             // PES rendering path — pick the representative (middle) size
             const repIdx = Math.floor(sizes.length / 2)
             const repSize = sizes[repIdx]
+            console.log('[Embroidery] Cover for motiv', motifName, 'hentet fra', repSize.pesFile.name)
             const repPesData = pesDataCache.get(repSize.sizeLabel)
             if (repPesData) {
               setProgress(`Rendrer forhåndsvisning for ${motifName}…`)
