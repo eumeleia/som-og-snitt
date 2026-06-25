@@ -174,6 +174,17 @@ function normaliseSizeLabel(raw: string): string {
   return raw
 }
 
+// Returns 'capital' | 'small' | 'numbers' | null based on which category folder appears in a path.
+// Used to prevent cross-category image matching (e.g. CAPITAL/A.PNG matching motif 'a (liten)').
+function pathCategory(p: string): string | null {
+  for (const seg of p.replace(/\\/g, '/').split('/')) {
+    if (/^(capitals?|uppercase)$/i.test(seg)) return 'capital'
+    if (/^(small|lowercase)$/i.test(seg)) return 'small'
+    if (/^(numbers?|tall)$/i.test(seg)) return 'numbers'
+  }
+  return null
+}
+
 function parsePesPath(relativePath: string): { motifName: string; sizeLabel: string } {
   const parts = relativePath.replace(/\\/g, '/').split('/')
   const filename = parts[parts.length - 1]
@@ -738,22 +749,29 @@ function UploadModal({ onDone, onClose }: {
 
           let coverImage = ''
           let bmpPreview = ''
-          const motifNameLower = motifName.toLowerCase().replace(/\s+/g, '')
 
-          // Find matching image file: .jpg/.jpeg/.png/.bmp by name proximity
+          // Bare letter/char from motif name — strip " (stor)" / " (liten)" suffix for filename comparison
+          const motifChar = motifName.replace(/ \(.*?\)$/, '').trim().toLowerCase().replace(/\s+/g, '')
+          // Category folder of this motif's PES files — used to restrict image matching to same folder
+          const motifCat = pathCategory(sizes[0]?.pesFile.path || '')
+
+          // Find matching image file: .jpg/.jpeg/.png/.bmp
+          // If PES files are in a category folder (CAPITAL/SMALL/NUMBERS), the image must be too.
+          // This prevents CAPITAL/A.PNG from being used as cover for motif 'a (liten)'.
           const matchedImg = imageFiles.find(img => {
+            if (motifCat && pathCategory(img.path) !== motifCat) return false
             const imgNameLower = img.name.toLowerCase()
               .replace(/\.(bmp|jpg|jpeg|png)$/i, '')
               .replace(/\s+/g, '')
-            if (imgNameLower === motifNameLower) return true
-            if (imgNameLower.startsWith(motifNameLower)) return true
+            if (imgNameLower === motifChar) return true
+            if (imgNameLower.startsWith(motifChar) && motifChar.length > 0) return true
             const firstPes = sizes[0]?.pesFile.name.replace(/\.pes$/i, '').toLowerCase().replace(/\s+/g, '')
             if (firstPes && imgNameLower === firstPes) return true
             return false
           })
 
           if (matchedImg) {
-            console.log('[Embroidery] Cover for motiv', motifName, 'hentet fra', matchedImg.name)
+            console.log('[Embroidery] Cover for motiv', motifName, 'hentet fra', matchedImg.path)
             const imgData = await matchedImg.getData()
             let imgBlob: Blob | null = null
             let uploadFilename = ''
