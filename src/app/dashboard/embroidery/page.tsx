@@ -19,7 +19,8 @@ interface EmbroiderySize {
 interface EmbroideryData {
   navn: string
   designer: string
-  kategori: string
+  kategori: string        // legacy single-category field (read only for backward compat)
+  kategorier?: string[]   // new multi-category field
   coverImage: string
   bmpPreview: string
   customImage: string
@@ -40,7 +41,8 @@ interface Embroidery {
 interface EmbroideryBundleData {
   navn: string
   designer: string
-  kategori: string
+  kategori: string        // legacy
+  kategorier?: string[]   // new multi-category field
   coverImage: string
   customImage: string
   useCustomImage: boolean
@@ -63,7 +65,17 @@ type SortOrder = 'newest' | 'oldest' | 'name'
 type SaveStatus = 'idle' | 'saving' | 'saved'
 type View = 'gallery' | 'bundle' | 'motif'
 
-const KATEGORIER = ['Frukt', 'Dyr', 'Blomster', 'Bokstaver', 'Monogram', 'Annet']
+const KATEGORIER = [
+  'Frukt', 'Bær', 'Dyr', 'Blomster', 'Natur', 'Rosemaling',
+  'Høytider', 'Rammer', 'Figurer', 'Bunad', 'Baby', 'Bokstaver', 'Monogram', 'Annet',
+]
+
+// Returns the categories for a motif/bundle, handling both old string and new array format
+function getKats(data: EmbroideryData | EmbroideryBundleData): string[] {
+  if (data.kategorier && data.kategorier.length > 0) return data.kategorier
+  if (data.kategori) return [data.kategori]
+  return []
+}
 
 const STAR_PATH =
   'M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z'
@@ -464,6 +476,72 @@ function CreateBundleModal({
             Lag bundle
           </button>
         </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Kategori Editor ────────────────────────────────────────────────────────────
+
+function KategoriEditor({ kategorier, onChange }: {
+  kategorier: string[]
+  onChange: (ks: string[]) => void
+}) {
+  const [customInput, setCustomInput] = useState('')
+
+  function toggle(k: string) {
+    onChange(kategorier.includes(k) ? kategorier.filter(x => x !== k) : [...kategorier, k])
+  }
+
+  function addCustom() {
+    const trimmed = customInput.trim()
+    if (trimmed && !kategorier.includes(trimmed)) onChange([...kategorier, trimmed])
+    setCustomInput('')
+  }
+
+  const customKats = kategorier.filter(k => !KATEGORIER.includes(k))
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-2">
+        {KATEGORIER.map(k => (
+          <button key={k} type="button" onClick={() => toggle(k)}
+            className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${
+              kategorier.includes(k)
+                ? 'bg-stone-800 text-white border-stone-800'
+                : 'bg-white text-stone-600 border-stone-200 hover:border-stone-400'
+            }`}>
+            {k}
+          </button>
+        ))}
+      </div>
+      {customKats.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {customKats.map(k => (
+            <span key={k} className="flex items-center gap-1 pl-2.5 pr-1.5 py-1 bg-stone-100 text-stone-700 rounded-lg text-xs border border-stone-200">
+              {k}
+              <button type="button" onClick={() => onChange(kategorier.filter(x => x !== k))}
+                className="hover:text-red-400 transition-colors">
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="flex gap-2">
+        <input
+          value={customInput}
+          onChange={e => setCustomInput(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addCustom() } }}
+          placeholder="Legg til egen kategori…"
+          className="flex-1 px-3 py-1.5 border border-stone-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-stone-200"
+        />
+        <button type="button" onClick={addCustom} disabled={!customInput.trim()}
+          className="px-3 py-1.5 text-xs border border-stone-200 rounded-lg hover:bg-stone-50 text-stone-600 transition-colors disabled:opacity-40">
+          Legg til
+        </button>
       </div>
     </div>
   )
@@ -885,8 +963,10 @@ function EmbroideryCard({
           ) : (
             <span className="text-xs text-stone-300">{d.sizes.length} {d.sizes.length === 1 ? 'størrelse' : 'størrelser'}</span>
           )}
-          {d.kategori && (
-            <span className="text-xs text-stone-400 truncate">{d.kategori}</span>
+          {getKats(d).length > 0 && (
+            <span className="text-xs text-stone-400 truncate">
+              {getKats(d)[0]}{getKats(d).length > 1 ? ` +${getKats(d).length - 1}` : ''}
+            </span>
           )}
         </div>
         {!selectionMode && (
@@ -956,8 +1036,10 @@ function BundleCard({ bundle, motifCount, onClick }: {
           ) : (
             <span className="text-xs text-stone-300">{motifCount} {motifCount === 1 ? 'motiv' : 'motiver'}</span>
           )}
-          {d.kategori && (
-            <span className="text-xs text-stone-400 truncate">{d.kategori}</span>
+          {getKats(d).length > 0 && (
+            <span className="text-xs text-stone-400 truncate">
+              {getKats(d)[0]}{getKats(d).length > 1 ? ` +${getKats(d).length - 1}` : ''}
+            </span>
           )}
         </div>
       </div>
@@ -1185,19 +1267,11 @@ function EmbroideryDetail({ item, onBack, onSaved, onDelete }: {
               className="w-full px-3 py-2 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-200" />
           </div>
           <div>
-            <label className="block text-xs text-stone-500 mb-2">Kategori</label>
-            <div className="flex flex-wrap gap-2">
-              {KATEGORIER.map(k => (
-                <button key={k} type="button" onClick={() => update({ kategori: d.kategori === k ? '' : k })}
-                  className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${
-                    d.kategori === k
-                      ? 'bg-stone-800 text-white border-stone-800'
-                      : 'bg-white text-stone-600 border-stone-200 hover:border-stone-400'
-                  }`}>
-                  {k}
-                </button>
-              ))}
-            </div>
+            <label className="block text-xs text-stone-500 mb-2">Kategorier</label>
+            <KategoriEditor
+              kategorier={getKats(d)}
+              onChange={ks => update({ kategorier: ks })}
+            />
           </div>
           <div>
             <label className="block text-xs text-stone-500 mb-1.5">Vurdering</label>
@@ -1406,19 +1480,11 @@ function BundleDetail({ bundle, motifs, onBack, onSaved, onDelete, onMotifClick,
               className="w-full px-3 py-2 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-200" />
           </div>
           <div>
-            <label className="block text-xs text-stone-500 mb-2">Kategori</label>
-            <div className="flex flex-wrap gap-2">
-              {KATEGORIER.map(k => (
-                <button key={k} type="button" onClick={() => update({ kategori: d.kategori === k ? '' : k })}
-                  className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${
-                    d.kategori === k
-                      ? 'bg-stone-800 text-white border-stone-800'
-                      : 'bg-white text-stone-600 border-stone-200 hover:border-stone-400'
-                  }`}>
-                  {k}
-                </button>
-              ))}
-            </div>
+            <label className="block text-xs text-stone-500 mb-2">Kategorier</label>
+            <KategoriEditor
+              kategorier={getKats(d)}
+              onChange={ks => update({ kategorier: ks })}
+            />
           </div>
           <div>
             <label className="block text-xs text-stone-500 mb-1.5">Vurdering</label>
@@ -1741,21 +1807,30 @@ export default function EmbroideryPage() {
     return combined
       .filter(gi => {
         if (katFilter !== 'Alle') {
-          const kat = gi.type === 'bundle' ? gi.bundle.data.kategori : gi.item.data.kategori
-          if (kat !== katFilter) return false
+          const kats = gi.type === 'bundle' ? getKats(gi.bundle.data) : getKats(gi.item.data)
+          if (!kats.includes(katFilter)) return false
         }
         if (!search.trim()) return true
         const q = search.toLowerCase()
         if (gi.type === 'bundle') {
-          const bundleMatch = gi.bundle.data.navn.toLowerCase().includes(q)
+          const bd = gi.bundle.data
+          const bundleMatch = bd.navn.toLowerCase().includes(q)
+            || bd.designer.toLowerCase().includes(q)
+            || getKats(bd).some(k => k.toLowerCase().includes(q))
           const motifMatch = items
             .filter(i => i.data.bundleId === gi.bundle.id)
-            .some(i => i.data.navn.toLowerCase().includes(q) || i.data.designer.toLowerCase().includes(q))
+            .some(i =>
+              i.data.navn.toLowerCase().includes(q) ||
+              i.data.designer.toLowerCase().includes(q) ||
+              getKats(i.data).some(k => k.toLowerCase().includes(q))
+            )
           return bundleMatch || motifMatch
         }
+        const id = gi.item.data
         return (
-          gi.item.data.navn.toLowerCase().includes(q) ||
-          gi.item.data.designer.toLowerCase().includes(q)
+          id.navn.toLowerCase().includes(q) ||
+          id.designer.toLowerCase().includes(q) ||
+          getKats(id).some(k => k.toLowerCase().includes(q))
         )
       })
       .sort((a, b) => {
@@ -1869,14 +1944,18 @@ export default function EmbroideryPage() {
               )}
             </button>
             {katDropdownOpen && (
-              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-20 min-w-[160px] py-1">
+              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-20 min-w-[160px] py-1 max-h-72 overflow-y-auto">
                 <button
                   onClick={() => { setKatFilter('Alle'); setKatDropdownOpen(false) }}
                   className={`w-full text-left px-4 py-2 text-sm transition-colors hover:bg-stone-50 ${katFilter === 'Alle' ? 'text-stone-800 font-medium' : 'text-stone-600'}`}
                 >
                   Alle
                 </button>
-                {KATEGORIER.map(k => (
+                {Array.from(new Set([
+                  ...KATEGORIER,
+                  ...items.flatMap(i => getKats(i.data)),
+                  ...bundles.flatMap(b => getKats(b.data)),
+                ].filter(Boolean))).map(k => (
                   <button
                     key={k}
                     onClick={() => { setKatFilter(k); setKatDropdownOpen(false) }}
