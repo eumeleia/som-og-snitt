@@ -1275,7 +1275,7 @@ function EmbroideryCard({
     >
       <div className="relative aspect-[5/4] overflow-hidden bg-stone-50">
         {imgSrc ? (
-          <img src={imgSrc} alt={d.navn} className="w-full h-full object-cover" />
+          <img src={imgSrc} alt={d.navn} className="w-full h-full object-contain" />
         ) : (
           <div className="w-full h-full flex items-center justify-center">
             <svg className="w-10 h-10 text-stone-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1361,7 +1361,7 @@ function BundleCard({ bundle, motifCount, onClick, selectionMode = false, select
     >
       <div className="relative aspect-[5/4] overflow-hidden bg-stone-50">
         {imgSrc ? (
-          <img src={imgSrc} alt={d.navn} className="w-full h-full object-cover" />
+          <img src={imgSrc} alt={d.navn} className="w-full h-full object-contain" />
         ) : (
           <div className="w-full h-full flex items-center justify-center">
             <svg className="w-10 h-10 text-stone-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1436,7 +1436,7 @@ function BundleMotifCard({ item, onClick, onRemove }: {
       >
         <div className="relative aspect-[5/4] overflow-hidden bg-stone-50">
           {imgSrc ? (
-            <img src={imgSrc} alt={d.navn} className="w-full h-full object-cover" />
+            <img src={imgSrc} alt={d.navn} className="w-full h-full object-contain" />
           ) : (
             <div className="w-full h-full flex items-center justify-center">
               <svg className="w-8 h-8 text-stone-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">

@@ -73,7 +73,9 @@ def render_pes(pes_bytes: bytes):
             inverted = ImageOps.invert(gray)
             bbox = inverted.getbbox()
             if bbox:
-                margin = 30
+                bbox_w = bbox[2] - bbox[0]
+                bbox_h = bbox[3] - bbox[1]
+                margin = max(10, int(max(bbox_w, bbox_h) * 0.05))
                 left = max(0, bbox[0] - margin)
                 top = max(0, bbox[1] - margin)
                 right = min(img.width, bbox[2] + margin)
