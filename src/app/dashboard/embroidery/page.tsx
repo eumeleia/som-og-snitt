@@ -213,6 +213,22 @@ function parsePesPath(relativePath: string): { motifName: string; sizeLabel: str
     return { motifName: `${letter}${suffix}`, sizeLabel }
   }
 
+  // ── Inch/metric size FOLDER — use the motif folder name directly, ignore filename
+  // Pattern: <pack>/<motif>/<Xin|Xinch|Xcm|Xmm>/<file.PES>
+  // e.g. IN HOA/A/2in/A_2in.PES or IN HOA/B/3in/B3in.PES → motif="A"/"B", size=2"/3"
+  // Takes priority over filename parsing because filenames in such packs are inconsistent.
+  if (parts.length >= 3) {
+    const sf2 = parts[parts.length - 2]
+    const mf2 = parts[parts.length - 3]
+    const inchCmM = sf2.match(/^(\d+(?:\.\d+)?)\s*(in(?:ch(?:es)?)?|cm|mm)$/i)
+    if (inchCmM && mf2 && !/^\d+$/.test(mf2)) {
+      const num = inchCmM[1]
+      const unit = inchCmM[2].toLowerCase()
+      const sizeLabel = unit.startsWith('in') ? `${num}"` : `${num}${unit}`
+      return { motifName: splitCamelCase(mf2).trim(), sizeLabel }
+    }
+  }
+
   // ── Folder-structure heuristic (e.g. 6 Summer Bouquets/1/medium/Design1 medium.PES)
   if (parts.length >= 3) {
     const sizeFolder = parts[parts.length - 2]
