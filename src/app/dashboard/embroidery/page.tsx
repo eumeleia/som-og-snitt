@@ -129,17 +129,19 @@ function sizeOrder(label: string): number {
   return 99
 }
 
-// Sort bundle motifs: capitals A–Å first, then lowercase a–å, then numbers 0–9, then rest.
+// Sort bundle motifs: capitals A–Å first (group 0), lowercase a–å (group 1), numbers 0–9 (group 2), rest (group 3).
+// Extracts the bare character before any " (stor)"/" (liten)" suffix for clean alphabetical comparison.
 function sortBundleMotifs(motifs: Embroidery[]): Embroidery[] {
   return [...motifs].sort((a, b) => {
     const aName = a.data.navn || ''
     const bName = b.data.navn || ''
-    const group = (n: string) =>
-      / \(stor\)$/.test(n) ? 0 : / \(liten\)$/.test(n) ? 1 : /^\d+$/.test(n.trim()) ? 2 : 3
-    const ag = group(aName), bg = group(bName)
-    if (ag !== bg) return ag - bg
-    if (ag === 2) return parseInt(aName.trim()) - parseInt(bName.trim())
-    return aName.localeCompare(bName, 'nb')
+    const charA = aName.replace(/ \(.*?\)$/, '').trim()
+    const charB = bName.replace(/ \(.*?\)$/, '').trim()
+    const groupA = / \(stor\)$/.test(aName) ? 0 : / \(liten\)$/.test(aName) ? 1 : /^\d+$/.test(charA) ? 2 : 3
+    const groupB = / \(stor\)$/.test(bName) ? 0 : / \(liten\)$/.test(bName) ? 1 : /^\d+$/.test(charB) ? 2 : 3
+    if (groupA !== groupB) return groupA - groupB
+    if (groupA === 2) return parseInt(charA) - parseInt(charB)
+    return charA.localeCompare(charB, 'nb', { sensitivity: 'base' })
   })
 }
 
@@ -177,20 +179,23 @@ function parsePesPath(relativePath: string): { motifName: string; sizeLabel: str
   const filename = parts[parts.length - 1]
   const nameNoExt = filename.replace(/\.pes$/i, '')
 
-  // ── SIZES X intermediate folder (alphabet packs: CAPITAL/PES/SIZES 2.5/A.PES)
-  // Trust the top-level folder (CAPITAL/SMALL/NUMBERS) for char-type identity, not filename case,
-  // so a misfiled "w.PES" under CAPITAL still becomes "w (stor)".
-  const sizesIdx = parts.findIndex(p => /^sizes\s+\d+(?:\.\d+)?$/i.test(p))
+  // ── SIZES X / "Size X and Y" intermediate folder (alphabet packs)
+  // Matches: "SIZES 2.5", "Size 1.5 and 2", "SIZES 3.5 and 4", etc.
+  // Trust CAPITAL/SMALL/NUMBERS folder for char-type, not filename case —
+  // e.g. "A.PES" under SMALL becomes "a (liten)", misfiled "w.PES" under CAPITAL → "w (stor)".
+  const SIZES_RE = /^sizes?\s+(\d+(?:\.\d+)?)(?:\s+and\s+(\d+(?:\.\d+)?))?$/i
+  const sizesIdx = parts.findIndex(p => SIZES_RE.test(p))
   if (sizesIdx >= 0) {
-    const sizeVal = parts[sizesIdx].match(/^sizes\s+(\d+(?:\.\d+)?)$/i)![1]
-    const sizeLabel = `${sizeVal}"`
+    const sm = parts[sizesIdx].match(SIZES_RE)!
+    const sizeLabel = sm[2] ? `${sm[1]}-${sm[2]}"` : `${sm[1]}"`
     let suffix = ''
     for (const part of parts) {
       if (/^(capitals?|uppercase)$/i.test(part)) { suffix = ' (stor)'; break }
       if (/^(small|lowercase)$/i.test(part)) { suffix = ' (liten)'; break }
       if (/^(numbers?|tall)$/i.test(part)) break
     }
-    return { motifName: `${nameNoExt}${suffix}`, sizeLabel }
+    const letter = suffix === ' (liten)' ? nameNoExt.toLowerCase() : nameNoExt
+    return { motifName: `${letter}${suffix}`, sizeLabel }
   }
 
   // ── Folder-structure heuristic (e.g. 6 Summer Bouquets/1/medium/Design1 medium.PES)
@@ -675,8 +680,15 @@ function UploadModal({ onDone, onClose }: {
           if (sizes.length > 0) motifMap.set(looseName, sizes)
         } else {
           // Bundle mode: group by motif name derived from path/filename (existing logic)
+          let dbgCount = 0
           for (const pf of pesFiles) {
-            const { motifName, sizeLabel } = parsePesPath(pf.path)
+            const parsed = parsePesPath(pf.path)
+            if (dbgCount < 5) {
+              console.log('[Embroidery] parsePesPath input:', pf.path)
+              console.log('[Embroidery] parsePesPath result:', parsed.motifName, parsed.sizeLabel)
+              dbgCount++
+            }
+            const { motifName, sizeLabel } = parsed
             if (!motifMap.has(motifName)) motifMap.set(motifName, [])
             motifMap.get(motifName)!.push({ sizeLabel, pesFile: pf })
           }
