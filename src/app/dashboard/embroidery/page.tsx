@@ -4,6 +4,14 @@ export const dynamic = 'force-dynamic'
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { supabase } from '@/lib/supabase'
+import {
+  DndContext, closestCenter, PointerSensor, TouchSensor,
+  useSensor, useSensors, type DragEndEvent,
+} from '@dnd-kit/core'
+import {
+  SortableContext, useSortable, rectSortingStrategy, arrayMove,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -61,7 +69,7 @@ type GalleryItem =
   | { type: 'bundle'; bundle: EmbroideryBundle; motifCount: number }
   | { type: 'motif'; item: Embroidery }
 
-type SortOrder = 'newest' | 'oldest' | 'name'
+type SortOrder = 'newest' | 'oldest' | 'name' | 'manual'
 type SaveStatus = 'idle' | 'saving' | 'saved'
 type View = 'gallery' | 'bundle' | 'motif'
 
@@ -81,6 +89,10 @@ const STAR_PATH =
   'M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
+
+function galleryItemId(gi: GalleryItem): string {
+  return gi.type === 'bundle' ? `bundle-${gi.bundle.id}` : `motif-${gi.item.id}`
+}
 
 function uid() {
   return Math.random().toString(36).slice(2, 10)
@@ -1419,21 +1431,215 @@ function BundleCard({ bundle, motifCount, onClick, selectionMode = false, select
   )
 }
 
+// ── Sortable gallery item wrapper (drag-and-drop) ─────────────────────────────
+
+function SortableGalleryItem({ id, isDragMode, children }: {
+  id: string
+  isDragMode: boolean
+  children: React.ReactNode
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id,
+    disabled: !isDragMode,
+  })
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }}
+      {...attributes}
+      {...listeners}
+    >
+      {children}
+    </div>
+  )
+}
+
+// ── Bundle motif operation modals ──────────────────────────────────────────────
+
+function MergeModal({ selectedMotifs, onMerge, onClose, saving }: {
+  selectedMotifs: Embroidery[]
+  onMerge: (name: string) => void
+  onClose: () => void
+  saving: boolean
+}) {
+  const totalSizes = selectedMotifs.reduce((s, m) => s + m.data.sizes.length, 0)
+  const [name, setName] = useState(selectedMotifs[0]?.data.navn ?? '')
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-4">
+        <h3 className="font-serif text-lg text-stone-700">Slå sammen motiver</h3>
+        <p className="text-sm text-stone-500">
+          Slår sammen {selectedMotifs.length} motiver med {totalSizes} størrelser totalt til ett motiv.
+        </p>
+        <div>
+          <label className="block text-xs text-stone-500 mb-1">Navn på det sammenslåtte motivet</label>
+          <input
+            autoFocus
+            value={name}
+            onChange={e => setName(e.target.value)}
+            className="w-full px-3 py-2 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-200"
+          />
+        </div>
+        <div className="flex gap-3 justify-end pt-1">
+          <button onClick={onClose} disabled={saving}
+            className="px-4 py-2 text-sm rounded-xl border border-stone-200 text-stone-600 hover:bg-stone-50 disabled:opacity-40">
+            Avbryt
+          </button>
+          <button onClick={() => onMerge(name.trim() || selectedMotifs[0].data.navn)} disabled={saving || !name.trim()}
+            className="px-4 py-2 text-sm rounded-xl bg-[#C9A57A] text-white hover:bg-[#b8925f] disabled:opacity-40 flex items-center gap-2">
+            {saving && <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />}
+            Slå sammen
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SplitModal({ motif, onSplit, onClose, saving }: {
+  motif: Embroidery
+  onSplit: (names: string[]) => void
+  onClose: () => void
+  saving: boolean
+}) {
+  const [names, setNames] = useState<string[]>(
+    motif.data.sizes.map(s => `${motif.data.navn} – ${s.sizeLabel}`)
+  )
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+        <h3 className="font-serif text-lg text-stone-700">Del opp motiv</h3>
+        <p className="text-sm text-stone-500">
+          Deler opp «{motif.data.navn}» i {motif.data.sizes.length} separate motiver. Gi hvert et navn:
+        </p>
+        <div className="space-y-2">
+          {motif.data.sizes.map((size, i) => (
+            <div key={size.id}>
+              <label className="block text-[10px] text-stone-400 mb-0.5">{size.sizeLabel}</label>
+              <input
+                value={names[i]}
+                onChange={e => setNames(prev => prev.map((n, j) => j === i ? e.target.value : n))}
+                className="w-full px-3 py-1.5 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-200"
+              />
+            </div>
+          ))}
+        </div>
+        <div className="flex gap-3 justify-end pt-1">
+          <button onClick={onClose} disabled={saving}
+            className="px-4 py-2 text-sm rounded-xl border border-stone-200 text-stone-600 hover:bg-stone-50 disabled:opacity-40">
+            Avbryt
+          </button>
+          <button onClick={() => onSplit(names)} disabled={saving}
+            className="px-4 py-2 text-sm rounded-xl bg-[#C9A57A] text-white hover:bg-[#b8925f] disabled:opacity-40 flex items-center gap-2">
+            {saving && <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />}
+            Del opp
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function MoveSizeModal({ motif, otherMotifs, onMove, onClose, saving }: {
+  motif: Embroidery
+  otherMotifs: Embroidery[]
+  onMove: (size: EmbroiderySize, toMotifId: string) => void
+  onClose: () => void
+  saving: boolean
+}) {
+  const [selectedSize, setSelectedSize] = useState<EmbroiderySize | null>(null)
+  const [targetId, setTargetId] = useState<string>('')
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-4">
+        <h3 className="font-serif text-lg text-stone-700">Flytt størrelse</h3>
+        <div>
+          <p className="text-xs text-stone-500 mb-2">Velg størrelse fra «{motif.data.navn}»:</p>
+          <div className="flex flex-wrap gap-2">
+            {motif.data.sizes.map(s => (
+              <button
+                key={s.id}
+                onClick={() => setSelectedSize(s)}
+                className={`px-3 py-1 text-xs rounded-lg border transition-colors ${
+                  selectedSize?.id === s.id
+                    ? 'bg-[#C9A57A] text-white border-[#C9A57A]'
+                    : 'border-stone-200 text-stone-600 hover:border-stone-400'
+                }`}
+              >
+                {s.sizeLabel}
+              </button>
+            ))}
+          </div>
+        </div>
+        {selectedSize && (
+          <div>
+            <p className="text-xs text-stone-500 mb-2">Flytt til:</p>
+            <div className="space-y-1 max-h-40 overflow-y-auto">
+              {otherMotifs.map(m => (
+                <button
+                  key={m.id}
+                  onClick={() => setTargetId(m.id)}
+                  className={`w-full text-left px-3 py-2 text-sm rounded-xl border transition-colors ${
+                    targetId === m.id
+                      ? 'bg-stone-100 border-stone-400 font-medium'
+                      : 'border-stone-200 text-stone-600 hover:bg-stone-50'
+                  }`}
+                >
+                  {m.data.navn || 'Uten navn'}
+                  <span className="text-xs text-stone-400 ml-1">({m.data.sizes.length} str.)</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        <div className="flex gap-3 justify-end pt-1">
+          <button onClick={onClose} disabled={saving}
+            className="px-4 py-2 text-sm rounded-xl border border-stone-200 text-stone-600 hover:bg-stone-50 disabled:opacity-40">
+            Avbryt
+          </button>
+          <button
+            onClick={() => { if (selectedSize && targetId) onMove(selectedSize, targetId) }}
+            disabled={saving || !selectedSize || !targetId}
+            className="px-4 py-2 text-sm rounded-xl bg-[#C9A57A] text-white hover:bg-[#b8925f] disabled:opacity-40 flex items-center gap-2">
+            {saving && <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />}
+            Flytt
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Bundle Motif Card (used inside BundleDetail) ───────────────────────────────
 
-function BundleMotifCard({ item, onClick, onRemove }: {
+function BundleMotifCard({ item, onClick, onRemove, editMode = false, selected = false, onToggle, renaming = false, renameValue = '', onRenameChange, onRenameSubmit, onRenameCancel }: {
   item: Embroidery
   onClick: () => void
   onRemove: () => void
+  editMode?: boolean
+  selected?: boolean
+  onToggle?: () => void
+  renaming?: boolean
+  renameValue?: string
+  onRenameChange?: (v: string) => void
+  onRenameSubmit?: () => void
+  onRenameCancel?: () => void
 }) {
   const d = item.data
   const imgSrc = d.useCustomImage ? d.customImage : (d.coverImage || d.bmpPreview)
 
+  function handleClick() {
+    if (editMode) { onToggle?.(); return }
+    onClick()
+  }
+
   return (
     <div className="relative">
       <article
-        onClick={onClick}
-        className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden min-w-0"
+        onClick={handleClick}
+        className={`group bg-white rounded-xl border shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden min-w-0 ${
+          selected ? 'border-[#C9A57A] ring-2 ring-[#C9A57A]/30' : 'border-stone-200'
+        }`}
       >
         <div className="relative aspect-[5/4] overflow-hidden bg-stone-50">
           {imgSrc ? (
@@ -1446,21 +1652,48 @@ function BundleMotifCard({ item, onClick, onRemove }: {
               </svg>
             </div>
           )}
-          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/50 to-transparent px-2.5 py-2">
-            <h3 className="font-serif text-xs font-semibold text-white leading-tight truncate">{d.navn ? displayMotifName(d.navn) : 'Uten navn'}</h3>
-            <p className="text-[10px] text-white/70">{d.sizes.length} str.</p>
-          </div>
+          {editMode && (
+            <div className={`absolute top-2 left-2 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${
+              selected ? 'bg-[#C9A57A] border-[#C9A57A]' : 'bg-white/80 border-stone-300'
+            }`}>
+              {selected && (
+                <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                </svg>
+              )}
+            </div>
+          )}
+          {renaming ? (
+            <div className="absolute inset-x-0 bottom-0 px-2 py-2 bg-stone-900/85">
+              <input
+                autoFocus
+                value={renameValue}
+                onChange={e => onRenameChange?.(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') onRenameSubmit?.(); if (e.key === 'Escape') onRenameCancel?.() }}
+                onBlur={onRenameSubmit}
+                className="w-full px-2 py-1 text-xs rounded-lg bg-white text-stone-800 focus:outline-none"
+                onClick={e => e.stopPropagation()}
+              />
+            </div>
+          ) : (
+            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/50 to-transparent px-2.5 py-2">
+              <h3 className="font-serif text-xs font-semibold text-white leading-tight truncate">{d.navn ? displayMotifName(d.navn) : 'Uten navn'}</h3>
+              <p className="text-[10px] text-white/70">{d.sizes.length} str.</p>
+            </div>
+          )}
         </div>
       </article>
-      <button
-        onClick={e => { e.stopPropagation(); onRemove() }}
-        className="absolute top-1.5 right-1.5 p-1 bg-white/85 rounded-lg hover:bg-white text-stone-400 hover:text-orange-500 transition-colors shadow-sm"
-        title="Fjern fra bundle"
-      >
-        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-        </svg>
-      </button>
+      {!editMode && (
+        <button
+          onClick={e => { e.stopPropagation(); onRemove() }}
+          className="absolute top-1.5 right-1.5 p-1 bg-white/85 rounded-lg hover:bg-white text-stone-400 hover:text-orange-500 transition-colors shadow-sm"
+          title="Fjern fra bundle"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      )}
     </div>
   )
 }
@@ -1769,6 +2002,105 @@ function BundleDetail({ bundle, motifs, onBack, onSaved, onDelete, onMotifClick,
     update({ customImage: urlData.publicUrl, useCustomImage: true })
   }
 
+  // ── Bundle motif edit mode ────────────────────────────────────────────────────
+
+  const [bundleEditMode, setBundleEditMode] = useState(false)
+  const [selectedMotifIds, setSelectedMotifIds] = useState<Set<string>>(new Set())
+  const [bundleOpSaving, setBundleOpSaving] = useState(false)
+  const [mergeModal, setMergeModal] = useState<{ motifs: Embroidery[] } | null>(null)
+  const [splitModal, setSplitModal] = useState<{ motif: Embroidery } | null>(null)
+  const [moveSizeModal, setMoveSizeModal] = useState<{ motif: Embroidery } | null>(null)
+  const [renameId, setRenameId] = useState<string | null>(null)
+  const [renameName, setRenameName] = useState('')
+
+  function toggleMotifSelect(id: string) {
+    setSelectedMotifIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+
+  async function doMerge(targetName: string) {
+    const selected = motifs.filter(m => selectedMotifIds.has(m.id))
+    if (selected.length < 2) return
+    const [primary, ...rest] = selected
+    const allSizes = selected.flatMap(m => m.data.sizes)
+    allSizes.sort((a, b) => sizeOrder(a.sizeLabel) - sizeOrder(b.sizeLabel))
+    const withCover = selected.find(m => m.data.coverImage || m.data.bmpPreview)
+    const newData: EmbroideryData = {
+      ...primary.data,
+      navn: targetName,
+      sizes: allSizes,
+      coverImage: withCover?.data.coverImage || primary.data.coverImage,
+      bmpPreview: withCover?.data.bmpPreview || primary.data.bmpPreview,
+    }
+    setBundleOpSaving(true)
+    try {
+      await supabase.from('embroidery').update({ data: newData }).eq('id', primary.id)
+      await Promise.all(rest.map(m => supabase.from('embroidery').delete().eq('id', m.id)))
+      setMergeModal(null)
+      setBundleEditMode(false)
+      setSelectedMotifIds(new Set())
+      onSaved()
+    } finally { setBundleOpSaving(false) }
+  }
+
+  async function doSplit(motif: Embroidery, names: string[]) {
+    setBundleOpSaving(true)
+    try {
+      await Promise.all(
+        motif.data.sizes.map((size, i) => {
+          const newData: EmbroideryData = {
+            ...motif.data,
+            navn: names[i] || `${motif.data.navn} – ${size.sizeLabel}`,
+            sizes: [size],
+            bmpPreview: '',
+            coverImage: '',
+            customImage: '',
+            useCustomImage: false,
+          }
+          return supabase.from('embroidery').insert({ data: newData })
+        })
+      )
+      await supabase.from('embroidery').delete().eq('id', motif.id)
+      setSplitModal(null)
+      setBundleEditMode(false)
+      setSelectedMotifIds(new Set())
+      onSaved()
+    } finally { setBundleOpSaving(false) }
+  }
+
+  async function doMoveSize(size: EmbroiderySize, fromMotif: Embroidery, toMotifId: string) {
+    const toMotif = motifs.find(m => m.id === toMotifId)
+    if (!toMotif) return
+    setBundleOpSaving(true)
+    try {
+      const newFromSizes = fromMotif.data.sizes.filter(s => s.id !== size.id)
+      const newToSizes = [...toMotif.data.sizes, size].sort((a, b) => sizeOrder(a.sizeLabel) - sizeOrder(b.sizeLabel))
+      await Promise.all([
+        supabase.from('embroidery').update({ data: { ...fromMotif.data, sizes: newFromSizes } }).eq('id', fromMotif.id),
+        supabase.from('embroidery').update({ data: { ...toMotif.data, sizes: newToSizes } }).eq('id', toMotif.id),
+      ])
+      setMoveSizeModal(null)
+      onSaved()
+    } finally { setBundleOpSaving(false) }
+  }
+
+  async function doRename(motifId: string, newName: string) {
+    const motif = motifs.find(m => m.id === motifId)
+    if (!motif || !newName.trim()) { setRenameId(null); return }
+    await supabase.from('embroidery').update({ data: { ...motif.data, navn: newName.trim() } }).eq('id', motifId)
+    setRenameId(null)
+    onSaved()
+  }
+
+  const selectedMotifs = motifs.filter(m => selectedMotifIds.has(m.id))
+  const canMerge = selectedMotifs.length >= 2
+  const canSplit = selectedMotifs.length === 1 && selectedMotifs[0].data.sizes.length >= 2
+  const canMove = selectedMotifs.length === 1 && selectedMotifs[0].data.sizes.length >= 1
+  const canRename = selectedMotifs.length === 1
+
   const d = form
   const displayImg = d.useCustomImage ? d.customImage : d.coverImage
 
@@ -1865,9 +2197,24 @@ function BundleDetail({ bundle, motifs, onBack, onSaved, onDelete, onMotifClick,
         </section>
 
         <section className="bg-white rounded-2xl border border-stone-100 shadow-sm p-5">
-          <h3 className="font-serif text-lg text-stone-700 mb-4">
-            Motiver ({motifs.length})
-          </h3>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="font-serif text-lg text-stone-700">Motiver ({motifs.length})</h3>
+            {motifs.length >= 2 && (
+              <button
+                onClick={() => {
+                  if (bundleEditMode) { setBundleEditMode(false); setSelectedMotifIds(new Set()) }
+                  else setBundleEditMode(true)
+                }}
+                className={`h-8 px-3 flex items-center gap-1.5 rounded-xl border text-sm transition-colors ${
+                  bundleEditMode
+                    ? 'bg-stone-800 text-white border-stone-800'
+                    : 'bg-white text-stone-500 border-stone-200 hover:border-stone-400'
+                }`}
+              >
+                {bundleEditMode ? 'Avbryt' : 'Redigér motiver'}
+              </button>
+            )}
+          </div>
           {motifs.length === 0 ? (
             <p className="text-sm text-stone-400 italic">Ingen motiver i denne bundelen ennå.</p>
           ) : (
@@ -1878,6 +2225,14 @@ function BundleDetail({ bundle, motifs, onBack, onSaved, onDelete, onMotifClick,
                   item={motif}
                   onClick={() => onMotifClick(motif)}
                   onRemove={() => onRemoveMotif(motif.id)}
+                  editMode={bundleEditMode}
+                  selected={selectedMotifIds.has(motif.id)}
+                  onToggle={() => toggleMotifSelect(motif.id)}
+                  renaming={renameId === motif.id}
+                  renameValue={renameId === motif.id ? renameName : ''}
+                  onRenameChange={setRenameName}
+                  onRenameSubmit={() => doRename(motif.id, renameName)}
+                  onRenameCancel={() => setRenameId(null)}
                 />
               ))}
             </div>
@@ -1892,6 +2247,75 @@ function BundleDetail({ bundle, motifs, onBack, onSaved, onDelete, onMotifClick,
             className="w-full px-3 py-2.5 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-200 resize-y leading-relaxed" />
         </section>
       </div>
+
+      {/* Bundle edit mode floating action bar */}
+      {bundleEditMode && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 px-4 py-3 bg-stone-800 text-white text-sm rounded-2xl shadow-xl flex-wrap justify-center">
+          <span className="text-stone-300 whitespace-nowrap mr-1">
+            {selectedMotifs.length} {selectedMotifs.length === 1 ? 'valgt' : 'valgte'}
+          </span>
+          <button
+            onClick={() => { if (canMerge) setMergeModal({ motifs: selectedMotifs }) }}
+            disabled={!canMerge}
+            className="px-3 py-1.5 bg-[#C9A57A] text-white rounded-xl text-xs font-medium hover:bg-[#b8925f] disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+          >
+            Slå sammen
+          </button>
+          <button
+            onClick={() => { if (canSplit) setSplitModal({ motif: selectedMotifs[0] }) }}
+            disabled={!canSplit}
+            className="px-3 py-1.5 bg-stone-600 text-white rounded-xl text-xs font-medium hover:bg-stone-500 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+            title={selectedMotifs.length === 1 && selectedMotifs[0].data.sizes.length < 2 ? 'Motivet har bare 1 størrelse' : ''}
+          >
+            Del opp størrelser
+          </button>
+          <button
+            onClick={() => { if (canMove && selectedMotifs[0].data.sizes.length >= 1) setMoveSizeModal({ motif: selectedMotifs[0] }) }}
+            disabled={!canMove || motifs.length < 2}
+            className="px-3 py-1.5 bg-stone-600 text-white rounded-xl text-xs font-medium hover:bg-stone-500 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+          >
+            Flytt størrelse
+          </button>
+          <button
+            onClick={() => {
+              if (canRename) {
+                setRenameId(selectedMotifs[0].id)
+                setRenameName(selectedMotifs[0].data.navn)
+              }
+            }}
+            disabled={!canRename}
+            className="px-3 py-1.5 bg-stone-600 text-white rounded-xl text-xs font-medium hover:bg-stone-500 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+          >
+            Gi nytt navn
+          </button>
+        </div>
+      )}
+
+      {mergeModal && (
+        <MergeModal
+          selectedMotifs={mergeModal.motifs}
+          onMerge={doMerge}
+          onClose={() => setMergeModal(null)}
+          saving={bundleOpSaving}
+        />
+      )}
+      {splitModal && (
+        <SplitModal
+          motif={splitModal.motif}
+          onSplit={names => doSplit(splitModal.motif, names)}
+          onClose={() => setSplitModal(null)}
+          saving={bundleOpSaving}
+        />
+      )}
+      {moveSizeModal && (
+        <MoveSizeModal
+          motif={moveSizeModal.motif}
+          otherMotifs={motifs.filter(m => m.id !== moveSizeModal.motif.id)}
+          onMove={(size, toMotifId) => doMoveSize(size, moveSizeModal.motif, toMotifId)}
+          onClose={() => setMoveSizeModal(null)}
+          saving={bundleOpSaving}
+        />
+      )}
     </>
   )
 }
@@ -1921,8 +2345,15 @@ export default function EmbroideryPage() {
   const [katDropdownOpen, setKatDropdownOpen] = useState(false)
   const [sortDropdownOpen, setSortDropdownOpen] = useState(false)
   const [uploadSummary, setUploadSummary] = useState<string | null>(null)
+  const [orderSaving, setOrderSaving] = useState(false)
+  const [orderSaved, setOrderSaved] = useState(false)
   const katDropdownRef = useRef<HTMLDivElement>(null)
   const sortDropdownRef = useRef<HTMLDivElement>(null)
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 300, tolerance: 5 } }),
+  )
   const viewRef = useRef<View>('gallery')
   const prevViewRef = useRef<View>('gallery')
   const currentBundleRef = useRef<EmbroideryBundle | null>(null)
@@ -2137,6 +2568,48 @@ export default function EmbroideryPage() {
     if (summary) setUploadSummary(summary)
   }
 
+  async function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+    const oldIdx = galleryItems.findIndex(gi => galleryItemId(gi) === active.id)
+    const newIdx = galleryItems.findIndex(gi => galleryItemId(gi) === over.id)
+    if (oldIdx < 0 || newIdx < 0) return
+    const newOrder = arrayMove(galleryItems, oldIdx, newIdx)
+    const motifUpdates = new Map<string, number>()
+    const bundleUpdates = new Map<string, number>()
+    newOrder.forEach((gi, i) => {
+      const order = (i + 1) * 1000
+      if (gi.type === 'bundle') bundleUpdates.set(gi.bundle.id, order)
+      else motifUpdates.set(gi.item.id, order)
+    })
+    const newItems = items.map(item => {
+      const order = motifUpdates.get(item.id)
+      return order !== undefined ? { ...item, data: { ...item.data, sortOrder: order } } : item
+    })
+    const newBundles = bundles.map(bundle => {
+      const order = bundleUpdates.get(bundle.id)
+      return order !== undefined ? { ...bundle, data: { ...bundle.data, sortOrder: order } } : bundle
+    })
+    setItems(newItems)
+    setBundles(newBundles)
+    setOrderSaving(true)
+    try {
+      await Promise.all([
+        ...Array.from(motifUpdates.keys()).map(id => {
+          const item = newItems.find(x => x.id === id)!
+          return supabase.from('embroidery').update({ data: item.data }).eq('id', id)
+        }),
+        ...Array.from(bundleUpdates.keys()).map(id => {
+          const bundle = newBundles.find(x => x.id === id)!
+          return supabase.from('embroidery_bundles').update({ data: bundle.data }).eq('id', id)
+        }),
+      ])
+      setOrderSaved(true)
+      setTimeout(() => setOrderSaved(false), 2000)
+    } catch { /* silent */ }
+    finally { setOrderSaving(false) }
+  }
+
   function openBundle(bundle: EmbroideryBundle) {
     window.history.pushState({ emb: 'bundle', bid: bundle.id }, '')
     setCurrentBundle(bundle)
@@ -2258,6 +2731,12 @@ export default function EmbroideryPage() {
         const bDate = b.type === 'bundle' ? b.bundle.created_at : b.item.created_at
         const aName = a.type === 'bundle' ? a.bundle.data.navn : a.item.data.navn
         const bName = b.type === 'bundle' ? b.bundle.data.navn : b.item.data.navn
+        if (sort === 'manual') {
+          const aO = (a.type === 'bundle' ? a.bundle.data.sortOrder : a.item.data.sortOrder) ?? Infinity
+          const bO = (b.type === 'bundle' ? b.bundle.data.sortOrder : b.item.data.sortOrder) ?? Infinity
+          if (aO !== bO) return aO - bO
+          return new Date(bDate).getTime() - new Date(aDate).getTime()
+        }
         if (sort === 'name') return aName.localeCompare(bName, 'nb')
         if (sort === 'oldest') return new Date(aDate).getTime() - new Date(bDate).getTime()
         return new Date(bDate).getTime() - new Date(aDate).getTime()
@@ -2408,8 +2887,8 @@ export default function EmbroideryPage() {
               )}
             </button>
             {sortDropdownOpen && (
-              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-30 min-w-[160px] py-1">
-                {([['newest', 'Nyeste'], ['oldest', 'Eldste'], ['name', 'Navn A-Å']] as [SortOrder, string][]).map(([v, label]) => (
+              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-30 min-w-[200px] py-1">
+                {([['newest', 'Nyeste'], ['oldest', 'Eldste'], ['name', 'Navn A-Å'], ['manual', 'Manuell (min rekkefølge)']] as [SortOrder, string][]).map(([v, label]) => (
                   <button
                     key={v}
                     onClick={() => { setSort(v); setSortDropdownOpen(false) }}
@@ -2421,6 +2900,13 @@ export default function EmbroideryPage() {
               </div>
             )}
           </div>
+
+          {/* Manual sort save indicator */}
+          {sort === 'manual' && (orderSaving || orderSaved) && (
+            <span className="text-xs text-stone-500 whitespace-nowrap">
+              {orderSaving ? 'Lagrer…' : 'Lagret ✓'}
+            </span>
+          )}
 
           {/* Motif selection mode toggle — hidden when bundle selection is active */}
           {!bundleSelectionMode && (items.filter(i => !i.data.bundleId).length > 0) && (
@@ -2523,34 +3009,41 @@ export default function EmbroideryPage() {
             )}
           </div>
         ) : (
-          <div className="w-full grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-5 overflow-hidden">
-            {galleryItems.map(gi => {
-              if (gi.type === 'bundle') {
-                return (
-                  <BundleCard
-                    key={`bundle-${gi.bundle.id}`}
-                    bundle={gi.bundle}
-                    motifCount={gi.motifCount}
-                    onClick={() => openBundle(gi.bundle)}
-                    selectionMode={bundleSelectionMode}
-                    selected={selectedBundleIds.has(gi.bundle.id)}
-                    onToggleSelect={() => toggleBundleSelection(gi.bundle.id)}
-                  />
-                )
-              }
-              return (
-                <EmbroideryCard
-                  key={gi.item.id}
-                  item={gi.item}
-                  onEdit={() => openMotifFromGallery(gi.item)}
-                  onDelete={() => setDeleteId(gi.item.id)}
-                  selectionMode={selectionMode}
-                  selected={selectedIds.has(gi.item.id)}
-                  onToggleSelect={() => toggleSelection(gi.item.id)}
-                />
-              )
-            })}
-          </div>
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+            <SortableContext items={galleryItems.map(galleryItemId)} strategy={rectSortingStrategy}>
+              <div className="w-full grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-5 overflow-hidden">
+                {galleryItems.map(gi => {
+                  const gid = galleryItemId(gi)
+                  if (gi.type === 'bundle') {
+                    return (
+                      <SortableGalleryItem key={gid} id={gid} isDragMode={sort === 'manual'}>
+                        <BundleCard
+                          bundle={gi.bundle}
+                          motifCount={gi.motifCount}
+                          onClick={() => openBundle(gi.bundle)}
+                          selectionMode={bundleSelectionMode}
+                          selected={selectedBundleIds.has(gi.bundle.id)}
+                          onToggleSelect={() => toggleBundleSelection(gi.bundle.id)}
+                        />
+                      </SortableGalleryItem>
+                    )
+                  }
+                  return (
+                    <SortableGalleryItem key={gid} id={gid} isDragMode={sort === 'manual'}>
+                      <EmbroideryCard
+                        item={gi.item}
+                        onEdit={() => openMotifFromGallery(gi.item)}
+                        onDelete={() => setDeleteId(gi.item.id)}
+                        selectionMode={selectionMode}
+                        selected={selectedIds.has(gi.item.id)}
+                        onToggleSelect={() => toggleSelection(gi.item.id)}
+                      />
+                    </SortableGalleryItem>
+                  )
+                })}
+              </div>
+            </SortableContext>
+          </DndContext>
         )}
       </main>
 
