@@ -262,9 +262,10 @@ function parsePesPath(relativePath: string): { motifName: string; sizeLabel: str
 
   // ── General subfolder: parent folder = motif, filename remainder = size hint
   // Fires when the file is in a subfolder that is not a recognised size/alphabet folder.
+  // e.g. SNOWDROP/SNOWDROP_2.31x3.95in.PES → motif="SNOWDROP", size="2.31x3.95""
   // e.g. Flowers/Aster/Aster_1.54x2.77in.PES → motif="Aster", size="1.54x2.77""
   // e.g. Pack/Rose/Rose_Medium.PES → motif="Rose", size="Medium"
-  if (parts.length >= 3) {
+  if (parts.length >= 2) {
     const parentFolder = parts[parts.length - 2]
     const motifName = splitCamelCase(parentFolder).trim()
     const escapedParent = parentFolder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
