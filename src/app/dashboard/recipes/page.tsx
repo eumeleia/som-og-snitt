@@ -1983,7 +1983,7 @@ export default function RecipesPage() {
   return (
     <>
       {/* Search + filter icons */}
-      <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 py-4 space-y-3 overflow-hidden">
+      <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 py-4 space-y-3">
         <div className="relative w-full min-w-0">
           <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 pointer-events-none"
             fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2017,7 +2017,7 @@ export default function RecipesPage() {
               )}
             </button>
             {starDropdownOpen && (
-              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-20 min-w-[160px] py-1">
+              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-30 min-w-[160px] py-1">
                 {([
                   { label: 'Alle', value: 0 },
                   { label: 'Minst 1 ★', value: 1 },
@@ -2060,7 +2060,7 @@ export default function RecipesPage() {
               )}
             </button>
             {catDropdownOpen && (
-              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-20 min-w-[160px] py-1">
+              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-30 min-w-[160px] py-1">
                 <button
                   onClick={() => { setCategoryFilter(''); setCatDropdownOpen(false) }}
                   className={`w-full text-left px-4 py-2 text-sm transition-colors hover:bg-stone-50 ${!categoryFilter ? 'text-stone-800 font-medium' : 'text-stone-600'}`}
@@ -2100,7 +2100,7 @@ export default function RecipesPage() {
               )}
             </button>
             {sortDropdownOpen && (
-              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-20 min-w-[210px] py-1">
+              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-30 min-w-[210px] py-1">
                 {([
                   ['Manuell', 'Manuell (min rekkefølge)'],
                   ['Nyeste', 'Nyeste først'],
