@@ -105,7 +105,15 @@ function sizeOrder(label: string): number {
   if (sizeNum) return 20 + parseInt(sizeNum[1])
   const pureNum = lower.match(/^\d+$/)
   if (pureNum) return 30 + parseInt(lower)
-  if (lower === 'standard') return 3  // treat like medium
+  if (lower === 'standard') return 3
+  // inch labels e.g. 2", 2.5"
+  const inchLbl = lower.match(/^(\d+(?:\.\d+)?)"$/)
+  if (inchLbl) return 40 + parseFloat(inchLbl[1])
+  // metric labels e.g. 10cm, 15mm
+  const cmLbl = lower.match(/^(\d+(?:\.\d+)?)cm$/)
+  if (cmLbl) return 50 + parseFloat(cmLbl[1])
+  const mmLbl = lower.match(/^(\d+(?:\.\d+)?)mm$/)
+  if (mmLbl) return 55 + parseFloat(mmLbl[1])
   return 99
 }
 
@@ -146,6 +154,19 @@ function parsePesPath(relativePath: string): { motifName: string; sizeLabel: str
 
   const nxn = nameNoExt.match(/^(.+?)(\d+x\d+)$/i)
   if (nxn) return { motifName: splitCamelCase(nxn[1]).trim(), sizeLabel: nxn[2] }
+
+  // Inch patterns: "2 inch", "2.5 inches", "3 inces" (typos), "4 in", '2"'
+  // Anything that starts with "inc" after a number is treated as inches
+  const inchMatch = nameNoExt.match(/^(.+?)[ _](\d+(?:\.\d+)?)[ _]*(inc\w*|in(?![a-z])|")$/i)
+  if (inchMatch) {
+    return { motifName: splitCamelCase(inchMatch[1]).trim(), sizeLabel: `${inchMatch[2]}"` }
+  }
+
+  // Metric patterns: "10 cm", "15mm"
+  const metricMatch = nameNoExt.match(/^(.+?)[ _](\d+(?:\.\d+)?)[ _]*(cm|mm)$/i)
+  if (metricMatch) {
+    return { motifName: splitCamelCase(metricMatch[1]).trim(), sizeLabel: `${metricMatch[2]}${metricMatch[3].toLowerCase()}` }
+  }
 
   const sml = nameNoExt.match(/^(.+?)[ _]([SML]|X[SL]|XXL|XXS)$/i)
   if (sml) return { motifName: splitCamelCase(sml[1]).trim(), sizeLabel: sml[2].toUpperCase() }
@@ -478,10 +499,10 @@ function UploadModal({ onDone, onClose }: {
         const zip = await JSZip.loadAsync(file)
 
         type PesEntry = { name: string; path: string; getData: () => Promise<Uint8Array> }
-        type BmpEntry = { name: string; path: string; getData: () => Promise<Uint8Array> }
+        type ImgEntry = { name: string; path: string; ext: string; getData: () => Promise<Uint8Array> }
 
         const pesFiles: PesEntry[] = []
-        const bmpFiles: BmpEntry[] = []
+        const imageFiles: ImgEntry[] = []
 
         zip.forEach((relativePath, zipEntry) => {
           if (zipEntry.dir) return
@@ -489,8 +510,9 @@ function UploadModal({ onDone, onClose }: {
           const name = relativePath.split('/').pop() ?? relativePath
           if (lower.endsWith('.pes')) {
             pesFiles.push({ name, path: relativePath, getData: () => zipEntry.async('uint8array') })
-          } else if (lower.endsWith('.bmp')) {
-            bmpFiles.push({ name, path: relativePath, getData: () => zipEntry.async('uint8array') })
+          } else if (/\.(bmp|jpg|jpeg|png)$/.test(lower)) {
+            const ext = lower.split('.').pop()!
+            imageFiles.push({ name, path: relativePath, ext, getData: () => zipEntry.async('uint8array') })
           }
         })
 
@@ -547,30 +569,46 @@ function UploadModal({ onDone, onClose }: {
           let coverImage = ''
           let bmpPreview = ''
           const motifNameLower = motifName.toLowerCase().replace(/\s+/g, '')
-          const matchedBmp = bmpFiles.find(b => {
-            const bNameLower = b.name.toLowerCase().replace(/\.bmp$/i, '').replace(/\s+/g, '')
-            if (bNameLower === motifNameLower) return true
-            if (bNameLower.startsWith(motifNameLower)) return true
+
+          // Find matching image file: .jpg/.jpeg/.png/.bmp by name proximity
+          const matchedImg = imageFiles.find(img => {
+            const imgNameLower = img.name.toLowerCase()
+              .replace(/\.(bmp|jpg|jpeg|png)$/i, '')
+              .replace(/\s+/g, '')
+            if (imgNameLower === motifNameLower) return true
+            if (imgNameLower.startsWith(motifNameLower)) return true
             const firstPes = sizes[0]?.pesFile.name.replace(/\.pes$/i, '').toLowerCase().replace(/\s+/g, '')
-            if (firstPes && bNameLower === firstPes) return true
+            if (firstPes && imgNameLower === firstPes) return true
             return false
           })
 
-          if (matchedBmp) {
-            // BMP path (MiniFruits-style)
-            const bmpData = await matchedBmp.getData()
-            const dataUrl = await bmpToDataUrl(bmpData as Uint8Array<ArrayBuffer>)
-            if (dataUrl) {
-              const res2 = await fetch(dataUrl)
-              const pngBlob = await res2.blob()
-              const pngFilename = `embroidery-bmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`
-              const { error: bmpErr } = await supabase.storage
+          if (matchedImg) {
+            const imgData = await matchedImg.getData()
+            let imgBlob: Blob | null = null
+            let uploadFilename = ''
+
+            if (matchedImg.ext === 'bmp') {
+              const dataUrl = await bmpToDataUrl(imgData as Uint8Array<ArrayBuffer>)
+              if (dataUrl) {
+                const res2 = await fetch(dataUrl)
+                imgBlob = await res2.blob()
+                uploadFilename = `embroidery-bmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`
+              }
+            } else {
+              const mime = matchedImg.ext === 'png' ? 'image/png' : 'image/jpeg'
+              imgBlob = new Blob([imgData.buffer as ArrayBuffer], { type: mime })
+              const outExt = matchedImg.ext === 'jpeg' ? 'jpg' : matchedImg.ext
+              uploadFilename = `embroidery-img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${outExt}`
+            }
+
+            if (imgBlob) {
+              const { error: imgErr } = await supabase.storage
                 .from('embroidery-files')
-                .upload(pngFilename, pngBlob, { contentType: 'image/png' })
-              if (!bmpErr) {
-                const { data: bmpUrlData } = supabase.storage.from('embroidery-files').getPublicUrl(pngFilename)
-                coverImage = bmpUrlData.publicUrl
-                bmpPreview = bmpUrlData.publicUrl
+                .upload(uploadFilename, imgBlob, { contentType: imgBlob.type })
+              if (!imgErr) {
+                const { data: imgUrlData } = supabase.storage.from('embroidery-files').getPublicUrl(uploadFilename)
+                coverImage = imgUrlData.publicUrl
+                bmpPreview = imgUrlData.publicUrl
               }
             }
           } else {
@@ -1021,6 +1059,20 @@ function EmbroideryDetail({ item, onBack, onSaved, onDelete }: {
     timerRef.current = setTimeout(flush, 1500)
   }
 
+  async function splitSize(sizeId: string) {
+    const size = form.sizes.find(s => s.id === sizeId)
+    if (!size || form.sizes.length <= 1) return
+    const newData: EmbroideryData = {
+      ...form,
+      navn: `${form.navn} (${size.sizeLabel})`,
+      sizes: [size],
+    }
+    const { error: insErr } = await supabase.from('embroidery').insert({ data: newData })
+    if (insErr) { console.error('[Embroidery] Split-feil:', insErr); return }
+    removeSize(sizeId)
+    onSaved()
+  }
+
   async function flush() {
     setSaveStatus('saving')
     await supabase.from('embroidery').update({ data: pendingRef.current }).eq('id', idRef.current)
@@ -1178,6 +1230,16 @@ function EmbroideryDetail({ item, onBack, onSaved, onDelete }: {
                     </svg>
                     Last ned
                   </a>
+                  {d.sizes.length > 1 && (
+                    <button onClick={() => splitSize(size.id)}
+                      className="flex-shrink-0 p-1.5 rounded-lg hover:bg-amber-50 text-stone-300 hover:text-amber-500 transition-colors"
+                      title="Skill ut som eget motiv">
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                          d="M8 7h4m0 0l-2-2m2 2l-2 2M16 17h-4m0 0l2 2m-2-2l2-2M3 12h18" />
+                      </svg>
+                    </button>
+                  )}
                   <button onClick={() => removeSize(size.id)}
                     className="flex-shrink-0 p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors" title="Fjern størrelse">
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1605,6 +1667,29 @@ export default function EmbroideryPage() {
     setUploadSummary(`Bundle «${bundleName}» opprettet med ${selected.length} motiver`)
   }
 
+  async function mergeMotifs() {
+    const selected = items.filter(i => selectedIds.has(i.id))
+    if (selected.length < 2) return
+    const base = selected[0]
+    const allSizes = selected.flatMap(m => m.data.sizes)
+    allSizes.sort((a, b) => sizeOrder(a.sizeLabel) - sizeOrder(b.sizeLabel))
+    const withCover = selected.find(m => m.data.coverImage || m.data.bmpPreview)
+    const newData: EmbroideryData = {
+      ...base.data,
+      sizes: allSizes,
+      coverImage: withCover?.data.coverImage || base.data.coverImage,
+      bmpPreview: withCover?.data.bmpPreview || base.data.bmpPreview,
+    }
+    await supabase.from('embroidery').update({ data: newData }).eq('id', base.id)
+    for (const motif of selected.slice(1)) {
+      await supabase.from('embroidery').delete().eq('id', motif.id)
+    }
+    setSelectionMode(false)
+    setSelectedIds(new Set())
+    load()
+    setUploadSummary(`${selected.length} motiver slått sammen til «${base.data.navn}»`)
+  }
+
   function handleUploadDone(_results: Embroidery[], summary: string) {
     setShowUpload(false)
     load()
@@ -1934,15 +2019,23 @@ export default function EmbroideryPage() {
       {/* Selection mode floating bar */}
       {selectionMode && (
         <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 px-5 py-3 bg-stone-800 text-white text-sm rounded-2xl shadow-xl">
-          <span className="text-stone-300">
+          <span className="text-stone-300 whitespace-nowrap">
             {selectedIds.size} {selectedIds.size === 1 ? 'valgt' : 'valgte'}
           </span>
           <button
             onClick={() => { if (selectedIds.size > 0) setShowCreateBundle(true) }}
             disabled={selectedIds.size === 0}
-            className="px-4 py-1.5 bg-[#C9A57A] text-white rounded-xl text-sm font-medium hover:bg-[#b8925f] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            className="px-4 py-1.5 bg-[#C9A57A] text-white rounded-xl text-sm font-medium hover:bg-[#b8925f] transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
           >
             Lag bundle
+          </button>
+          <button
+            onClick={() => { if (selectedIds.size >= 2) mergeMotifs() }}
+            disabled={selectedIds.size < 2}
+            className="px-4 py-1.5 bg-stone-600 text-white rounded-xl text-sm font-medium hover:bg-stone-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+            title="Slå sammen til ett motiv med flere størrelser"
+          >
+            Slå sammen
           </button>
         </div>
       )}
