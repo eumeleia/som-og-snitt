@@ -592,50 +592,44 @@ function UploadModal({ onDone, onClose }: {
   const [error, setError] = useState<string | null>(null)
   const [uploadMode, setUploadMode] = useState<'loose' | 'bundle'>('loose')
   const [bundleName, setBundleName] = useState('')
-  const fileRef = useRef<HTMLInputElement>(null)
+  const [dragOver, setDragOver] = useState(false)
+  const zipRef = useRef<HTMLInputElement>(null)
+  const pesRef = useRef<HTMLInputElement>(null)
+  const folderRef = useRef<HTMLInputElement>(null)
 
-  async function handleFiles(files: FileList) {
+  useEffect(() => {
+    if (folderRef.current) folderRef.current.setAttribute('webkitdirectory', '')
+  }, [])
+
+  async function handleFiles(files: File[]) {
     setUploading(true)
     setError(null)
     try {
-      const JSZip = (await import('jszip')).default
+      type PesEntry = { name: string; path: string; getData: () => Promise<Uint8Array> }
+      type ImgEntry = { name: string; path: string; ext: string; getData: () => Promise<Uint8Array> }
+
+      function fileBytes(file: File): Promise<Uint8Array> {
+        return file.arrayBuffer().then(b => new Uint8Array(b))
+      }
+
       const results: Embroidery[] = []
       let failedFiles = 0
 
-      for (let fi = 0; fi < files.length; fi++) {
-        const file = files[fi]
-        const zipBundleName = bundleName.trim() ||
-          file.name.replace(/\.zip$/i, '').replace(/[-_]/g, ' ')
-
-        setProgress(`Pakker ut ${file.name}…`)
-        const zip = await JSZip.loadAsync(file)
-
-        type PesEntry = { name: string; path: string; getData: () => Promise<Uint8Array> }
-        type ImgEntry = { name: string; path: string; ext: string; getData: () => Promise<Uint8Array> }
-
-        const pesFiles: PesEntry[] = []
-        const imageFiles: ImgEntry[] = []
-
-        // JSZip reads entry names directly from ZIP binary headers — original case is preserved.
-        zip.forEach((relativePath, zipEntry) => {
-          if (zipEntry.dir) return
-          const lower = relativePath.toLowerCase()
-          const name = relativePath.split('/').pop() ?? relativePath
-          if (lower.endsWith('.pes')) {
-            pesFiles.push({ name, path: relativePath, getData: () => zipEntry.async('uint8array') })
-          } else if (/\.(bmp|jpg|jpeg|png)$/.test(lower)) {
-            const ext = lower.split('.').pop()!
-            imageFiles.push({ name, path: relativePath, ext, getData: () => zipEntry.async('uint8array') })
-          }
-        })
+      async function processBatch(
+        pesFiles: PesEntry[],
+        imageFiles: ImgEntry[],
+        batchName: string
+      ) {
+        if (pesFiles.length === 0) return
+        const zipBundleName = bundleName.trim() || batchName
 
         const motifMap = new Map<string, { sizeLabel: string; pesFile: PesEntry }[]>()
 
         if (uploadMode === 'loose') {
-          // All PES files in this ZIP belong to ONE motif — the user said so.
-          // Use the ZIP filename as the motif name; derive a per-file size label
+          // All PES files in this batch belong to ONE motif — the user said so.
+          // Use the batch name as the motif name; derive a per-file size label
           // from the filename heuristic (falls back to a running counter).
-          const looseName = file.name.replace(/\.zip$/i, '').replace(/[-_]/g, ' ').trim()
+          const looseName = batchName.trim()
           const sizes: { sizeLabel: string; pesFile: PesEntry }[] = []
           let counter = 1
           for (const pf of pesFiles) {
@@ -663,7 +657,7 @@ function UploadModal({ onDone, onClose }: {
 
         let motifIdx = 0
         const totalMotifs = motifMap.size
-        const zipResults: Embroidery[] = []
+        const batchResults: Embroidery[] = []
 
         for (const [motifName, sizes] of motifMap) {
           motifIdx++
@@ -791,14 +785,14 @@ function UploadModal({ onDone, onClose }: {
           if (insErr) {
             console.error('[Embroidery] DB insert-feil:', insErr)
           } else if (rows?.[0]) {
-            zipResults.push(rows[0] as Embroidery)
+            batchResults.push(rows[0] as Embroidery)
           }
         }
 
         // If bundle mode: create bundle and link motifs
-        if (uploadMode === 'bundle' && zipResults.length > 0) {
+        if (uploadMode === 'bundle' && batchResults.length > 0) {
           setProgress(`Oppretter bundle «${zipBundleName}»…`)
-          const firstCover = zipResults[0]?.data.coverImage || ''
+          const firstCover = batchResults[0]?.data.coverImage || ''
           const bundleData: EmbroideryBundleData = {
             navn: zipBundleName,
             designer: '',
@@ -814,7 +808,7 @@ function UploadModal({ onDone, onClose }: {
             .select()
           if (!bundleErr && bundleRows?.[0]) {
             const bundle = bundleRows[0] as EmbroideryBundle
-            for (const motif of zipResults) {
+            for (const motif of batchResults) {
               await supabase
                 .from('embroidery')
                 .update({ data: { ...motif.data, bundleId: bundle.id } })
@@ -823,7 +817,65 @@ function UploadModal({ onDone, onClose }: {
           }
         }
 
-        results.push(...zipResults)
+        results.push(...batchResults)
+      }
+
+      // Separate files by type
+      const zipFiles = files.filter(f => /\.zip$/i.test(f.name))
+      const pesRawFiles = files.filter(f => /\.pes$/i.test(f.name))
+      const imgRawFiles = files.filter(f => /\.(bmp|jpg|jpeg|png)$/i.test(f.name))
+
+      // Process each ZIP file
+      const JSZip = (await import('jszip')).default
+      for (const zipFile of zipFiles) {
+        setProgress(`Pakker ut ${zipFile.name}…`)
+        const zip = await JSZip.loadAsync(zipFile)
+
+        const zipPes: { name: string; path: string; getData: () => Promise<Uint8Array> }[] = []
+        const zipImg: { name: string; path: string; ext: string; getData: () => Promise<Uint8Array> }[] = []
+
+        // JSZip reads entry names directly from ZIP binary headers — original case is preserved.
+        zip.forEach((relativePath, zipEntry) => {
+          if (zipEntry.dir) return
+          const lower = relativePath.toLowerCase()
+          const name = relativePath.split('/').pop() ?? relativePath
+          if (lower.endsWith('.pes')) {
+            zipPes.push({ name, path: relativePath, getData: () => zipEntry.async('uint8array') })
+          } else if (/\.(bmp|jpg|jpeg|png)$/.test(lower)) {
+            const ext = lower.split('.').pop()!
+            zipImg.push({ name, path: relativePath, ext, getData: () => zipEntry.async('uint8array') })
+          }
+        })
+
+        const batchName = bundleName.trim() ||
+          zipFile.name.replace(/\.zip$/i, '').replace(/[-_]/g, ' ')
+        await processBatch(zipPes, zipImg, batchName)
+      }
+
+      // Process loose PES files
+      if (pesRawFiles.length > 0) {
+        const pesBatch: { name: string; path: string; getData: () => Promise<Uint8Array> }[] =
+          pesRawFiles.map(f => ({
+            name: f.name,
+            path: f.webkitRelativePath || f.name,
+            getData: () => fileBytes(f),
+          }))
+        const imgBatch: { name: string; path: string; ext: string; getData: () => Promise<Uint8Array> }[] =
+          imgRawFiles.map(f => {
+            const ext = f.name.toLowerCase().split('.').pop()!
+            return {
+              name: f.name,
+              path: f.webkitRelativePath || f.name,
+              ext,
+              getData: () => fileBytes(f),
+            }
+          })
+        const firstRelative = pesRawFiles[0].webkitRelativePath
+        const looseDefaultName = firstRelative
+          ? firstRelative.split('/')[0]
+          : pesRawFiles[0].name.replace(/\.pes$/i, '')
+        const looseBatchName = bundleName.trim() || looseDefaultName
+        await processBatch(pesBatch, imgBatch, looseBatchName)
       }
 
       setUploading(false)
@@ -837,11 +889,20 @@ function UploadModal({ onDone, onClose }: {
     }
   }
 
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault()
+    setDragOver(false)
+    const files = Array.from(e.dataTransfer.files).filter(f =>
+      /\.(zip|pes|bmp|jpg|jpeg|png)$/i.test(f.name)
+    )
+    if (files.length > 0) handleFiles(files)
+  }
+
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
         <div className="flex items-center justify-between mb-5">
-          <h2 className="font-serif text-2xl text-stone-700">Last opp broderipakke (ZIP)</h2>
+          <h2 className="font-serif text-2xl text-stone-700">Last opp broderifiler</h2>
           {!uploading && (
             <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-stone-100 text-stone-400 transition-colors">
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -850,11 +911,6 @@ function UploadModal({ onDone, onClose }: {
             </button>
           )}
         </div>
-
-        <p className="text-sm text-stone-500 mb-4">
-          ZIP-filen bør inneholde <span className="font-medium">.PES</span>-filer og eventuelt
-          tilhørende <span className="font-medium">.BMP</span>-forhåndsvisninger.
-        </p>
 
         {!uploading && (
           <>
@@ -914,24 +970,78 @@ function UploadModal({ onDone, onClose }: {
           </div>
         ) : (
           <div className="space-y-3">
+            {/* Drop zone */}
+            <div
+              onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={handleDrop}
+              className={`border-2 border-dashed rounded-xl p-5 text-center transition-colors ${
+                dragOver
+                  ? 'border-[#C9A57A] bg-amber-50'
+                  : 'border-stone-200 bg-stone-50'
+              }`}
+            >
+              <p className="text-sm text-stone-500 mb-4">Dra inn ZIP- eller PES-filer her</p>
+              <div className="space-y-2">
+                <button
+                  onClick={() => zipRef.current?.click()}
+                  className="w-full py-2.5 border border-stone-200 rounded-xl text-sm text-stone-600 bg-white hover:border-[#C9A57A] hover:text-[#8B6340] transition-colors flex items-center justify-center gap-2"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                      d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                  </svg>
+                  Velg ZIP-filer
+                </button>
+                <button
+                  onClick={() => pesRef.current?.click()}
+                  className="w-full py-2.5 border border-stone-200 rounded-xl text-sm text-stone-600 bg-white hover:border-[#C9A57A] hover:text-[#8B6340] transition-colors flex items-center justify-center gap-2"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                      d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  Velg PES-filer
+                </button>
+                <button
+                  onClick={() => folderRef.current?.click()}
+                  className="w-full py-2.5 border border-stone-200 rounded-xl text-sm text-stone-600 bg-white hover:border-[#C9A57A] hover:text-[#8B6340] transition-colors flex items-center justify-center gap-2"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                      d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+                  </svg>
+                  Velg mappe
+                  <span className="text-xs text-stone-400">(best på desktop)</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Hidden file inputs */}
             <input
-              ref={fileRef}
+              ref={zipRef}
               type="file"
               accept=".zip"
               multiple
               className="hidden"
-              onChange={e => { if (e.target.files?.length) handleFiles(e.target.files) }}
+              onChange={e => { if (e.target.files?.length) handleFiles(Array.from(e.target.files)) }}
             />
-            <button
-              onClick={() => fileRef.current?.click()}
-              className="w-full py-3 border-2 border-dashed border-stone-200 rounded-xl text-sm text-stone-500 hover:border-[#C9A57A] hover:text-[#8B6340] transition-colors flex items-center justify-center gap-2"
-            >
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                  d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-              </svg>
-              Velg ZIP-fil(er)
-            </button>
+            <input
+              ref={pesRef}
+              type="file"
+              accept=".pes"
+              multiple
+              className="hidden"
+              onChange={e => { if (e.target.files?.length) handleFiles(Array.from(e.target.files)) }}
+            />
+            <input
+              ref={folderRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={e => { if (e.target.files?.length) handleFiles(Array.from(e.target.files)) }}
+            />
+
             <button
               onClick={onClose}
               className="w-full py-2.5 border border-stone-200 rounded-xl text-sm text-stone-600 hover:bg-stone-50 transition-colors"
