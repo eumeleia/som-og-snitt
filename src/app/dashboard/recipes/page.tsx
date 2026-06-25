@@ -689,6 +689,12 @@ function NewRecipeModal({ onCreate, onClose }: {
       <div className="fixed inset-0 bg-black/30 backdrop-blur-sm"
         onClick={mode === 'creating' ? undefined : onClose} />
       <div className="relative bg-white rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden">
+        {/* Always-mounted file input so the ref is valid in all modes */}
+        <input
+          ref={fileInputRef} type="file" accept="application/pdf" multiple
+          className="hidden"
+          onChange={e => { addFiles(e.target.files); e.target.value = '' }}
+        />
 
         {/* ── Choose ── */}
         {mode === 'choose' && (
@@ -709,11 +715,6 @@ function NewRecipeModal({ onCreate, onClose }: {
                 <p className="font-medium text-stone-700 mb-1">Last opp PDF</p>
                 <p className="text-xs text-stone-400">Anbefalt — navn, designer og størrelser fylles inn automatisk</p>
               </button>
-              <input
-                ref={fileInputRef} type="file" accept="application/pdf" multiple
-                className="hidden"
-                onChange={e => { addFiles(e.target.files); e.target.value = '' }}
-              />
               {error && <p className="text-xs text-red-500">{error}</p>}
               <button
                 onClick={() => { setError(''); setMode('blank') }}
