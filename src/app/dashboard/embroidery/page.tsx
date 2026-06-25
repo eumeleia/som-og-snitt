@@ -260,39 +260,60 @@ function parsePesPath(relativePath: string): { motifName: string; sizeLabel: str
     }
   }
 
-  // ── Filename pattern heuristics (MiniFruits / similar naming)
+  // ── General subfolder: parent folder = motif, filename remainder = size hint
+  // Fires when the file is in a subfolder that is not a recognised size/alphabet folder.
+  // e.g. Flowers/Aster/Aster_1.54x2.77in.PES → motif="Aster", size="1.54x2.77""
+  // e.g. Pack/Rose/Rose_Medium.PES → motif="Rose", size="Medium"
+  if (parts.length >= 3) {
+    const parentFolder = parts[parts.length - 2]
+    const motifName = splitCamelCase(parentFolder).trim()
+    const escapedParent = parentFolder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const rest = nameNoExt.replace(new RegExp('^' + escapedParent + '[\\s_-]*', 'i'), '').trim()
+    // WxH dimension: 1.54x2.77in, 5x7, 3x5cm
+    const dimM = rest.match(/^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)(in(?:ch(?:es)?)?|cm|mm)?$/i)
+    if (dimM) {
+      const unit = (dimM[3] || '').toLowerCase()
+      const sz = unit.startsWith('in') || !unit ? `${dimM[1]}x${dimM[2]}"` : `${dimM[1]}x${dimM[2]}${unit}`
+      return { motifName, sizeLabel: sz }
+    }
+    const inM = rest.match(/^(\d+(?:\.\d+)?)\s*(in(?:ch(?:es)?)?|")$/i)
+    if (inM) return { motifName, sizeLabel: `${inM[1]}"` }
+    const metM = rest.match(/^(\d+(?:\.\d+)?)\s*(cm|mm)$/i)
+    if (metM) return { motifName, sizeLabel: `${metM[1]}${metM[2].toLowerCase()}` }
+    for (const sw of SIZE_WORDS_ORDERED) {
+      if (rest.toLowerCase() === sw) return { motifName, sizeLabel: normaliseSizeLabel(sw) }
+    }
+    const snM = rest.match(/^size(\d+)$/i)
+    if (snM) return { motifName, sizeLabel: `Size${snM[1]}` }
+    if (/^\d+$/.test(rest)) return { motifName, sizeLabel: rest }
+    return { motifName, sizeLabel: rest || 'Standard' }
+  }
+
+  // ── Flat file: motif = full filename (no merging by name similarity).
+  // Size label extracted from filename for display (loose-mode) only — never affects grouping.
+  const flatMotifName = splitCamelCase(nameNoExt).trim()
+
   const sizeN = nameNoExt.match(/^(.+?)(Size\d+)$/i)
-  if (sizeN) return { motifName: splitCamelCase(sizeN[1]).trim(), sizeLabel: sizeN[2] }
+  if (sizeN) return { motifName: flatMotifName, sizeLabel: sizeN[2] }
 
   const nxn = nameNoExt.match(/^(.+?)(\d+x\d+)$/i)
-  if (nxn) return { motifName: splitCamelCase(nxn[1]).trim(), sizeLabel: nxn[2] }
+  if (nxn) return { motifName: flatMotifName, sizeLabel: nxn[2] }
 
-  // Inch patterns: "2 inch", "2.5 inches", "3 inces" (typos), "4 in", '2"'
-  // Anything that starts with "inc" after a number is treated as inches
   const inchMatch = nameNoExt.match(/^(.+?)[ _](\d+(?:\.\d+)?)[ _]*(inc\w*|in(?![a-z])|")$/i)
-  if (inchMatch) {
-    return { motifName: splitCamelCase(inchMatch[1]).trim(), sizeLabel: `${inchMatch[2]}"` }
-  }
+  if (inchMatch) return { motifName: flatMotifName, sizeLabel: `${inchMatch[2]}"` }
 
-  // Metric patterns: "10 cm", "15mm"
   const metricMatch = nameNoExt.match(/^(.+?)[ _](\d+(?:\.\d+)?)[ _]*(cm|mm)$/i)
-  if (metricMatch) {
-    return { motifName: splitCamelCase(metricMatch[1]).trim(), sizeLabel: `${metricMatch[2]}${metricMatch[3].toLowerCase()}` }
-  }
+  if (metricMatch) return { motifName: flatMotifName, sizeLabel: `${metricMatch[2]}${metricMatch[3].toLowerCase()}` }
 
   const sml = nameNoExt.match(/^(.+?)[ _]([SML]|X[SL]|XXL|XXS)$/i)
-  if (sml) return { motifName: splitCamelCase(sml[1]).trim(), sizeLabel: sml[2].toUpperCase() }
+  if (sml) return { motifName: flatMotifName, sizeLabel: sml[2].toUpperCase() }
 
   for (const sw of SIZE_WORDS_ORDERED) {
-    const m = nameNoExt.match(new RegExp(`^(.+?)[ _]${sw}$`, 'i'))
-    if (m) return { motifName: splitCamelCase(m[1]).trim(), sizeLabel: normaliseSizeLabel(sw) }
+    if (nameNoExt.match(new RegExp(`^(.+?)[ _]${sw}$`, 'i')))
+      return { motifName: flatMotifName, sizeLabel: normaliseSizeLabel(sw) }
   }
 
-  const numSuffix = nameNoExt.match(/^(.+?)[ _](\d+)$/)
-  if (numSuffix) return { motifName: splitCamelCase(numSuffix[1]).trim(), sizeLabel: numSuffix[2] }
-
-  // ── Fallback
-  return { motifName: splitCamelCase(nameNoExt).trim(), sizeLabel: 'Standard' }
+  return { motifName: flatMotifName, sizeLabel: 'Standard' }
 }
 
 // ── PES rendering helpers ──────────────────────────────────────────────────────
