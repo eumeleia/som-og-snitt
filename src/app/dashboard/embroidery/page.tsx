@@ -370,6 +370,35 @@ async function renderPesPreview(pesData: Uint8Array): Promise<RenderResult | nul
   }
 }
 
+async function renderPesPreviewWithRetry(pesData: Uint8Array, maxRetries = 2): Promise<RenderResult | null> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (attempt > 0) await new Promise(r => setTimeout(r, 1500 * attempt))
+    const result = await renderPesPreview(pesData)
+    if (result) return result
+  }
+  return null
+}
+
+async function regenCoverFromSizes(sizes: EmbroiderySize[]): Promise<string | null> {
+  if (sizes.length === 0) return null
+  const repSize = sizes[Math.floor(sizes.length / 2)]
+  try {
+    const pesResp = await fetch(repSize.pesUrl)
+    if (!pesResp.ok) return null
+    const pesBytes = new Uint8Array(await pesResp.arrayBuffer())
+    const result = await renderPesPreviewWithRetry(pesBytes, 1)
+    if (!result?.png_base64) return null
+    const pngBlob = base64ToBlob(result.png_base64, 'image/png')
+    const pngFilename = `embroidery-rendered-${Date.now()}-${uid()}.png`
+    const { error } = await supabase.storage.from('embroidery-files').upload(pngFilename, pngBlob, { contentType: 'image/png' })
+    if (error) return null
+    const { data: urlData } = supabase.storage.from('embroidery-files').getPublicUrl(pngFilename)
+    return urlData.publicUrl
+  } catch {
+    return null
+  }
+}
+
 async function fetchPesBounds(pesData: Uint8Array): Promise<{ widthMm: number; heightMm: number } | null> {
   try {
     const b64 = uint8ToBase64(pesData)
@@ -919,7 +948,7 @@ function UploadModal({ onDone, onClose }: {
             if (repPesData) {
               setProgress(`Rendrer forhåndsvisning for ${motifName}…`)
               try {
-                const renderResult = await renderPesPreview(repPesData)
+                const renderResult = await renderPesPreviewWithRetry(repPesData)
                 if (renderResult?.png_base64) {
                   const pngBlob = base64ToBlob(renderResult.png_base64, 'image/png')
                   const pngFilename = `embroidery-rendered-${Date.now()}-${uid()}.png`
@@ -1612,10 +1641,11 @@ function MoveSizeModal({ motif, otherMotifs, onMove, onClose, saving }: {
 
 // ── Bundle Motif Card (used inside BundleDetail) ───────────────────────────────
 
-function BundleMotifCard({ item, onClick, onRemove, editMode = false, selected = false, onToggle, renaming = false, renameValue = '', onRenameChange, onRenameSubmit, onRenameCancel }: {
+function BundleMotifCard({ item, onClick, onRemove, onRegenerate, editMode = false, selected = false, onToggle, renaming = false, renameValue = '', onRenameChange, onRenameSubmit, onRenameCancel }: {
   item: Embroidery
   onClick: () => void
   onRemove: () => void
+  onRegenerate?: () => void
   editMode?: boolean
   selected?: boolean
   onToggle?: () => void
@@ -1626,7 +1656,24 @@ function BundleMotifCard({ item, onClick, onRemove, editMode = false, selected =
   onRenameCancel?: () => void
 }) {
   const d = item.data
-  const imgSrc = d.useCustomImage ? d.customImage : (d.coverImage || d.bmpPreview)
+  const [regenState, setRegenState] = useState<'idle' | 'loading' | 'error'>('idle')
+  const [localImgSrc, setLocalImgSrc] = useState<string | null>(null)
+  const imgSrc = localImgSrc ?? (d.useCustomImage ? d.customImage : (d.coverImage || d.bmpPreview))
+
+  async function handleRegenerate(e: React.MouseEvent) {
+    e.stopPropagation()
+    setRegenState('loading')
+    const newUrl = await regenCoverFromSizes(item.data.sizes)
+    if (newUrl) {
+      const updatedData = { ...item.data, coverImage: newUrl, bmpPreview: newUrl }
+      await supabase.from('embroidery').update({ data: updatedData }).eq('id', item.id)
+      setLocalImgSrc(newUrl)
+      setRegenState('idle')
+      onRegenerate?.()
+    } else {
+      setRegenState('error')
+    }
+  }
 
   function handleClick() {
     if (editMode) { onToggle?.(); return }
@@ -1645,11 +1692,36 @@ function BundleMotifCard({ item, onClick, onRemove, editMode = false, selected =
           {imgSrc ? (
             <img src={imgSrc} alt={d.navn} className="w-full h-full object-contain" />
           ) : (
-            <div className="w-full h-full flex items-center justify-center">
-              <svg className="w-8 h-8 text-stone-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1}
-                  d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z" />
-              </svg>
+            <div className="w-full h-full flex flex-col items-center justify-center gap-1.5">
+              {regenState === 'loading' ? (
+                <svg className="w-6 h-6 animate-spin text-[#C9A57A]" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                </svg>
+              ) : (
+                <>
+                  <svg className="w-8 h-8 text-stone-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1}
+                      d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z" />
+                  </svg>
+                  {!editMode && d.sizes.length > 0 && (
+                    <button
+                      onClick={handleRegenerate}
+                      className="flex items-center gap-1 px-2 py-1 text-[10px] bg-[#F5EFE6] text-[#8B6340] rounded-lg border border-[#D4A574] hover:bg-[#e8d5c0] transition-colors"
+                      title="Regenerer forhåndsvisning"
+                    >
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                          d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                      Regenerer
+                    </button>
+                  )}
+                  {regenState === 'error' && (
+                    <span className="text-[9px] text-red-400">Feilet</span>
+                  )}
+                </>
+              )}
             </div>
           )}
           {editMode && (
@@ -1708,6 +1780,7 @@ function EmbroideryDetail({ item, onBack, onSaved, onDelete }: {
 }) {
   const [form, setForm] = useState<EmbroideryData>(item.data)
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
+  const [regenState, setRegenState] = useState<'idle' | 'loading' | 'error'>('idle')
   const pendingRef = useRef<EmbroideryData>(item.data)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const idRef = useRef(item.id)
@@ -1777,6 +1850,17 @@ function EmbroideryDetail({ item, onBack, onSaved, onDelete }: {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  async function handleRegenerate() {
+    setRegenState('loading')
+    const newUrl = await regenCoverFromSizes(form.sizes)
+    if (newUrl) {
+      update({ coverImage: newUrl, bmpPreview: newUrl })
+      setRegenState('idle')
+    } else {
+      setRegenState('error')
+    }
+  }
 
   async function handleCustomImage(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -1852,6 +1936,33 @@ function EmbroideryDetail({ item, onBack, onSaved, onDelete }: {
                   className="px-4 py-2 text-sm border border-[#D4A574] rounded-xl bg-[#F5EFE6] text-[#8B6340] hover:bg-[#e8d5c0] transition-colors">
                   {d.useCustomImage ? 'Bruk original (BMP)' : 'Bruk eget bilde'}
                 </button>
+              )}
+              {form.sizes.length > 0 && (
+                <button
+                  onClick={handleRegenerate}
+                  disabled={regenState === 'loading'}
+                  className={`flex items-center gap-2 px-4 py-2 text-sm rounded-xl border transition-colors ${
+                    !displayImg
+                      ? 'border-[#C9A57A] bg-[#F5EFE6] text-[#8B6340] hover:bg-[#e8d5c0] font-medium'
+                      : 'border-stone-200 text-stone-500 hover:bg-stone-50'
+                  } disabled:opacity-60 disabled:cursor-not-allowed`}
+                >
+                  {regenState === 'loading' ? (
+                    <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                    </svg>
+                  ) : (
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                  )}
+                  {regenState === 'loading' ? 'Genererer…' : 'Regenerer forhåndsvisning'}
+                </button>
+              )}
+              {regenState === 'error' && (
+                <p className="text-xs text-red-500">Kunne ikke generere forhåndsvisning. Prøv igjen.</p>
               )}
             </div>
           </div>
@@ -2225,6 +2336,7 @@ function BundleDetail({ bundle, motifs, onBack, onSaved, onDelete, onMotifClick,
                   item={motif}
                   onClick={() => onMotifClick(motif)}
                   onRemove={() => onRemoveMotif(motif.id)}
+                  onRegenerate={onSaved}
                   editMode={bundleEditMode}
                   selected={selectedMotifIds.has(motif.id)}
                   onToggle={() => toggleMotifSelect(motif.id)}
