@@ -69,6 +69,7 @@ interface ProjectData {
   pdfComments: PdfComment[]
   pdfAnnotations: PdfAnnotation[]
   sortOrder?: number
+  completedDate?: string
 }
 
 interface Project { id: string; created_at: string; data: ProjectData }
@@ -237,8 +238,8 @@ function SectionHeading({ children, first = false }: { children: ReactNode; firs
 
 // ── ProjectCard ───────────────────────────────────────────────────────────────
 
-function ProjectCard({ project, onEdit, onDelete }: {
-  project: Project; onEdit: () => void; onDelete: () => void
+function ProjectCard({ project, onEdit, onDelete, onOpenRecipePdf }: {
+  project: Project; onEdit: () => void; onDelete: () => void; onOpenRecipePdf?: () => void
 }) {
   const d = project.data
   const cover = d.images[0]?.url
@@ -274,7 +275,9 @@ function ProjectCard({ project, onEdit, onDelete }: {
             {d.name || <span className="text-stone-300 italic font-light">Uten navn</span>}
           </h3>
           <p className="text-xs text-stone-500 truncate">
-            {(d.recipientName ?? '') ? `Til ${d.recipientName}` : ' '}
+            {d.status === 'Fullført' && d.completedDate
+              ? `Fullført ${fmtDate(d.completedDate)}`
+              : (d.recipientName ?? '') ? `Til ${d.recipientName}` : ' '}
           </p>
         </div>
       </div>
@@ -305,15 +308,24 @@ function ProjectCard({ project, onEdit, onDelete }: {
 
       {oppskriftPdf && (
         <div className="px-3 pb-2 text-xs">
-          <a
-            href={oppskriftPdf.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={e => e.stopPropagation()}
-            className="text-[#C9A57A] hover:text-[#8B6340] hover:underline transition-colors"
-          >
-            Oppskrift ↗
-          </a>
+          {onOpenRecipePdf ? (
+            <button
+              onClick={e => { e.stopPropagation(); onOpenRecipePdf() }}
+              className="text-[#C9A57A] hover:text-[#8B6340] hover:underline transition-colors"
+            >
+              Oppskrift ↗
+            </button>
+          ) : (
+            <a
+              href={oppskriftPdf.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={e => e.stopPropagation()}
+              className="text-[#C9A57A] hover:text-[#8B6340] hover:underline transition-colors"
+            >
+              Oppskrift ↗
+            </a>
+          )}
         </div>
       )}
 
@@ -332,8 +344,9 @@ function ProjectCard({ project, onEdit, onDelete }: {
 
 // ── SortableProjectCard ───────────────────────────────────────────────────────
 
-function SortableProjectCard({ project, onEdit, onDelete, isDragMode }: {
+function SortableProjectCard({ project, onEdit, onDelete, isDragMode, onOpenRecipePdf }: {
   project: Project; onEdit: () => void; onDelete: () => void; isDragMode: boolean
+  onOpenRecipePdf?: () => void
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: project.id,
@@ -351,6 +364,7 @@ function SortableProjectCard({ project, onEdit, onDelete, isDragMode }: {
         project={project}
         onEdit={onEdit}
         onDelete={onDelete}
+        onOpenRecipePdf={onOpenRecipePdf}
       />
     </div>
   )
@@ -1001,7 +1015,7 @@ interface PendingAnnotation {
 }
 
 function PdfViewerModal({
-  pdf, annotations, onAddAnnotation, onUpdateAnnotation, onDeleteAnnotation, onMoveAnnotation, onClose,
+  pdf, annotations, onAddAnnotation, onUpdateAnnotation, onDeleteAnnotation, onMoveAnnotation, onClose, initialPage,
 }: {
   pdf: PdfItem
   annotations: PdfAnnotation[]
@@ -1009,7 +1023,8 @@ function PdfViewerModal({
   onUpdateAnnotation: (id: string, text: string) => void
   onDeleteAnnotation: (id: string) => void
   onMoveAnnotation: (id: string, x: number, y: number) => void
-  onClose: () => void
+  onClose: (lastPage: number) => void
+  initialPage?: number
 }) {
   const [pages, setPages]         = useState<string[]>([])
   const [loading, setLoading]     = useState(true)
@@ -1033,6 +1048,8 @@ function PdfViewerModal({
   }
   const [dragState, setDragState] = useState<DragState | null>(null)
   const pageContainerRefs = useRef<Record<number, HTMLDivElement | null>>({})
+  const lastPageRef = useRef<number>(initialPage ?? 1)
+  const scrolledToInitialRef = useRef(false)
 
   const myAnnotations = annotations.filter(a => a.pdfId === pdf.id)
 
@@ -1074,6 +1091,30 @@ function PdfViewerModal({
     load()
     return () => { cancelled = true }
   }, [pdf.url])
+
+  // Scroll to last-viewed page once pages have rendered
+  useEffect(() => {
+    if (scrolledToInitialRef.current) return
+    const target = initialPage && initialPage > 1 ? initialPage : null
+    if (!target) { scrolledToInitialRef.current = true; return }
+    const el = pageContainerRefs.current[target]
+    if (el) { el.scrollIntoView({ behavior: 'instant', block: 'start' }); scrolledToInitialRef.current = true }
+  }, [pages, initialPage])
+
+  // Track which page is currently visible
+  useEffect(() => {
+    if (pages.length === 0) return
+    const observer = new IntersectionObserver(entries => {
+      let bestRatio = 0; let bestPage = lastPageRef.current
+      entries.forEach(e => {
+        const p = parseInt((e.target as HTMLElement).dataset.page ?? '0', 10)
+        if (e.intersectionRatio > bestRatio) { bestRatio = e.intersectionRatio; bestPage = p }
+      })
+      if (bestRatio > 0) lastPageRef.current = bestPage
+    }, { threshold: [0, 0.25, 0.5, 0.75, 1.0] })
+    Object.values(pageContainerRefs.current).forEach(el => { if (el) observer.observe(el) })
+    return () => observer.disconnect()
+  }, [pages])
 
   function toggleTool(tool: 'pin' | 'textbox') {
     setActiveTool(prev => prev === tool ? null : tool)
@@ -1165,7 +1206,7 @@ function PdfViewerModal({
       {/* Toolbar */}
       <div className="flex items-center gap-2 sm:gap-3 px-3 py-2 sm:px-4 sm:py-3 flex-shrink-0 border-b border-stone-700"
         style={{ backgroundColor: '#292524' }}>
-        <button onClick={onClose}
+        <button onClick={() => onClose(lastPageRef.current)}
           className="flex items-center gap-1.5 px-2.5 py-2 sm:px-3 sm:py-1.5 rounded-lg text-sm text-stone-300 hover:text-white hover:bg-stone-700 transition-colors flex-shrink-0 min-h-[44px] sm:min-h-0">
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
@@ -1235,6 +1276,7 @@ function PdfViewerModal({
                 {/* Page container — no overflow-hidden so popups can extend beyond edges */}
                 <div className="relative"
                   ref={el => { pageContainerRefs.current[pageNum] = el }}
+                  data-page={pageNum}
                   style={{ cursor: activeTool ? 'crosshair' : 'default' }}
                   onClick={e => { e.stopPropagation(); handlePageClick(e, pageNum) }}>
                   <img
@@ -1471,12 +1513,13 @@ function PdfViewerModal({
 
 // ── ProjectDetail ─────────────────────────────────────────────────────────────
 
-function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy }: {
+function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpenPdfId }: {
   project: Project | null
   onBack: () => void
   onSaved: () => void
   onDelete?: () => void
   onCopy?: () => void
+  initialOpenPdfId?: string
 }) {
   const [form, setForm] = useState<ProjectData>(() => {
     if (!project) return structuredClone(EMPTY)
@@ -1494,6 +1537,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy }: {
   const [showFocalModal, setShowFocalModal]       = useState(false)
   const [showGalleryPicker, setShowGalleryPicker] = useState(false)
   const [showPdfViewer, setShowPdfViewer]         = useState<PdfItem | null>(null)
+  const [lastPdfPages, setLastPdfPages]           = useState<Record<string, number>>({})
   const [toast, setToast]                   = useState('')
   const [showRecipePicker, setShowRecipePicker] = useState(false)
   const [pickerRecipes, setPickerRecipes]   = useState<PickerRecipe[]>([])
@@ -1532,6 +1576,14 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy }: {
   const projectIdRef = useRef<string | null>(project?.id ?? null)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingRef   = useRef<ProjectData>(form)
+
+  // Auto-open PDF viewer when navigating from card shortcut
+  useEffect(() => {
+    if (!initialOpenPdfId) return
+    const pdf = (form.pdfs ?? []).find(p => p.id === initialOpenPdfId)
+    if (pdf) setShowPdfViewer(pdf)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialOpenPdfId])
 
   // Load linked recipe when recipeId changes
   useEffect(() => {
@@ -2011,6 +2063,19 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy }: {
               </button>
             </div>
           </div>
+          {form.status === 'Fullført' && (
+            <div>
+              <label className={labelCls}>Fullføringsdato</label>
+              <div className="flex gap-2">
+                <input type="date" className={`${inputCls} flex-1`} value={form.completedDate ?? ''}
+                  onChange={e => upd({ completedDate: e.target.value })} />
+                <button onClick={() => upd({ completedDate: toDay() })}
+                  className="px-4 py-2 text-sm border border-stone-200 rounded-lg bg-white hover:bg-stone-50 text-stone-600 transition-colors">
+                  I dag
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ── 3. Koblet oppskrift ── */}
@@ -2583,6 +2648,20 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy }: {
             </div>
           </>
         )}
+
+        {form.status !== 'Fullført' && (
+          <div className="pt-4 border-t border-stone-100">
+            <button
+              onClick={() => upd({ status: 'Fullført', completedDate: toDay() })}
+              className="w-full py-3 rounded-xl bg-sky-50 border border-sky-200 text-sky-700 text-sm font-medium hover:bg-sky-100 transition-colors flex items-center justify-center gap-2"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+              Fullfør prosjekt
+            </button>
+          </div>
+        )}
       </div>
 
       {showImgModal && <ImageUploadModal onAdd={addImage} onClose={() => setShowImgModal(false)} />}
@@ -2613,7 +2692,11 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy }: {
           onUpdateAnnotation={updatePdfAnnotation}
           onDeleteAnnotation={deletePdfAnnotation}
           onMoveAnnotation={movePdfAnnotation}
-          onClose={() => setShowPdfViewer(null)}
+          initialPage={lastPdfPages[showPdfViewer.id] ?? 1}
+          onClose={page => {
+            setLastPdfPages(prev => ({ ...prev, [showPdfViewer!.id]: page }))
+            setShowPdfViewer(null)
+          }}
         />
       )}
 
@@ -2674,6 +2757,7 @@ export default function ProjectsPage() {
   const [orderSaved, setOrderSaved]         = useState(false)
   const [catDropdownOpen, setCatDropdownOpen]   = useState(false)
   const [sortDropdownOpen, setSortDropdownOpen] = useState(false)
+  const [autoOpenPdfId, setAutoOpenPdfId]       = useState<string | null>(null)
   const catDropdownRef  = useRef<HTMLDivElement>(null)
   const sortDropdownRef = useRef<HTMLDivElement>(null)
 
@@ -2778,8 +2862,16 @@ export default function ProjectsPage() {
     }
   }
 
-  function openEdit(p: Project) { setCurrentProject(p); setShowDetail(true) }
+  function openEdit(p: Project) { setAutoOpenPdfId(null); setCurrentProject(p); setShowDetail(true) }
   function handleBack()         { setShowDetail(false); setCurrentProject(null); load() }
+
+  function handleOpenRecipePdf(p: Project) {
+    const pdf = (p.data.pdfs ?? []).find(x => (x.type ?? 'Annet') === 'Oppskrift')
+    if (!pdf) return
+    setAutoOpenPdfId(pdf.id)
+    setCurrentProject(p)
+    setShowDetail(true)
+  }
 
   const filtered = projects.filter(p =>
     p.data.status === statusFilter &&
@@ -2843,6 +2935,7 @@ export default function ProjectsPage() {
           onSaved={load}
           onDelete={currentProject ? () => setDeleteId(currentProject.id) : undefined}
           onCopy={currentProject ? () => copyProject(currentProject) : undefined}
+          initialOpenPdfId={autoOpenPdfId ?? undefined}
         />
         {deleteId && (
           <DeleteDialog
@@ -3001,6 +3094,9 @@ export default function ProjectsPage() {
                     onEdit={() => openEdit(p)}
                     onDelete={() => setDeleteId(p.id)}
                     isDragMode={sortBy === 'Manuell'}
+                    onOpenRecipePdf={(p.data.pdfs ?? []).some(x => (x.type ?? 'Annet') === 'Oppskrift')
+                      ? () => handleOpenRecipePdf(p)
+                      : undefined}
                   />
                 ))}
               </div>
