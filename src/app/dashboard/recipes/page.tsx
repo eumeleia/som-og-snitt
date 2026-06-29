@@ -811,9 +811,10 @@ function NewRecipeModal({ onCreate, onClose }: {
             <div className="p-6 space-y-4">
               <div>
                 <label className={labelCls}>Navn *</label>
-                <input className={inputCls} value={blankName} autoFocus
+                <input className={inputCls} value={blankName}
                   onChange={e => setBlankName(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && handleBlank()}
+                  autoComplete="off" autoCapitalize="none" spellCheck={false}
                   placeholder="F.eks. Sommerkjole" />
               </div>
               {error && <p className="text-xs text-red-500">{error}</p>}
@@ -1983,7 +1984,7 @@ export default function RecipesPage() {
   return (
     <>
       {/* Search + filter icons */}
-      <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 py-4 space-y-3">
+      <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 py-4 space-y-3 overflow-hidden">
         <div className="relative w-full min-w-0">
           <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 pointer-events-none"
             fill="none" viewBox="0 0 24 24" stroke="currentColor">

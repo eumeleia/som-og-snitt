@@ -9,9 +9,9 @@ import { supabase } from '@/lib/supabase'
 const TABS = [
   { href: '/dashboard/recipes',    label: 'Oppskrifter' },
   { href: '/dashboard/projects',   label: 'Prosjekter' },
-  { href: '/dashboard/inventory',  label: 'Lager' },
+  { href: '/dashboard/embroidery', label: 'Broderi' },
   { href: '/dashboard/techniques', label: 'Teknikker' },
-  { href: '/dashboard/embroidery',  label: 'Broderi' },
+  { href: '/dashboard/inventory',  label: 'Lager' },
 ]
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {

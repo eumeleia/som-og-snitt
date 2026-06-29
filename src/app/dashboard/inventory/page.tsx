@@ -153,8 +153,8 @@ function InventoryCard({ item, onEdit, onDelete }: {
         </div>
       </div>
 
-      <div className="px-3 py-2 flex items-center justify-between border-t border-stone-100">
-        <div className="text-xs text-stone-500">
+      <div className="px-3 py-2 flex items-center justify-between border-t border-stone-100 min-w-0">
+        <div className="text-xs text-stone-500 truncate min-w-0 mr-1 flex-1">
           {badge && <span className="font-medium">{badge}</span>}
         </div>
         <Badge label={d.kategori} cls={KATEGORI_STYLE[d.kategori]} />
@@ -1088,11 +1088,11 @@ export default function InventoryPage() {
   return (
     <>
       {/* Tabs */}
-      <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 mb-3 overflow-hidden">
-        <div className="flex gap-1 p-1 bg-stone-100 rounded-xl w-full sm:w-auto sm:inline-flex">
+      <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 mb-3 overflow-x-hidden">
+        <div className="flex gap-1 p-1 bg-stone-100 rounded-xl w-full">
           {KATEGORIER.map(k => (
             <button key={k} onClick={() => setTab(k)}
-              className={`flex-1 sm:flex-none sm:px-6 py-2 text-sm rounded-lg font-medium transition-colors ${
+              className={`flex-1 min-w-0 py-2 text-sm rounded-lg font-medium transition-colors truncate ${
                 tab === k ? 'bg-white text-stone-800 shadow-sm' : 'text-stone-500 hover:text-stone-700'
               }`}>
               {k}
@@ -1102,7 +1102,7 @@ export default function InventoryPage() {
       </div>
 
       {/* Search + filters */}
-      <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 mb-4 space-y-3 overflow-hidden">
+      <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 mb-4 space-y-3 overflow-x-hidden">
         <div className="relative w-full min-w-0">
           <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 pointer-events-none"
             fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1197,7 +1197,7 @@ export default function InventoryPage() {
 
       {/* Utstyr smart search (5E) */}
       {tab === 'Utstyr' && (
-        <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 mb-4 overflow-hidden">
+        <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 mb-4 overflow-x-hidden">
           <div className="relative w-full min-w-0">
             <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#C9A57A] pointer-events-none"
               fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1216,7 +1216,7 @@ export default function InventoryPage() {
       )}
 
       {/* Grid */}
-      <main className="w-full max-w-6xl mx-auto px-4 sm:px-6 pb-24 overflow-x-hidden">
+      <main className="w-full min-w-0 max-w-6xl mx-auto px-4 sm:px-6 pb-24 overflow-x-hidden">
         {loading ? (
           <div className="flex justify-center py-32">
             <div className="w-8 h-8 border-2 border-stone-300 border-t-stone-700 rounded-full animate-spin" />
@@ -1253,7 +1253,7 @@ export default function InventoryPage() {
                         {groupName}
                         <span className="text-stone-400 font-normal">({groupItems.length})</span>
                       </h3>
-                      <div className="w-full grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-5 overflow-hidden">
+                      <div className="w-full min-w-0 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-3 sm:gap-5 overflow-hidden">
                         {visible.map(item => (
                           <InventoryCard key={item.id} item={item}
                             onEdit={() => openEdit(item)}
@@ -1303,7 +1303,7 @@ export default function InventoryPage() {
                     Anbefalt: <strong>{matches[0].data.navn}</strong>
                   </div>
                 )}
-                <div className="w-full grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-5 overflow-hidden">
+                <div className="w-full min-w-0 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-3 sm:gap-5 overflow-hidden">
                   {matches.map(item => (
                     <InventoryCard key={item.id} item={item}
                       onEdit={() => openEdit(item)}
@@ -1330,7 +1330,7 @@ export default function InventoryPage() {
             )}
           </div>
         ) : (
-          <div className="w-full grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-5 overflow-hidden">
+          <div className="w-full min-w-0 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-3 sm:gap-5 overflow-hidden">
             {filtered.map(item => (
               <InventoryCard key={item.id} item={item}
                 onEdit={() => openEdit(item)}

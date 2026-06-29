@@ -70,10 +70,12 @@ function NewTechniqueModal({ onCreate, onClose }: {
           <div>
             <label className="block text-xs text-stone-500 mb-1">Navn *</label>
             <input
-              autoFocus
               value={navn}
               onChange={e => setNavn(e.target.value)}
               placeholder="f.eks. «Franskt innlegg», «Blind-søm»"
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck={false}
               className="w-full px-3 py-2 border border-stone-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-stone-300"
             />
           </div>

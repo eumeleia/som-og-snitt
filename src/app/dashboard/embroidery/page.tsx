@@ -2000,43 +2000,49 @@ function EmbroideryDetail({ item, onBack, onSaved, onDelete }: {
           {d.sizes.length === 0 ? (
             <p className="text-sm text-stone-400 italic">Ingen størrelser registrert.</p>
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-1">
               {sortedSizes(d.sizes).map(size => (
-                <div key={size.id} className="flex items-center gap-3 py-2 border-b border-stone-50 last:border-0 min-w-0">
-                  <input value={size.sizeLabel} onChange={e => updateSize(size.id, { sizeLabel: e.target.value })}
-                    className="w-24 flex-shrink-0 px-2.5 py-1.5 border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-stone-200"
-                    placeholder="Størrelse" />
-                  <span className="flex-1 text-xs text-stone-400 truncate min-w-0">
-                    {size.pesFilename}
-                    {size.widthMm && size.heightMm && (
-                      <span className="ml-1.5 text-stone-300">{size.widthMm} × {size.heightMm} mm</span>
-                    )}
-                  </span>
-                  <a href={size.pesUrl} download={size.pesFilename} onClick={e => e.stopPropagation()}
-                    className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs bg-[#F5EFE6] text-[#8B6340] rounded-lg hover:bg-[#e8d5c0] border border-[#D4A574] transition-colors whitespace-nowrap">
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                        d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                    </svg>
-                    Last ned
-                  </a>
-                  {d.sizes.length > 1 && (
-                    <button onClick={() => splitSize(size.id)}
-                      className="flex-shrink-0 p-1.5 rounded-lg hover:bg-amber-50 text-stone-300 hover:text-amber-500 transition-colors"
-                      title="Skill ut som eget motiv">
+                <div key={size.id} className="py-2.5 border-b border-stone-50 last:border-0">
+                  {/* Row 1: size label + mm measurement + trash */}
+                  <div className="flex items-center gap-2 min-w-0 mb-1.5">
+                    <input value={size.sizeLabel} onChange={e => updateSize(size.id, { sizeLabel: e.target.value })}
+                      className="w-24 flex-shrink-0 px-2.5 py-1.5 border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-stone-200"
+                      placeholder="Størrelse" />
+                    {size.widthMm && size.heightMm ? (
+                      <span className="text-xs text-stone-500 font-medium whitespace-nowrap">{size.widthMm} × {size.heightMm} mm</span>
+                    ) : null}
+                    <div className="flex-1" />
+                    <button onClick={() => removeSize(size.id)}
+                      className="flex-shrink-0 p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors"
+                      title="Fjern størrelse">
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                          d="M8 7h4m0 0l-2-2m2 2l-2 2M16 17h-4m0 0l2 2m-2-2l2-2M3 12h18" />
+                          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                       </svg>
                     </button>
-                  )}
-                  <button onClick={() => removeSize(size.id)}
-                    className="flex-shrink-0 p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors" title="Fjern størrelse">
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                    </svg>
-                  </button>
+                  </div>
+                  {/* Row 2: filename + split + download */}
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="flex-1 text-xs text-stone-400 truncate min-w-0">{size.pesFilename}</span>
+                    {d.sizes.length > 1 && (
+                      <button onClick={() => splitSize(size.id)}
+                        className="flex-shrink-0 p-1.5 rounded-lg hover:bg-amber-50 text-stone-300 hover:text-amber-500 transition-colors"
+                        title="Skill ut som eget motiv">
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                            d="M8 7h4m0 0l-2-2m2 2l-2 2M16 17h-4m0 0l2 2m-2-2l2-2M3 12h18" />
+                        </svg>
+                      </button>
+                    )}
+                    <a href={size.pesUrl} download={size.pesFilename} onClick={e => e.stopPropagation()}
+                      className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs bg-[#F5EFE6] text-[#8B6340] rounded-lg hover:bg-[#e8d5c0] border border-[#D4A574] transition-colors whitespace-nowrap">
+                      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                          d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                      </svg>
+                      Last ned
+                    </a>
+                  </div>
                 </div>
               ))}
             </div>
