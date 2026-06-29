@@ -7,7 +7,8 @@ import { supabase } from '@/lib/supabase'
 
 interface TechniqueData {
   navn:            string
-  kategori?:       string
+  kategori?:       string   // legacy single-string — kept for backwards compat
+  kategorier?:     string[] // new multi-select array
   stingtype?:      string
   stinglengde?:    string
   stingbredde?:    string
@@ -28,7 +29,20 @@ interface Technique {
 
 type SortOrder = 'newest' | 'oldest' | 'name'
 
-const KATEGORIER = ['Søm', 'Finishing', 'Konstruksjon', 'Trykk & Dekor', 'Annet']
+const KATEGORIER = [
+  'Søm',
+  'Maskinføtter',
+  'Tilpasning/passform',
+  'Kanting & avslutning',
+  'Pynt & detaljer',
+]
+
+// Backwards compat: read categories as array regardless of old/new format
+function toKategorier(d: TechniqueData): string[] {
+  if (d.kategorier && d.kategorier.length > 0) return d.kategorier
+  if (d.kategori) return [d.kategori]
+  return []
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -41,22 +55,88 @@ function SaveIndicator({ status }: { status: 'saved' | 'saving' | 'idle' }) {
   )
 }
 
+// ── KategoriPicker ────────────────────────────────────────────────────────────
+
+function KategoriPicker({ value, onChange }: {
+  value:    string[]
+  onChange: (v: string[]) => void
+}) {
+  const [customInput, setCustomInput] = useState('')
+
+  function toggle(k: string) {
+    onChange(value.includes(k) ? value.filter(x => x !== k) : [...value, k])
+  }
+
+  function addCustom() {
+    const t = customInput.trim()
+    if (!t || value.includes(t)) { setCustomInput(''); return }
+    onChange([...value, t])
+    setCustomInput('')
+  }
+
+  const customCats = value.filter(k => !KATEGORIER.includes(k))
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-2">
+        {KATEGORIER.map(k => (
+          <button type="button" key={k}
+            onClick={() => toggle(k)}
+            className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${
+              value.includes(k)
+                ? 'bg-stone-800 text-white border-stone-800'
+                : 'bg-white text-stone-600 border-stone-200 hover:border-stone-400'
+            }`}>
+            {k}
+          </button>
+        ))}
+      </div>
+      <div className="flex gap-2">
+        <input
+          value={customInput}
+          onChange={e => setCustomInput(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addCustom() } }}
+          placeholder="Legg til egen kategori…"
+          autoComplete="off"
+          className="flex-1 px-3 py-1.5 border border-stone-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-stone-200"
+        />
+        <button type="button" onClick={addCustom}
+          disabled={!customInput.trim()}
+          className="px-3 py-1.5 text-xs border border-stone-200 rounded-lg hover:bg-stone-50 transition-colors disabled:opacity-40 text-stone-600 flex-shrink-0">
+          Legg til
+        </button>
+      </div>
+      {customCats.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {customCats.map(k => (
+            <span key={k} className="flex items-center gap-1 px-2.5 py-1 bg-stone-100 rounded-lg text-xs text-stone-700">
+              {k}
+              <button type="button" onClick={() => onChange(value.filter(x => x !== k))}
+                className="text-stone-400 hover:text-stone-700 transition-colors leading-none">×</button>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── New Technique Modal ───────────────────────────────────────────────────────
 
 function NewTechniqueModal({ onCreate, onClose }: {
   onCreate: (data: TechniqueData) => Promise<void>
   onClose:  () => void
 }) {
-  const [navn,     setNavn]     = useState('')
-  const [kategori, setKategori] = useState(KATEGORIER[0])
-  const [saving,   setSaving]   = useState(false)
+  const [navn,       setNavn]       = useState('')
+  const [kategorier, setKategorier] = useState<string[]>([])
+  const [saving,     setSaving]     = useState(false)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!navn.trim()) return
     setSaving(true)
     try {
-      await onCreate({ navn: navn.trim(), kategori })
+      await onCreate({ navn: navn.trim(), kategorier })
     } finally {
       setSaving(false)
     }
@@ -80,20 +160,8 @@ function NewTechniqueModal({ onCreate, onClose }: {
             />
           </div>
           <div>
-            <label className="block text-xs text-stone-500 mb-1">Kategori</label>
-            <div className="flex flex-wrap gap-2">
-              {KATEGORIER.map(k => (
-                <button type="button" key={k}
-                  onClick={() => setKategori(k)}
-                  className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${
-                    kategori === k
-                      ? 'bg-stone-800 text-white border-stone-800'
-                      : 'bg-white text-stone-600 border-stone-200 hover:border-stone-400'
-                  }`}>
-                  {k}
-                </button>
-              ))}
-            </div>
+            <label className="block text-xs text-stone-500 mb-2">Kategori</label>
+            <KategoriPicker value={kategorier} onChange={setKategorier} />
           </div>
           <div className="flex gap-3 pt-1">
             <button type="button" onClick={onClose}
@@ -142,6 +210,7 @@ function TechniqueCard({ technique, onEdit, onDelete }: {
   onDelete:  () => void
 }) {
   const d = technique.data
+  const cats = toKategorier(d)
   return (
     <article
       onClick={onEdit}
@@ -151,7 +220,7 @@ function TechniqueCard({ technique, onEdit, onDelete }: {
         <h3 className="font-serif text-base font-semibold text-stone-800 truncate">
           {d.navn || <span className="text-stone-300 italic font-light">Uten navn</span>}
         </h3>
-        <p className="text-xs text-stone-500 truncate mt-0">{d.kategori || ' '}</p>
+        <p className="text-xs text-stone-500 truncate mt-0">{cats.join(', ') || ' '}</p>
         {(d.stingtype || d.trykkfot || d.naal) && (
           <div className="flex flex-wrap gap-1.5 mt-2">
             {d.stingtype && (
@@ -283,19 +352,10 @@ function TechniqueDetail({ technique, onBack, onSaved, onDelete }: {
           <Field label="Navn" value={d.navn ?? ''} onChange={v => update({ navn: v })} placeholder="Navn på teknikken" />
           <div>
             <label className="block text-xs text-stone-500 mb-2">Kategori</label>
-            <div className="flex flex-wrap gap-2">
-              {KATEGORIER.map(k => (
-                <button type="button" key={k}
-                  onClick={() => update({ kategori: k })}
-                  className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${
-                    d.kategori === k
-                      ? 'bg-stone-800 text-white border-stone-800'
-                      : 'bg-white text-stone-600 border-stone-200 hover:border-stone-400'
-                  }`}>
-                  {k}
-                </button>
-              ))}
-            </div>
+            <KategoriPicker
+              value={toKategorier(d)}
+              onChange={v => update({ kategorier: v })}
+            />
           </div>
         </section>
 
@@ -452,13 +512,14 @@ export default function TechniquesPage() {
 
   const filtered = items
     .filter(i => {
-      if (katFilter !== 'Alle' && i.data.kategori !== katFilter) return false
+      const cats = toKategorier(i.data)
+      if (katFilter !== 'Alle' && !cats.includes(katFilter)) return false
       if (!search.trim()) return true
       const q = search.toLowerCase()
       const d = i.data
       return (
         d.navn.toLowerCase().includes(q) ||
-        (d.kategori     ?? '').toLowerCase().includes(q) ||
+        cats.some(k => k.toLowerCase().includes(q)) ||
         (d.stingtype    ?? '').toLowerCase().includes(q) ||
         (d.trykkfot     ?? '').toLowerCase().includes(q) ||
         (d.fremgangsmaat ?? '').toLowerCase().includes(q) ||
@@ -470,6 +531,10 @@ export default function TechniquesPage() {
       if (sort === 'oldest') return new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
       return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     })
+
+  // Collect all distinct categories across all items (for filter dropdown extras)
+  const allCats = Array.from(new Set(items.flatMap(i => toKategorier(i.data))))
+  const extraCats = allCats.filter(k => !KATEGORIER.includes(k))
 
   if (showDetail && currentItem) {
     return (
@@ -529,7 +594,7 @@ export default function TechniquesPage() {
               )}
             </button>
             {katDropdownOpen && (
-              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-20 min-w-[160px] py-1">
+              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-20 min-w-[200px] py-1">
                 <button
                   onClick={() => { setKatFilter('Alle'); setKatDropdownOpen(false) }}
                   className={`w-full text-left px-4 py-2 text-sm transition-colors hover:bg-stone-50 ${katFilter === 'Alle' ? 'text-stone-800 font-medium' : 'text-stone-600'}`}
@@ -545,6 +610,20 @@ export default function TechniquesPage() {
                     {k}
                   </button>
                 ))}
+                {extraCats.length > 0 && (
+                  <>
+                    <div className="my-1 border-t border-stone-100" />
+                    {extraCats.map(k => (
+                      <button
+                        key={k}
+                        onClick={() => { setKatFilter(k); setKatDropdownOpen(false) }}
+                        className={`w-full text-left px-4 py-2 text-sm transition-colors hover:bg-stone-50 ${katFilter === k ? 'text-stone-800 font-medium bg-stone-50' : 'text-stone-600'}`}
+                      >
+                        {k}
+                      </button>
+                    ))}
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -582,6 +661,13 @@ export default function TechniquesPage() {
               </div>
             )}
           </div>
+
+          {katFilter !== 'Alle' && (
+            <button onClick={() => setKatFilter('Alle')}
+              className="text-xs text-stone-400 hover:text-stone-600 transition-colors">
+              Nullstill ×
+            </button>
+          )}
         </div>
       </div>
 
