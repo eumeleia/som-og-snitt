@@ -333,6 +333,7 @@ function parsePesPath(relativePath: string): { motifName: string; sizeLabel: str
 
 interface RenderResult {
   png_base64: string
+  content_type?: string
   width_mm?: number
   height_mm?: number
 }
@@ -388,9 +389,11 @@ async function regenCoverFromSizes(sizes: EmbroiderySize[]): Promise<string | nu
     const pesBytes = new Uint8Array(await pesResp.arrayBuffer())
     const result = await renderPesPreviewWithRetry(pesBytes, 1)
     if (!result?.png_base64) return null
-    const pngBlob = base64ToBlob(result.png_base64, 'image/png')
-    const pngFilename = `embroidery-rendered-${Date.now()}-${uid()}.png`
-    const { error } = await supabase.storage.from('embroidery-files').upload(pngFilename, pngBlob, { contentType: 'image/png' })
+    const mime = result.content_type || 'image/jpeg'
+    const ext = mime === 'image/jpeg' ? 'jpg' : 'png'
+    const pngBlob = base64ToBlob(result.png_base64, mime)
+    const pngFilename = `embroidery-rendered-${Date.now()}-${uid()}.${ext}`
+    const { error } = await supabase.storage.from('embroidery-files').upload(pngFilename, pngBlob, { contentType: mime })
     if (error) return null
     const { data: urlData } = supabase.storage.from('embroidery-files').getPublicUrl(pngFilename)
     return urlData.publicUrl
@@ -950,11 +953,13 @@ function UploadModal({ onDone, onClose }: {
               try {
                 const renderResult = await renderPesPreviewWithRetry(repPesData)
                 if (renderResult?.png_base64) {
-                  const pngBlob = base64ToBlob(renderResult.png_base64, 'image/png')
-                  const pngFilename = `embroidery-rendered-${Date.now()}-${uid()}.png`
+                  const mime = renderResult.content_type || 'image/jpeg'
+                  const ext = mime === 'image/jpeg' ? 'jpg' : 'png'
+                  const pngBlob = base64ToBlob(renderResult.png_base64, mime)
+                  const pngFilename = `embroidery-rendered-${Date.now()}-${uid()}.${ext}`
                   const { error: renderErr } = await supabase.storage
                     .from('embroidery-files')
-                    .upload(pngFilename, pngBlob, { contentType: 'image/png' })
+                    .upload(pngFilename, pngBlob, { contentType: mime })
                   if (!renderErr) {
                     const { data: renderUrl } = supabase.storage.from('embroidery-files').getPublicUrl(pngFilename)
                     coverImage = renderUrl.publicUrl

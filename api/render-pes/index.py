@@ -91,7 +91,7 @@ def render_pes(pes_bytes: bytes):
             img.thumbnail((max_size, max_size), Image.LANCZOS)
 
         out = io.BytesIO()
-        img.save(out, format='PNG', optimize=True)
+        img.save(out, format='JPEG', quality=80, optimize=True)
         png_bytes = out.getvalue()
 
         return png_bytes, width_mm, height_mm
@@ -183,7 +183,7 @@ class handler(BaseHTTPRequestHandler):
             png_bytes, width_mm, height_mm = render_pes(pes_bytes)
             png_b64 = base64.b64encode(png_bytes).decode('utf-8')
 
-            result = {'png_base64': png_b64}
+            result = {'png_base64': png_b64, 'content_type': 'image/jpeg'}
             if width_mm is not None:
                 result['width_mm'] = width_mm
                 result['height_mm'] = height_mm
