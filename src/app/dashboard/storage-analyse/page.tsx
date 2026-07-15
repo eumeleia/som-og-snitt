@@ -1,102 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabase'
-
-type FileEntry = {
-  bucket: string
-  name: string
-  size: number
-  ext: string
-}
-
-type ExtGroup = {
-  ext: string
-  count: number
-  totalBytes: number
-}
-
-type BucketGroup = {
-  bucket: string
-  count: number
-  totalBytes: number
-  pdfCount: number
-  pdfBytes: number
-}
-
-type Report = {
-  bucketNames: string[]
-  byExt: ExtGroup[]
-  byBucket: BucketGroup[]
-  pdfFiles: FileEntry[]
-  top20: FileEntry[]
-  grandTotal: number
-  grandCount: number
-}
-
-async function listAllFiles(bucket: string): Promise<FileEntry[]> {
-  const files: FileEntry[] = []
-  const limit = 1000
-  let offset = 0
-
-  while (true) {
-    const { data, error } = await supabase.storage
-      .from(bucket)
-      .list('', { limit, offset, sortBy: { column: 'name', order: 'asc' } })
-
-    if (error) throw new Error(`${bucket}: ${error.message}`)
-    if (!data || data.length === 0) break
-
-    for (const item of data) {
-      if (item.metadata?.size !== undefined) {
-        const ext = item.name.includes('.')
-          ? '.' + item.name.split('.').pop()!.toLowerCase()
-          : '(ingen ext)'
-        files.push({ bucket, name: item.name, size: item.metadata.size, ext })
-      }
-    }
-
-    if (data.length < limit) break
-    offset += limit
-  }
-
-  return files
-}
-
-function buildReport(all: FileEntry[], bucketNames: string[]): Report {
-  const extMap = new Map<string, ExtGroup>()
-  const bucketMap = new Map<string, BucketGroup>()
-
-  for (const name of bucketNames) {
-    bucketMap.set(name, { bucket: name, count: 0, totalBytes: 0, pdfCount: 0, pdfBytes: 0 })
-  }
-
-  let grandTotal = 0
-  let grandCount = 0
-
-  for (const f of all) {
-    grandTotal += f.size
-    grandCount++
-
-    const eg = extMap.get(f.ext) ?? { ext: f.ext, count: 0, totalBytes: 0 }
-    eg.count++
-    eg.totalBytes += f.size
-    extMap.set(f.ext, eg)
-
-    const bg = bucketMap.get(f.bucket) ?? { bucket: f.bucket, count: 0, totalBytes: 0, pdfCount: 0, pdfBytes: 0 }
-    bg.count++
-    bg.totalBytes += f.size
-    if (f.ext === '.pdf') { bg.pdfCount++; bg.pdfBytes += f.size }
-    bucketMap.set(f.bucket, bg)
-  }
-
-  const byExt = [...extMap.values()].sort((a, b) => b.totalBytes - a.totalBytes)
-  const byBucket = [...bucketMap.values()].sort((a, b) => b.totalBytes - a.totalBytes)
-  const pdfFiles = all.filter(f => f.ext === '.pdf').sort((a, b) => b.size - a.size)
-  const top20 = [...all].sort((a, b) => b.size - a.size).slice(0, 20)
-
-  return { bucketNames, byExt, byBucket, pdfFiles, top20, grandTotal, grandCount }
-}
+import type { StorageReport } from '@/app/api/storage-analyse/route'
 
 function mb(bytes: number) {
   return (bytes / 1024 / 1024).toFixed(2) + ' MB'
@@ -108,35 +13,23 @@ function pct(bytes: number, total: number) {
 }
 
 export default function StorageAnalysePage() {
-  const [report, setReport] = useState<Report | null>(null)
-  const [progress, setProgress] = useState<string>('Henter bucket-liste…')
+  const [report, setReport] = useState<StorageReport | null>(null)
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [missingKey, setMissingKey] = useState(false)
 
   useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      try {
-        const { data: buckets, error: bErr } = await supabase.storage.listBuckets()
-        if (bErr) throw new Error('listBuckets: ' + bErr.message)
-        const bucketNames = (buckets ?? []).map(b => b.name)
-
-        const all: FileEntry[] = []
-        for (const bucket of bucketNames) {
-          if (cancelled) return
-          setProgress(`Henter filer fra «${bucket}»…`)
-          const files = await listAllFiles(bucket)
-          all.push(...files)
+    fetch('/api/storage-analyse')
+      .then(async res => {
+        const json = await res.json()
+        if (!res.ok) {
+          if (json.error === 'MISSING_KEY') { setMissingKey(true); return }
+          throw new Error(json.message ?? `HTTP ${res.status}`)
         }
-
-        if (!cancelled) {
-          setReport(buildReport(all, bucketNames))
-          setProgress('Ferdig')
-        }
-      } catch (e) {
-        if (!cancelled) setError(String(e))
-      }
-    })()
-    return () => { cancelled = true }
+        setReport(json as StorageReport)
+      })
+      .catch(e => setError(String(e)))
+      .finally(() => setLoading(false))
   }, [])
 
   const th = 'px-3 py-2 text-sm text-left font-semibold text-stone-600 bg-stone-100 border-b border-stone-200'
@@ -151,14 +44,33 @@ export default function StorageAnalysePage() {
         <p className="text-sm text-stone-500 mt-1">Kun lesing — ingen filer slettes eller endres.</p>
       </div>
 
+      {loading && (
+        <p className="text-stone-500 text-sm animate-pulse">Analyserer alle buckets…</p>
+      )}
+
+      {missingKey && (
+        <div className="bg-amber-50 border border-amber-300 rounded-xl p-5 space-y-2">
+          <p className="font-semibold text-amber-900">Mangler service role key</p>
+          <p className="text-sm text-amber-800">
+            API-routen krever <code className="bg-amber-100 px-1 rounded font-mono text-xs">SUPABASE_SERVICE_ROLE_KEY</code> for å
+            liste buckets. Legg den til i Vercel:
+          </p>
+          <ol className="text-sm text-amber-800 list-decimal list-inside space-y-1">
+            <li>Gå til <strong>Vercel → ditt prosjekt → Settings → Environment Variables</strong></li>
+            <li>Legg til: <code className="bg-amber-100 px-1 rounded font-mono text-xs">SUPABASE_SERVICE_ROLE_KEY</code></li>
+            <li>Verdien finner du i <strong>Supabase → Project Settings → API → service_role (secret)</strong></li>
+            <li>Redeploy etter at variabelen er lagret</li>
+          </ol>
+          <p className="text-xs text-amber-700 mt-2">
+            Nøkkelen brukes KUN server-side og sendes aldri til nettleseren.
+          </p>
+        </div>
+      )}
+
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">
           <strong>Feil:</strong> {error}
         </div>
-      )}
-
-      {!report && !error && (
-        <p className="text-stone-500 text-sm animate-pulse">{progress}</p>
       )}
 
       {report && (
