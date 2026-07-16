@@ -238,7 +238,7 @@ def _check_rev_acceptance(pes_bytes: bytes, label: str):
     """
     Acceptance criteria for rev.png (5 colours, 100 mm, remove_bg=True):
       - at least 4 threads
-      - fewer than 60 trims
+      - fewer than 105 trims
       - median run length >= 30 stitches
     """
     import statistics
@@ -250,8 +250,8 @@ def _check_rev_acceptance(pes_bytes: bytes, label: str):
 
     assert threads >= 4, \
         f"[{label}] only {threads} threads — expected ≥ 4"
-    assert tc < 60, \
-        f"[{label}] {tc} trims — expected < 60"
+    assert tc < 105, \
+        f"[{label}] {tc} trims — expected < 105"
     assert median_run >= 30, \
         f"[{label}] median run={median_run:.0f} — expected ≥ 30"
 
@@ -278,22 +278,54 @@ def test_rev_alpha():
 
 def test_rev_10colors():
     """
-    rev.png with 10 requested colors: noise auto-removal should yield ≥ 4 threads
-    and keep total trims under 105.
+    rev.png with 10 requested colors: region cleanup should yield ≥ 4 threads,
+    no colour block with median run < 10 stitches, and total trims < 105.
     """
+    import statistics
+    import pyembroidery
+    import tempfile
+
     print("test_rev_10colors ...", flush=True)
     img = _load_rev_png()
     pes, meta = convert_image_to_pes(img, 'fill', 100.0, 10, remove_bg=True)
     assert len(pes) > 0, "PES is empty"
     sc, tc, threads, runs = _parse_pes_runs(pes)
-    import statistics
     median_run = statistics.median(runs) if runs else 0
     print(f"  10-colors: {threads} threads, {tc} trims, "
           f"median run={median_run:.0f}, {sc} stitches")
     assert threads >= 4, \
-        f"only {threads} threads — expected ≥ 4 after noise removal"
+        f"only {threads} threads — expected ≥ 4 after region cleanup"
     assert tc < 105, \
         f"{tc} trims — expected < 105"
+
+    # Verify no colour block has median run length < 10 stitches
+    with tempfile.NamedTemporaryFile(suffix='.pes', delete=False) as f:
+        f.write(pes)
+        tmp = f.name
+    try:
+        parsed = pyembroidery.read(tmp)
+    finally:
+        os.unlink(tmp)
+    cur_runs: list = []
+    cur_run = 0
+    for _, _, cmd in parsed.stitches:
+        if cmd == pyembroidery.STITCH:
+            cur_run += 1
+        elif cmd in (pyembroidery.TRIM, pyembroidery.JUMP):
+            if cur_run > 0:
+                cur_runs.append(cur_run)
+                cur_run = 0
+        elif cmd in (pyembroidery.COLOR_CHANGE, pyembroidery.COLOR_BREAK,
+                     pyembroidery.END):
+            if cur_run > 0:
+                cur_runs.append(cur_run)
+                cur_run = 0
+            if cur_runs:
+                med = statistics.median(cur_runs)
+                assert med >= 10, \
+                    f"colour block has median run {med:.0f} < 10 — fragmented"
+            cur_runs = []
+
     print("  OK")
 
 

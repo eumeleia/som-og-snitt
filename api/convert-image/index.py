@@ -981,6 +981,11 @@ def convert_image_to_pes(image_bytes: bytes,
             "Noen regioner er smalere enn 1 mm — "
             "kan bli brutte eller forsvinne i sømmen"
         )
+    if _removed_region_count > 0:
+        warnings.append(
+            f"{_removed_region_count} småregioner fjernet automatisk "
+            "(kantstøy/usømbart) — dette kan gi færre tråder enn valgt antall farger"
+        )
 
     return pes_bytes, {
         'stitch_count': sc[0],
