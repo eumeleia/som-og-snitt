@@ -146,9 +146,141 @@ def test_max_size():
     print(f"OK  ({meta['width_mm']}×{meta['height_mm']} mm)")
 
 
+def _load_rev_png() -> bytes:
+    """Load rev.png test image from testdata directory."""
+    here = os.path.dirname(__file__)
+    path = os.path.join(here, 'testdata', 'rev.png')
+    with open(path, 'rb') as f:
+        return f.read()
+
+
+def _make_transparent_rev() -> bytes:
+    """
+    Return rev.png with the white background set to alpha=0 so that the
+    alpha-channel path in _compute_bg_mask is exercised.
+    """
+    import numpy as np
+    from PIL import Image
+    from collections import deque
+
+    img_bytes = _load_rev_png()
+    img_rgba = Image.open(io.BytesIO(img_bytes)).convert('RGBA')
+    arr = np.array(img_rgba, dtype=np.uint8)
+    rgb = arr[:, :, :3]
+    h, w = rgb.shape[:2]
+
+    # Flood-fill from corners to find white background
+    bg = np.zeros((h, w), dtype=bool)
+    vis = np.zeros((h, w), dtype=bool)
+    TOL = 30 * 30
+    for sy, sx in [(0, 0), (0, w - 1), (h - 1, 0), (h - 1, w - 1)]:
+        if vis[sy, sx]:
+            continue
+        seed = rgb[sy, sx].astype(np.int32)
+        q = deque([(sy, sx)])
+        vis[sy, sx] = True
+        while q:
+            y, x = q.popleft()
+            d = rgb[y, x].astype(np.int32) - seed
+            if int(d[0] ** 2 + d[1] ** 2 + d[2] ** 2) <= TOL:
+                bg[y, x] = True
+                for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    ny, nx = y + dy, x + dx
+                    if 0 <= ny < h and 0 <= nx < w and not vis[ny, nx]:
+                        vis[ny, nx] = True
+                        q.append((ny, nx))
+
+    arr[bg, 3] = 0  # set background alpha to transparent
+    buf = io.BytesIO()
+    Image.fromarray(arr).save(buf, format='PNG')
+    return buf.getvalue()
+
+
+def _parse_pes_runs(pes_bytes: bytes):
+    """
+    Re-parse PES bytes with pyembroidery and return (stitch_count, trim_count,
+    thread_count, run_lengths) where run_lengths is a list of consecutive STITCH
+    run lengths (number of stitches between TRIMs/JUMPs).
+    """
+    import pyembroidery
+    with tempfile.NamedTemporaryFile(suffix='.pes', delete=False) as f:
+        f.write(pes_bytes)
+        tmp = f.name
+    try:
+        parsed = pyembroidery.read(tmp)
+    finally:
+        os.unlink(tmp)
+
+    assert parsed is not None, "pyembroidery returned None"
+    stitch_count = 0
+    trim_count = 0
+    runs = []
+    cur_run = 0
+    for _, _, cmd in parsed.stitches:
+        if cmd == pyembroidery.STITCH:
+            stitch_count += 1
+            cur_run += 1
+        elif cmd in (pyembroidery.TRIM, pyembroidery.JUMP,
+                     pyembroidery.COLOR_CHANGE, pyembroidery.COLOR_BREAK):
+            if cmd == pyembroidery.TRIM:
+                trim_count += 1
+            if cur_run > 0:
+                runs.append(cur_run)
+                cur_run = 0
+        elif cmd == pyembroidery.END:
+            if cur_run > 0:
+                runs.append(cur_run)
+    threads = len([t for t in parsed.threadlist if t is not None])
+    return stitch_count, trim_count, threads, runs
+
+
+def _check_rev_acceptance(pes_bytes: bytes, label: str):
+    """
+    Acceptance criteria for rev.png (5 colours, 100 mm, remove_bg=True):
+      - at least 4 threads
+      - fewer than 60 trims
+      - median run length >= 30 stitches
+    """
+    import statistics
+    sc, tc, threads, runs = _parse_pes_runs(pes_bytes)
+    median_run = statistics.median(runs) if runs else 0
+
+    print(f"  {label}: {threads} threads, {tc} trims, "
+          f"median run={median_run:.0f}, {sc} stitches")
+
+    assert threads >= 4, \
+        f"[{label}] only {threads} threads — expected ≥ 4"
+    assert tc < 60, \
+        f"[{label}] {tc} trims — expected < 60"
+    assert median_run >= 30, \
+        f"[{label}] median run={median_run:.0f} — expected ≥ 30"
+
+
+def test_rev_flood_fill():
+    """rev.png (RGBA, opaque white bg) with remove_bg=True → flood-fill path."""
+    print("test_rev_flood_fill ...", flush=True)
+    img = _load_rev_png()
+    pes, meta = convert_image_to_pes(img, 'fill', 100.0, 5, remove_bg=True)
+    assert len(pes) > 0, "PES is empty"
+    _check_rev_acceptance(pes, "flood-fill")
+    print("  OK")
+
+
+def test_rev_alpha():
+    """Transparent-background rev.png with remove_bg=True → alpha-channel path."""
+    print("test_rev_alpha ...", flush=True)
+    img = _make_transparent_rev()
+    pes, meta = convert_image_to_pes(img, 'fill', 100.0, 5, remove_bg=True)
+    assert len(pes) > 0, "PES is empty"
+    _check_rev_acceptance(pes, "alpha-channel")
+    print("  OK")
+
+
 if __name__ == '__main__':
     test_fill_1color()
     test_fill_3colors()
     test_cross_stitch()
     test_max_size()
+    test_rev_flood_fill()
+    test_rev_alpha()
     print("\nAlle tester bestått.")

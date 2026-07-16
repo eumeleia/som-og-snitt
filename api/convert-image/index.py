@@ -312,6 +312,56 @@ def _comp_mask_full(comp: dict, h: int, w: int, base_mask=None):
     return m
 
 
+def _component_pts_smart(comp: dict, max_stitch: int):
+    """
+    Greedy nearest-neighbour segment ordering for a connected component.
+    Consecutive segments within the same arm are ~row_spacing apart (stitches).
+    Transitions between disconnected arms are as short as possible (1 TRIM each).
+    """
+    seg_data = []
+    for y in sorted(comp):
+        for s, e in sorted(comp[y]):
+            fwd = []
+            x = s
+            while x <= e:
+                fwd.append((x, y))
+                x += max_stitch
+            if not fwd or fwd[-1][0] != e:
+                fwd.append((e, y))
+            seg_data.append((fwd[0], fwd[-1], fwd))
+
+    if not seg_data:
+        return []
+
+    n = len(seg_data)
+    done = [False] * n
+    path = []
+    done[0] = True
+    path.extend(seg_data[0][2])
+    cur = seg_data[0][1]
+
+    for _ in range(n - 1):
+        best_i, best_d, best_rev = -1, float('inf'), False
+        for i in range(n):
+            if done[i]:
+                continue
+            head, tail, _ = seg_data[i]
+            dh = abs(cur[0] - head[0]) + abs(cur[1] - head[1])
+            dt = abs(cur[0] - tail[0]) + abs(cur[1] - tail[1])
+            d = min(dh, dt)
+            if d < best_d:
+                best_d, best_i, best_rev = d, i, dt < dh
+        if best_i == -1:
+            break
+        done[best_i] = True
+        fwd = seg_data[best_i][2]
+        pts = fwd[::-1] if best_rev else fwd
+        path.extend(pts)
+        cur = pts[-1]
+
+    return path
+
+
 def _sample_path(path: list, step: int):
     """Down-sample a pixel path to ~step-unit spacing."""
     if not path:
@@ -327,6 +377,37 @@ def _sample_path(path: list, step: int):
     if out[-1] != path[-1]:
         out.append(path[-1])
     return out
+
+
+def _fill_holes(mask):
+    """
+    Fill enclosed background holes in a binary mask.
+    Floods from all 4 edges to find the 'outside'; any background pixel not
+    reachable from the edge is an enclosed hole and gets set to True.
+    """
+    from collections import deque
+    import numpy as np
+    h, w = mask.shape
+    outside = np.zeros((h, w), dtype=bool)
+    queue = deque()
+    for y in range(h):
+        for x in (0, w - 1):
+            if not mask[y, x] and not outside[y, x]:
+                outside[y, x] = True
+                queue.append((y, x))
+    for x in range(w):
+        for y in (0, h - 1):
+            if not mask[y, x] and not outside[y, x]:
+                outside[y, x] = True
+                queue.append((y, x))
+    while queue:
+        y, x = queue.popleft()
+        for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            ny, nx = y + dy, x + dx
+            if 0 <= ny < h and 0 <= nx < w and not mask[ny, nx] and not outside[ny, nx]:
+                outside[ny, nx] = True
+                queue.append((ny, nx))
+    return mask | ~outside
 
 
 def _trace_contour(mask, step: int):
@@ -454,6 +535,10 @@ def convert_image_to_pes(image_bytes: bytes,
             alpha_ch = raw_img.convert('RGBA').split()[3]
             alpha_ch = alpha_ch.resize((new_w, new_h), Image.NEAREST)
             bg_mask = np.array(alpha_ch, dtype=np.uint8) < 128
+            if not bg_mask.any():
+                # All pixels fully opaque (e.g. RGBA with white background) —
+                # fall back to flood-fill from corners
+                bg_mask = _compute_bg_mask(img_arr)
         else:
             bg_mask = _compute_bg_mask(img_arr)
 
@@ -468,7 +553,24 @@ def convert_image_to_pes(image_bytes: bytes,
         masks = [gray < 128]
         palette = [(0, 0, 0)]
     else:
-        q = img.quantize(colors=num_colors, method=Image.Quantize.MEDIANCUT)
+        if bg_mask is not None and (~bg_mask).any():
+            # Quantise foreground-only pixels with FASTOCTREE so that:
+            # (a) background doesn't waste palette slots, and
+            # (b) small but visually distinct colours (black, pink) that MEDIANCUT
+            #     would absorb into dominant clusters are preserved.
+            fg_px = img_arr[~bg_mask]
+            N_fg = len(fg_px)
+            side = max(1, int(math.ceil(math.sqrt(N_fg))))
+            canvas = np.empty((side * side, 3), dtype=np.uint8)
+            canvas[:N_fg] = fg_px
+            canvas[N_fg:] = np.tile(fg_px,
+                                    (math.ceil(side * side / N_fg), 1))[:side * side - N_fg]
+            q_ref = Image.fromarray(canvas.reshape(side, side, 3)).quantize(
+                colors=num_colors, method=Image.Quantize.FASTOCTREE)
+            q = img.quantize(palette=q_ref, dither=0)
+        else:
+            # No background mask — MEDIANCUT gives clean results for solid-colour images
+            q = img.quantize(colors=num_colors, method=Image.Quantize.MEDIANCUT)
         raw = q.getpalette()
         palette_all = [(raw[i * 3], raw[i * 3 + 1], raw[i * 3 + 2])
                        for i in range(num_colors)]
@@ -492,9 +594,7 @@ def convert_image_to_pes(image_bytes: bytes,
 
     if stitch_type == 'fill':
         ROW      = 4    # 0.4 mm fill row spacing
-        ULAY     = 20   # 2.0 mm underlay column spacing
         MAX      = 30   # 3.0 mm max stitch length
-        CTOUR    = 20   # 2.0 mm contour stitch spacing
         MIN_AREA = 300  # 3 mm² minimum (1 px = 0.1 mm → 3 mm² = 300 px)
 
         for (r, g, b), mask_raw in zip(palette, masks):
@@ -524,44 +624,27 @@ def convert_image_to_pes(image_bytes: bytes,
             active_colors.append({'r': r, 'g': g, 'b': b})
             first = False
 
-            print(f'[emb-debug] color ({r},{g},{b}): {len(sig_comps)} components')
-
             for ci, comp in enumerate(sig_comps):
-                area = _component_area(comp)
-                n_segs = sum(len(v) for v in comp.values())
-                print(f'  comp {ci}: {len(comp)} rows, {n_segs} segs, area={area}px')
-
-                comp_pts = _component_pts(comp, MAX)
-                if not comp_pts:
-                    continue
-
                 if ci > 0:
                     pattern.add_stitch_absolute(pyembroidery.TRIM, 0, 0)
                     tc[0] += 1
 
-                # Underlay within this component only (avoids cross-component TRIMs)
                 comp_m = _comp_mask_full(comp, new_h, new_w, mask)
-                _emit(pattern, _scanline_v(comp_m, ULAY, MAX), cx, cy, pyembroidery,
-                      sc, jc, tc)
+                if not comp_m.any():
+                    continue
 
-                # Fill: horizontal serpentine
-                _emit(pattern, comp_pts, cx, cy, pyembroidery, sc, jc, tc)
+                # Fill enclosed holes so the greedy path stays continuous
+                # within each arm — eliminates within-component gap crossings.
+                comp_m_filled = _fill_holes(comp_m)
+                comp_filled = {}
+                for fy in range(0, new_h, ROW):
+                    fsegs = list(_runs(comp_m_filled[fy]))
+                    if fsegs:
+                        comp_filled[fy] = fsegs
 
-                # Contour: let _emit decide transition (no forced TRIM)
-                min_y = min(comp)
-                max_y = max(comp)
-                min_x = min(s for segs in comp.values() for s, e in segs)
-                max_x = max(e for segs in comp.values() for s, e in segs)
-                pad = 2
-                y0 = max(0, min_y - pad)
-                y1 = min(new_h, max_y + ROW + pad)
-                x0 = max(0, min_x - pad)
-                x1 = min(new_w, max_x + pad + 1)
-                sub_mask = mask[y0:y1, x0:x1]
-                ctour = _trace_contour(sub_mask, CTOUR)
-                if ctour:
-                    ctour = [(px + x0, py + y0) for px, py in ctour]
-                    _emit(pattern, ctour, cx, cy, pyembroidery, sc, jc, tc)
+                _emit(pattern,
+                      _component_pts_smart(comp_filled if comp_filled else comp, MAX),
+                      cx, cy, pyembroidery, sc, jc, tc)
 
     elif stitch_type == 'cross':
         CELL = 25
