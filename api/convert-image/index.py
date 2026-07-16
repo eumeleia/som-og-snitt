@@ -784,9 +784,11 @@ def convert_image_to_pes(image_bytes: bytes,
         warnings.append(
             f"{sc[0]:,} sting — lang sømtid (ca. {est_sec // 60} min)"
         )
-    if tc[0] > 30:
+    trim_threshold = 30 + 15 * len(active_colors)
+    if tc[0] > trim_threshold:
         warnings.append(
-            f"{tc[0]} trims — vurder færre farger eller enklere bilde"
+            f"{tc[0]} trims — normalt under {trim_threshold} for "
+            f"{len(active_colors)} farger; vurder enklere bilde"
         )
     if has_thin:
         warnings.append(
