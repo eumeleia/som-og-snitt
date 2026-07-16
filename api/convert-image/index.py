@@ -91,6 +91,35 @@ def _nearest_brother(r: int, g: int, b: int):
     return best
 
 
+def _rgb_to_lab(r: int, g: int, b: int):
+    """Convert sRGB (0-255) to CIELab (D65)."""
+    def lin(c):
+        c /= 255.0
+        return ((c + 0.055) / 1.055) ** 2.4 if c > 0.04045 else c / 12.92
+    rl, gl, bl = lin(r), lin(g), lin(b)
+    X = (rl * 0.4124564 + gl * 0.3575761 + bl * 0.1804375) / 0.95047
+    Y = (rl * 0.2126729 + gl * 0.7151522 + bl * 0.0721750) / 1.00000
+    Z = (rl * 0.0193339 + gl * 0.1191920 + bl * 0.9503041) / 1.08883
+    def f(t):
+        return t ** (1 / 3) if t > 0.008856 else 7.787 * t + 16 / 116
+    L = 116 * f(Y) - 16
+    a = 500 * (f(X) - f(Y))
+    b_ = 200 * (f(Y) - f(Z))
+    return L, a, b_
+
+
+def _nearest_brother_lab(r: int, g: int, b: int):
+    """Find nearest Brother thread entry using CIELab ΔE-76."""
+    L1, a1, b1 = _rgb_to_lab(r, g, b)
+    best, best_d = _BROTHER[0], float('inf')
+    for e in _BROTHER:
+        L2, a2, b2 = _rgb_to_lab(e[0], e[1], e[2])
+        d = (L1 - L2) ** 2 + (a1 - a2) ** 2 + (b1 - b2) ** 2
+        if d < best_d:
+            best_d, best = d, e
+    return best
+
+
 def _make_thread(r: int, g: int, b: int):
     """
     Create an EmbThread for the quantised colour (r, g, b).
@@ -100,7 +129,7 @@ def _make_thread(r: int, g: int, b: int):
     collapse consecutive threads that share a catalog entry.
     """
     import pyembroidery
-    _, _, _, name, _ = _nearest_brother(r, g, b)
+    _, _, _, name, _ = _nearest_brother_lab(r, g, b)
     t = pyembroidery.EmbThread()
     t.color = (r << 16) | (g << 8) | b   # keep quantised value unique
     t.name = name                          # human-readable label only
@@ -652,6 +681,15 @@ def convert_image_to_pes(image_bytes: bytes,
         img = Image.fromarray(img_arr)
 
     # ── 2. Colour quantisation ────────────────────────────────────────────────
+    # Median-filter the image before quantisation to reassign antialiasing border
+    # pixels to the dominant neighbouring colour, giving cleaner palette colours.
+    from PIL import ImageFilter as _IF
+    img_mf = img.filter(_IF.MedianFilter(size=3))
+    img_mf_arr = np.array(img_mf, dtype=np.uint8)
+    if bg_mask is not None:
+        img_mf_arr[bg_mask] = 255
+        img_mf = Image.fromarray(img_mf_arr)
+
     if num_colors == 1:
         gray = np.mean(img_arr.astype(float), axis=2)
         masks = [gray < 128]
@@ -662,7 +700,7 @@ def convert_image_to_pes(image_bytes: bytes,
             # (a) background doesn't waste palette slots, and
             # (b) small but visually distinct colours (black, pink) that MEDIANCUT
             #     would absorb into dominant clusters are preserved.
-            fg_px = img_arr[~bg_mask]
+            fg_px = img_mf_arr[~bg_mask]
             N_fg = len(fg_px)
             side = max(1, int(math.ceil(math.sqrt(N_fg))))
             canvas = np.empty((side * side, 3), dtype=np.uint8)
@@ -671,10 +709,10 @@ def convert_image_to_pes(image_bytes: bytes,
                                     (math.ceil(side * side / N_fg), 1))[:side * side - N_fg]
             q_ref = Image.fromarray(canvas.reshape(side, side, 3)).quantize(
                 colors=num_colors, method=Image.Quantize.FASTOCTREE)
-            q = img.quantize(palette=q_ref, dither=0)
+            q = img_mf.quantize(palette=q_ref, dither=0)
         else:
             # No background mask — MEDIANCUT gives clean results for solid-colour images
-            q = img.quantize(colors=num_colors, method=Image.Quantize.MEDIANCUT)
+            q = img_mf.quantize(colors=num_colors, method=Image.Quantize.MEDIANCUT)
         raw = q.getpalette()
         palette_all = [(raw[i * 3], raw[i * 3 + 1], raw[i * 3 + 2])
                        for i in range(num_colors)]
