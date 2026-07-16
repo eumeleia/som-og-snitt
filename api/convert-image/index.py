@@ -856,8 +856,8 @@ class handler(BaseHTTPRequestHandler):
             if s_type not in ('fill', 'cross'):
                 self._json(400, {'error': "stitch_type må være 'fill' eller 'cross'"})
                 return
-            if not (1 <= n_colors <= 5):
-                self._json(400, {'error': 'num_colors må være 1–5'})
+            if not (1 <= n_colors <= 10):
+                self._json(400, {'error': 'num_colors må være 1–10'})
                 return
             if not (5.0 <= size_mm <= 100.0):
                 self._json(400, {'error': 'size_mm må være 5–100'})
