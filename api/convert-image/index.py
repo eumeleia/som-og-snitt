@@ -830,6 +830,47 @@ def _quantize_chroma_aware(img_arr, n_colors, fg_1d=None):
     return [palette[o] for o in order], [masks[o] for o in order]
 
 
+def _consolidate_small_colors(masks, palette, min_px=3600, de_thresh=15.0):
+    """
+    Merge colors with fewer than min_px surviving pixels into the perceptually
+    nearest other color (ΔE76 < de_thresh). Iterates until stable.
+    """
+    import numpy as np
+    n = len(palette)
+    pal_lab = _rgb_arr_to_lab(np.array(palette, dtype=np.uint8))
+    counts = np.array([float(m.sum()) for m in masks])
+
+    changed = True
+    while changed:
+        changed = False
+        for i in range(n):
+            if counts[i] == 0 or counts[i] >= min_px:
+                continue
+            best_de, best_j = np.inf, -1
+            for j in range(n):
+                if j == i or counts[j] == 0:
+                    continue
+                de = float(np.sqrt(np.sum((pal_lab[i] - pal_lab[j]) ** 2)))
+                if de < de_thresh and de < best_de:
+                    best_de, best_j = de, j
+            if best_j >= 0:
+                masks[best_j] = masks[best_j] | masks[i]
+                masks[i] = np.zeros_like(masks[i], dtype=bool)
+                ci, cj = counts[i], counts[best_j]
+                tot = ci + cj
+                merged_rgb = tuple(
+                    int(round((palette[i][k] * ci + palette[best_j][k] * cj) / tot))
+                    for k in range(3))
+                palette[best_j] = merged_rgb
+                pal_lab[best_j] = _rgb_arr_to_lab(
+                    np.array([merged_rgb], dtype=np.uint8))[0]
+                counts[best_j] = tot
+                counts[i] = 0
+                changed = True
+                break
+    return masks, palette
+
+
 # --------------------------------------------------------------------------- #
 # Main conversion                                                               #
 # --------------------------------------------------------------------------- #
@@ -908,6 +949,7 @@ def convert_image_to_pes(image_bytes: bytes,
     # Region-based cleanup: remove unsewable connected components per colour mask.
     # Pixels from removed components are reassigned to the nearest surviving colour.
     masks, _removed_region_count = _cleanup_regions(masks, palette)
+    masks, palette = _consolidate_small_colors(masks, palette)
 
     # Expand each color region ~0.3 mm (3 px) into later-stitched regions only,
     # preventing fabric-pullback gaps at color boundaries.
