@@ -424,6 +424,75 @@ def _dilate_mask(mask, radius: int):
     return result
 
 
+def _cleanup_regions(masks, palette):
+    """
+    Remove connected components that are unsewable: too small, too narrow, or
+    thin slivers. Removed pixels are reassigned to the nearest surviving color
+    per pixel using scipy's distance transform.
+    Returns (new_masks, removed_count).
+    """
+    import numpy as np
+    from scipy.ndimage import label as _label
+    from scipy.ndimage import distance_transform_edt as _dte
+    from scipy.ndimage import binary_erosion as _erode
+
+    MIN_AREA    = 150   # 1.5 mm²  (1 px = 0.1 mm → 1 mm² = 100 px)
+    MIN_DT      = 5.0   # 0.5 mm half-width → component narrower than 1 mm
+    SLIVER_AREA = 500   # 5 mm²: upper bound for sliver check
+    COMPACT_THR = 0.15  # 4πA/P²
+
+    h, w = masks[0].shape
+    new_masks = [m.copy() for m in masks]
+    removed_count = 0
+
+    for i, m in enumerate(masks):
+        if not m.any():
+            continue
+        labeled, n_comps = _label(m)
+        if n_comps == 0:
+            continue
+        dt = _dte(m)  # one distance-transform per colour mask (efficient)
+        for c in range(1, n_comps + 1):
+            cm = labeled == c
+            area = int(cm.sum())
+            remove = False
+            if area < MIN_AREA:
+                remove = True
+            elif float(dt[cm].max()) < MIN_DT:
+                remove = True
+            elif area < SLIVER_AREA:
+                eroded = _erode(cm)
+                perim = int((cm & ~eroded).sum())
+                if perim > 0 and 4 * math.pi * area / perim ** 2 < COMPACT_THR:
+                    remove = True
+            if remove:
+                new_masks[i][cm] = False
+                removed_count += 1
+
+    # Reassign removed foreground pixels to nearest surviving colour per pixel
+    surv = np.zeros((h, w), dtype=bool)
+    for m in new_masks:
+        surv |= m
+    orig_fg = np.zeros((h, w), dtype=bool)
+    for m in masks:
+        orig_fg |= m
+    reassign_px = orig_fg & ~surv
+    if reassign_px.any() and surv.any():
+        surv_map = np.full((h, w), -1, dtype=np.int32)
+        for ci, m in enumerate(new_masks):
+            surv_map[m] = ci
+        _, idx = _dte(~surv, return_indices=True)
+        ry, rx = np.where(reassign_px)
+        targets = surv_map[idx[0][ry, rx], idx[1][ry, rx]]
+        valid = targets >= 0
+        for ci in range(len(new_masks)):
+            sel = valid & (targets == ci)
+            if sel.any():
+                new_masks[ci][ry[sel], rx[sel]] = True
+
+    return new_masks, removed_count
+
+
 def _satin_pts(comp: dict):
     """
     Satin stitch: edge-to-edge zigzag across the narrow form, alternating
@@ -619,43 +688,9 @@ def convert_image_to_pes(image_bytes: bytes,
     if bg_mask is not None:
         masks = [m & ~bg_mask for m in masks]
 
-    # Detect and merge noise colors (antialiasing edges, thin rings).
-    # A color is noise when its components are all tiny fragments OR when the
-    # pixels form consistently thin stripes (< 1 mm avg width).
-    # Noise pixels are reassigned to the nearest non-noise palette color.
-    _noise_idx: set = set()
-    for _i, _m in enumerate(masks):
-        if not _m.any():
-            _noise_idx.add(_i)
-            continue
-        _comps = _seg_components(_m, 4)
-        if not _comps:
-            _noise_idx.add(_i)
-            continue
-        _areas  = [_component_area(_c) for _c in _comps]
-        _total  = sum(_areas)
-        _nrows  = sum(len(_c) for _c in _comps)
-        _avg_w  = _total / max(1, _nrows)
-        _median = sorted(_areas)[len(_areas) // 2]
-        _maxar  = max(_areas)
-        # Small fragments: median area < 2 mm² AND no component > 10 mm²
-        # Thin strips:     average width < 0.4 mm (4 px) — pure antialiasing
-        if (_median < 50 and _maxar < 250) or _avg_w < 4:
-            _noise_idx.add(_i)
-
-    _non_noise_idx = [_i for _i in range(len(palette)) if _i not in _noise_idx]
-    if _non_noise_idx and _noise_idx:
-        for _ni in sorted(_noise_idx):
-            if not masks[_ni].any():
-                continue
-            _nr, _ng, _nb = palette[_ni]
-            _best = min(_non_noise_idx, key=lambda _j: (
-                (palette[_j][0] - _nr) ** 2 +
-                (palette[_j][1] - _ng) ** 2 +
-                (palette[_j][2] - _nb) ** 2
-            ))
-            masks[_best] = masks[_best] | masks[_ni]
-            masks[_ni]   = np.zeros_like(masks[_ni], dtype=bool)
+    # Region-based cleanup: remove unsewable connected components per colour mask.
+    # Pixels from removed components are reassigned to the nearest surviving colour.
+    masks, _removed_region_count = _cleanup_regions(masks, palette)
 
     # Expand each color region ~0.3 mm (3 px) into later-stitched regions only,
     # preventing fabric-pullback gaps at color boundaries.
