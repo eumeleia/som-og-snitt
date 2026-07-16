@@ -290,6 +290,28 @@ def _component_area(comp):
     return sum(e - s + 1 for segs in comp.values() for s, e in segs)
 
 
+def _comp_mask_full(comp: dict, h: int, w: int, base_mask=None):
+    """
+    Reconstruct a full H×W binary mask for one connected component.
+    Fills gaps between sampled rows by OR-ing adjacent sampled rows,
+    then intersects with base_mask to exclude non-colour pixels.
+    """
+    import numpy as np
+    m = np.zeros((h, w), dtype=bool)
+    sorted_ys = sorted(comp)
+    for y in sorted_ys:
+        for s, e in comp[y]:
+            m[y, s:e+1] = True
+    for i in range(len(sorted_ys) - 1):
+        y0, y1 = sorted_ys[i], sorted_ys[i + 1]
+        row = m[y0] | m[y1]
+        for yy in range(y0 + 1, y1):
+            m[yy] = row
+    if base_mask is not None:
+        m &= base_mask
+    return m
+
+
 def _sample_path(path: list, step: int):
     """Down-sample a pixel path to ~step-unit spacing."""
     if not path:
@@ -438,7 +460,7 @@ def convert_image_to_pes(image_bytes: bytes,
     # Apply bg_mask BEFORE quantisation so background pixels don't bias colour clusters
     if bg_mask is not None:
         img_arr[bg_mask] = 255   # fill background with white (neutral for MEDIANCUT)
-        img = Image.fromarray(img_arr, 'RGB')
+        img = Image.fromarray(img_arr)
 
     # ── 2. Colour quantisation ────────────────────────────────────────────────
     if num_colors == 1:
@@ -502,22 +524,30 @@ def convert_image_to_pes(image_bytes: bytes,
             active_colors.append({'r': r, 'g': g, 'b': b})
             first = False
 
-            # Underlay: vertical scanlines over full mask
-            _emit(pattern, _scanline_v(mask, ULAY, MAX), cx, cy, pyembroidery,
-                  sc, jc, tc)
+            print(f'[emb-debug] color ({r},{g},{b}): {len(sig_comps)} components')
 
-            # Fill: serpentine per component; explicit TRIM between components
             for ci, comp in enumerate(sig_comps):
+                area = _component_area(comp)
+                n_segs = sum(len(v) for v in comp.values())
+                print(f'  comp {ci}: {len(comp)} rows, {n_segs} segs, area={area}px')
+
                 comp_pts = _component_pts(comp, MAX)
                 if not comp_pts:
                     continue
+
                 if ci > 0:
                     pattern.add_stitch_absolute(pyembroidery.TRIM, 0, 0)
                     tc[0] += 1
+
+                # Underlay within this component only (avoids cross-component TRIMs)
+                comp_m = _comp_mask_full(comp, new_h, new_w, mask)
+                _emit(pattern, _scanline_v(comp_m, ULAY, MAX), cx, cy, pyembroidery,
+                      sc, jc, tc)
+
+                # Fill: horizontal serpentine
                 _emit(pattern, comp_pts, cx, cy, pyembroidery, sc, jc, tc)
 
-            # Contour: running stitch outline around each component
-            for comp in sig_comps:
+                # Contour: let _emit decide transition (no forced TRIM)
                 min_y = min(comp)
                 max_y = max(comp)
                 min_x = min(s for segs in comp.values() for s, e in segs)
@@ -531,8 +561,6 @@ def convert_image_to_pes(image_bytes: bytes,
                 ctour = _trace_contour(sub_mask, CTOUR)
                 if ctour:
                     ctour = [(px + x0, py + y0) for px, py in ctour]
-                    pattern.add_stitch_absolute(pyembroidery.TRIM, 0, 0)
-                    tc[0] += 1
                     _emit(pattern, ctour, cx, cy, pyembroidery, sc, jc, tc)
 
     elif stitch_type == 'cross':
@@ -589,6 +617,16 @@ def convert_image_to_pes(image_bytes: bytes,
         })
         with open(tmp, 'rb') as f:
             pes_bytes = f.read()
+        # Re-parse the written file so metadata matches what external tools see
+        _parsed = pyembroidery.read(tmp)
+        if _parsed is not None and _parsed.stitches:
+            sc[0] = sum(1 for s in _parsed.stitches if s[2] == pyembroidery.STITCH)
+            tc[0] = sum(1 for s in _parsed.stitches if s[2] == pyembroidery.TRIM)
+            jc[0] = sum(1 for s in _parsed.stitches if s[2] == pyembroidery.JUMP)
+        else:
+            sc[0] = sum(1 for s in pattern.stitches if s[2] == pyembroidery.STITCH)
+            tc[0] = sum(1 for s in pattern.stitches if s[2] == pyembroidery.TRIM)
+            jc[0] = sum(1 for s in pattern.stitches if s[2] == pyembroidery.JUMP)
     finally:
         try:
             os.unlink(tmp)
@@ -596,10 +634,6 @@ def convert_image_to_pes(image_bytes: bytes,
             pass
 
     # ── 5. Metadata & warnings ────────────────────────────────────────────────
-    # Count directly from the generated stitch list for accuracy
-    sc[0] = sum(1 for s in pattern.stitches if s[2] == pyembroidery.STITCH)
-    tc[0] = sum(1 for s in pattern.stitches if s[2] == pyembroidery.TRIM)
-    jc[0] = sum(1 for s in pattern.stitches if s[2] == pyembroidery.JUMP)
 
     width_mm, height_mm = _extract_extents(pattern)
     width_mm  = width_mm  or round(new_w / 10.0, 1)
