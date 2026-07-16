@@ -92,12 +92,18 @@ def _nearest_brother(r: int, g: int, b: int):
 
 
 def _make_thread(r: int, g: int, b: int):
+    """
+    Create an EmbThread for the quantised colour (r, g, b).
+    Thread colour is set to the *quantised* RGB (not the mapped Brother RGB)
+    so that each distinct quantised colour becomes a distinct PES thread entry.
+    Setting catalog_number to the Brother value would cause pyembroidery to
+    collapse consecutive threads that share a catalog entry.
+    """
     import pyembroidery
-    tr, tg, tb, name, cat = _nearest_brother(r, g, b)
+    _, _, _, name, _ = _nearest_brother(r, g, b)
     t = pyembroidery.EmbThread()
-    t.color = (tr << 16) | (tg << 8) | tb
-    t.name = name
-    t.catalog_number = cat
+    t.color = (r << 16) | (g << 8) | b   # keep quantised value unique
+    t.name = name                          # human-readable label only
     return t
 
 
