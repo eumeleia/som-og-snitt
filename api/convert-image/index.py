@@ -871,6 +871,37 @@ def _consolidate_small_colors(masks, palette, min_px=3600, de_thresh=15.0):
     return masks, palette
 
 
+def _detect_bg_lab(img_arr, de_thresh=8.0):
+    """
+    Flood-fill from 4 corners in Lab space (ΔE < de_thresh).
+    Returns H×W bool mask: True = background pixel.
+    """
+    import numpy as np
+    from collections import deque
+    h, w = img_arr.shape[:2]
+    pix_lab = _rgb_arr_to_lab(img_arr.reshape(-1, 3)).reshape(h, w, 3)
+    bg = np.zeros((h, w), dtype=bool)
+    vis = np.zeros((h, w), dtype=bool)
+    t2 = de_thresh ** 2
+    for sy, sx in ((0, 0), (0, w - 1), (h - 1, 0), (h - 1, w - 1)):
+        if vis[sy, sx]:
+            continue
+        seed = pix_lab[sy, sx].copy()
+        q = deque([(sy, sx)])
+        vis[sy, sx] = True
+        while q:
+            y, x = q.popleft()
+            diff = pix_lab[y, x] - seed
+            if float(np.sum(diff ** 2)) <= t2:
+                bg[y, x] = True
+                for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    ny, nx = y + dy, x + dx
+                    if 0 <= ny < h and 0 <= nx < w and not vis[ny, nx]:
+                        vis[ny, nx] = True
+                        q.append((ny, nx))
+    return bg
+
+
 # --------------------------------------------------------------------------- #
 # Main conversion                                                               #
 # --------------------------------------------------------------------------- #
@@ -938,9 +969,35 @@ def convert_image_to_pes(image_bytes: bytes,
         palette = [(0, 0, 0)]
         _soft_bg_pct = None
     else:
-        fg_1d = (~bg_mask).reshape(-1) if bg_mask is not None else None
-        palette, masks = _quantize_chroma_aware(img_mf_arr, num_colors, fg_1d=fg_1d)
-        _soft_bg_pct = None
+        _soft_bg_mask = None
+        if not remove_bg and num_colors > 1:
+            _soft_bg_mask = _detect_bg_lab(img_mf_arr)
+            _bg_frac = float(_soft_bg_mask.mean())
+            if _bg_frac < 0.05 or _bg_frac > 0.92:
+                _soft_bg_mask = None  # trivially small or whole image
+            if _soft_bg_mask is not None:
+                import numpy as _np
+                _bg_px_lab = _rgb_arr_to_lab(
+                    img_mf_arr.reshape(-1, 3)[_soft_bg_mask.reshape(-1)])
+                _bg_chroma = float(_np.sqrt(
+                    _bg_px_lab[:, 1] ** 2 + _bg_px_lab[:, 2] ** 2).mean())
+                if _bg_chroma > 20.0:
+                    _soft_bg_mask = None  # background is too colourful to be background
+        if _soft_bg_mask is not None:
+            # Reserve 1 slot for background; quantise fg with remaining slots
+            n_fg = max(1, num_colors - 1)
+            fg_1d = (~_soft_bg_mask).reshape(-1)
+            fg_pal, fg_masks = _quantize_chroma_aware(img_mf_arr, n_fg, fg_1d=fg_1d)
+            bg_px = img_mf_arr.reshape(-1, 3)[_soft_bg_mask.reshape(-1)]
+            bg_color = tuple(int(round(float(v))) for v in bg_px.mean(axis=0))
+            # bg stitched first (behind foreground); skip dilation for slot 0
+            palette = [bg_color] + fg_pal
+            masks   = [_soft_bg_mask] + fg_masks
+            _soft_bg_pct = float(_soft_bg_mask.mean())
+        else:
+            fg_1d = (~bg_mask).reshape(-1) if bg_mask is not None else None
+            palette, masks = _quantize_chroma_aware(img_mf_arr, num_colors, fg_1d=fg_1d)
+            _soft_bg_pct = None
 
     # Apply background exclusion to all masks
     if bg_mask is not None:
@@ -948,12 +1005,20 @@ def convert_image_to_pes(image_bytes: bytes,
 
     # Region-based cleanup: remove unsewable connected components per colour mask.
     # Pixels from removed components are reassigned to the nearest surviving colour.
-    masks, _removed_region_count = _cleanup_regions(masks, palette)
-    masks, palette = _consolidate_small_colors(masks, palette)
+    if _soft_bg_pct is not None:
+        fg_cleaned, _removed_region_count = _cleanup_regions(masks[1:], palette[1:])
+        masks = [masks[0]] + fg_cleaned
+        fg_consol, fg_pal = _consolidate_small_colors(masks[1:], palette[1:])
+        masks = [masks[0]] + fg_consol
+        palette = [palette[0]] + fg_pal
+    else:
+        masks, _removed_region_count = _cleanup_regions(masks, palette)
+        masks, palette = _consolidate_small_colors(masks, palette)
 
     # Expand each color region ~0.3 mm (3 px) into later-stitched regions only,
     # preventing fabric-pullback gaps at color boundaries.
-    for i in range(len(masks) - 1):
+    _dil_start = 1 if _soft_bg_pct is not None else 0
+    for i in range(_dil_start, len(masks) - 1):
         later = np.zeros_like(masks[i], dtype=bool)
         for j in range(i + 1, len(masks)):
             later |= masks[j]
@@ -1165,6 +1230,11 @@ def convert_image_to_pes(image_bytes: bytes,
         warnings.append(
             "Noen regioner er smalere enn 1 mm — "
             "kan bli brutte eller forsvinne i sømmen"
+        )
+    if _soft_bg_pct is not None:
+        warnings.append(
+            f"Bakgrunn sys som én farge ({_soft_bg_pct * 100:.0f} % av bildet). "
+            "Bruk «Fjern bakgrunn» for å stryke bakgrunnen helt."
         )
     if _removed_region_count > 0:
         warnings.append(
