@@ -108,13 +108,13 @@ def _rgb_to_lab(r: int, g: int, b: int):
     return L, a, b_
 
 
-def _nearest_brother_lab(r: int, g: int, b: int):
-    """Find nearest Brother thread entry using CIELab ΔE-76."""
+def _nearest_brother_lab(r: int, g: int, b: int, wL: float = 1.0, wab: float = 1.0):
+    """Find nearest Brother thread entry using weighted CIELab ΔE-76."""
     L1, a1, b1 = _rgb_to_lab(r, g, b)
     best, best_d = _BROTHER[0], float('inf')
     for e in _BROTHER:
         L2, a2, b2 = _rgb_to_lab(e[0], e[1], e[2])
-        d = (L1 - L2) ** 2 + (a1 - a2) ** 2 + (b1 - b2) ** 2
+        d = (wL * (L1 - L2)) ** 2 + (wab * (a1 - a2)) ** 2 + (wab * (b1 - b2)) ** 2
         if d < best_d:
             best_d, best = d, e
     return best
@@ -127,9 +127,16 @@ def _make_thread(r: int, g: int, b: int):
     so that each distinct quantised colour becomes a distinct PES thread entry.
     Setting catalog_number to the Brother value would cause pyembroidery to
     collapse consecutive threads that share a catalog entry.
+    For saturated colours (C* > 25) hue is weighted more than lightness so that
+    e.g. coral cheeks don't match a desaturated khaki/sand thread.
     """
     import pyembroidery
-    _, _, _, name, _ = _nearest_brother_lab(r, g, b)
+    _, _a1, _b1 = _rgb_to_lab(r, g, b)
+    _chroma = (_a1 ** 2 + _b1 ** 2) ** 0.5
+    if _chroma > 25:
+        _, _, _, name, _ = _nearest_brother_lab(r, g, b, wL=0.7, wab=1.3)
+    else:
+        _, _, _, name, _ = _nearest_brother_lab(r, g, b)
     t = pyembroidery.EmbThread()
     t.color = (r << 16) | (g << 8) | b   # keep quantised value unique
     t.name = name                          # human-readable label only
@@ -1139,6 +1146,20 @@ def convert_image_to_pes(image_bytes: bytes,
             "Prøv et bilde med tydeligere motiv."
         )
 
+    # Determine which active_colors entries are chroma-protected (C*>25, isolated ΔE>20).
+    # Used to distinguish intentional small-detail colours from edge-noise ghost threads.
+    _protected_active: set = set()
+    if len(active_colors) > 1:
+        _ac_lab = np.array([list(_rgb_to_lab(c['r'], c['g'], c['b'])) for c in active_colors])
+        _ac_chroma = np.sqrt(_ac_lab[:, 1] ** 2 + _ac_lab[:, 2] ** 2)
+        _ac_diff = _ac_lab[:, np.newaxis] - _ac_lab[np.newaxis]
+        _ac_de = np.sqrt(np.sum(_ac_diff ** 2, axis=2))
+        np.fill_diagonal(_ac_de, np.inf)
+        _ac_min_de = _ac_de.min(axis=1)
+        for _i in range(len(active_colors)):
+            if _ac_chroma[_i] > 25.0 and _ac_min_de[_i] > 20.0:
+                _protected_active.add(_i)
+
     pattern.add_stitch_absolute(pyembroidery.END, 0, 0)
 
     # ── 4. Write PES ──────────────────────────────────────────────────────────
@@ -1153,7 +1174,8 @@ def convert_image_to_pes(image_bytes: bytes,
             pes_bytes = f.read()
         # Re-parse the written file so metadata matches what external tools see
         _parsed = pyembroidery.read(tmp)
-        ghost_color_count      = 0
+        ghost_noise_count      = 0
+        ghost_protected_count  = 0
         fragmented_color_count = 0
         if _parsed is not None and _parsed.stitches:
             sc[0] = sum(1 for s in _parsed.stitches if s[2] == pyembroidery.STITCH)
@@ -1161,6 +1183,7 @@ def convert_image_to_pes(image_bytes: bytes,
             jc[0] = sum(1 for s in _parsed.stitches if s[2] == pyembroidery.JUMP)
             _cur_sc      = 0   # stitches in current thread block
             _cur_run     = 0   # stitches in current unbroken run
+            _thread_idx  = 0   # which active_colors entry we are in
             _thread_runs: list = []
             for _, _, _cmd in _parsed.stitches:
                 if _cmd == pyembroidery.STITCH:
@@ -1176,13 +1199,17 @@ def convert_image_to_pes(image_bytes: bytes,
                         _thread_runs.append(_cur_run)
                         _cur_run = 0
                     if _cur_sc < 50:
-                        ghost_color_count += 1
+                        if _thread_idx in _protected_active:
+                            ghost_protected_count += 1
+                        else:
+                            ghost_noise_count += 1
                     elif _thread_runs:
                         _med = sorted(_thread_runs)[len(_thread_runs) // 2]
                         if _med < 10:
                             fragmented_color_count += 1
                     _cur_sc      = 0
                     _thread_runs = []
+                    _thread_idx  += 1
         else:
             sc[0] = sum(1 for s in pattern.stitches if s[2] == pyembroidery.STITCH)
             tc[0] = sum(1 for s in pattern.stitches if s[2] == pyembroidery.TRIM)
@@ -1201,6 +1228,7 @@ def convert_image_to_pes(image_bytes: bytes,
     est_sec   = int((sc[0] / 400) * 60) if sc[0] > 0 else 0
 
     warnings = []
+    info: list = []
     if width_mm > 100 or height_mm > 100:
         warnings.append(
             f"Broderifeltet er {width_mm:.1f}×{height_mm:.1f} mm — "
@@ -1216,10 +1244,15 @@ def convert_image_to_pes(image_bytes: bytes,
             f"{tc[0]} trims — normalt under {trim_threshold} for "
             f"{len(active_colors)} farger; vurder enklere bilde"
         )
-    if ghost_color_count > 0:
+    if ghost_noise_count > 0:
         warnings.append(
-            f"{ghost_color_count} av fargene dekker svært lite (under 50 sting) — "
+            f"{ghost_noise_count} av fargene dekker svært lite (under 50 sting) — "
             "sannsynligvis kantstøy fra bildet. Prøv færre farger for et renere resultat."
+        )
+    if ghost_protected_count > 0:
+        info.append(
+            f"{ghost_protected_count} liten detaljfarge(r) beholdt (blad, nese o.l.) — "
+            "små motiver kan bli utydelige i søm."
         )
     if fragmented_color_count > 0:
         warnings.append(
@@ -1252,6 +1285,7 @@ def convert_image_to_pes(image_bytes: bytes,
         'est_seconds':  est_sec,
         'colors':       active_colors,
         'warnings':     warnings,
+        'info':         info,
     }
 
 
