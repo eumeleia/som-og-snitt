@@ -505,7 +505,7 @@ export default function BildeTilBroderiPage() {
             <input
               type="range"
               min={1}
-              max={5}
+              max={10}
               step={1}
               value={numColors}
               onChange={e => setNumColors(Number(e.target.value))}
@@ -513,7 +513,7 @@ export default function BildeTilBroderiPage() {
             />
             <div className="flex justify-between text-xs text-stone-400">
               <span>1</span>
-              <span>5</span>
+              <span>10</span>
             </div>
           </div>
 
