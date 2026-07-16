@@ -422,11 +422,17 @@ def convert_image_to_pes(image_bytes: bytes,
     bg_mask = None
     if remove_bg:
         if has_alpha:
+            # Use NEAREST for alpha to avoid blur creating spurious semi-transparent pixels
             alpha_ch = raw_img.convert('RGBA').split()[3]
-            alpha_ch = alpha_ch.resize((new_w, new_h), Image.LANCZOS)
+            alpha_ch = alpha_ch.resize((new_w, new_h), Image.NEAREST)
             bg_mask = np.array(alpha_ch, dtype=np.uint8) < 128
         else:
             bg_mask = _compute_bg_mask(img_arr)
+
+    # Apply bg_mask BEFORE quantisation so background pixels don't bias colour clusters
+    if bg_mask is not None:
+        img_arr[bg_mask] = 255   # fill background with white (neutral for MEDIANCUT)
+        img = Image.fromarray(img_arr, 'RGB')
 
     # ── 2. Colour quantisation ────────────────────────────────────────────────
     if num_colors == 1:
