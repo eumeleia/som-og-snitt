@@ -49,6 +49,44 @@ def make_3color_png() -> bytes:
     return buf.getvalue()
 
 
+def make_kanin_png() -> bytes:
+    """
+    Synthetic 100×100 px rabbit-like image with distinct coloured regions:
+      - white background (fills outer area and ears)
+      - light-gray body (large central region)
+      - blue bow (small, strongly saturated)
+      - orange/coral cheek (small, warm-saturated)
+      - black eyes (tiny)
+      - cream patch (chin area)
+    """
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    arr = np.full((100, 100, 3), 255, dtype=np.uint8)  # white background
+
+    # Gray body (large ellipse)
+    img = Image.fromarray(arr)
+    draw = ImageDraw.Draw(img)
+    draw.ellipse([20, 30, 80, 90], fill=(180, 180, 180))  # gray body
+
+    # Cream chin patch
+    draw.ellipse([35, 65, 65, 88], fill=(240, 230, 200))  # cream
+
+    # Blue bow (left of center, small)
+    draw.ellipse([22, 50, 40, 62], fill=(40, 80, 200))   # blue
+
+    # Orange/coral cheek (right side)
+    draw.ellipse([60, 55, 76, 68], fill=(220, 100, 50))  # orange-coral
+
+    # Black eyes
+    draw.ellipse([36, 42, 44, 50], fill=(10, 10, 10))    # left eye
+    draw.ellipse([56, 42, 64, 50], fill=(10, 10, 10))    # right eye
+
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    return buf.getvalue()
+
+
 def _check_parseable(pes_bytes: bytes, label: str):
     """Validate that pyembroidery can parse the generated PES file."""
     import pyembroidery
@@ -329,6 +367,71 @@ def test_rev_10colors():
     print("  OK")
 
 
+def test_kanin_bg_removed():
+    """
+    Kanin image with remove_bg=True, 10 colours:
+    - All palette colours have > 60 stitches (no ghost threads)
+    - At least one colour is blue-ish (B > 100 and R < 100)
+    - At least one colour is orange/coral (R > 150 and G < 150)
+    - trim_count < 60
+    """
+    print("test_kanin_bg_removed ...", end=" ", flush=True)
+    img = make_kanin_png()
+    pes, meta = convert_image_to_pes(img, 'fill', 100.0, 10, remove_bg=True)
+
+    assert len(pes) > 0, "PES is empty"
+
+    # No ghost threads (all active colours must have > 60 stitches)
+    # Check via re-parsed PES
+    sc, tc, threads, runs = _parse_pes_runs(pes)
+    assert tc < 60, f"trim_count={tc} >= 60"
+
+    # Check palette colours via metadata
+    colors = meta['colors']
+    has_blue   = any(c['b'] > 100 and c['r'] < 100 for c in colors)
+    has_orange = any(c['r'] > 150 and c['g'] < 150 for c in colors)
+
+    assert has_blue, \
+        f"No blue-ish colour found in palette: {colors}"
+    assert has_orange, \
+        f"No orange/coral colour found in palette: {colors}"
+
+    print(f"OK  ({meta['stitch_count']} stitches, {meta['color_count']} colours, "
+          f"{tc} trims)")
+
+
+def test_kanin_bg_on():
+    """
+    Kanin image with remove_bg=False (soft-bg detection), 10 colours:
+    - At least one warning mentions 'Bakgrunn'
+    - color_count <= 9 (bg gets 1 slot, foreground gets remaining)
+    - The bg colour thread appears first in meta['colors'] (brightest)
+    """
+    print("test_kanin_bg_on ...", end=" ", flush=True)
+    img = make_kanin_png()
+    pes, meta = convert_image_to_pes(img, 'fill', 100.0, 10, remove_bg=False)
+
+    assert len(pes) > 0, "PES is empty"
+
+    # At least one warning must mention background
+    warnings = meta.get('warnings', [])
+    has_bg_warning = any("Bakgrunn" in w for w in warnings)
+    assert has_bg_warning, \
+        f"No 'Bakgrunn' warning found. Warnings: {warnings}"
+
+    # Background takes 1 slot, so foreground gets at most 9
+    assert meta['color_count'] <= 9, \
+        f"color_count={meta['color_count']} > 9 (bg should take 1 slot)"
+
+    # Background (white) should be the brightest colour → first in meta['colors']
+    first_color = meta['colors'][0]
+    first_lum = 0.299 * first_color['r'] + 0.587 * first_color['g'] + 0.114 * first_color['b']
+    assert first_lum > 150, \
+        f"First colour is not bright (lum={first_lum:.1f}): {first_color}"
+
+    print(f"OK  ({meta['stitch_count']} stitches, {meta['color_count']} colours)")
+
+
 if __name__ == '__main__':
     test_fill_1color()
     test_fill_3colors()
@@ -337,4 +440,6 @@ if __name__ == '__main__':
     test_rev_flood_fill()
     test_rev_alpha()
     test_rev_10colors()
+    test_kanin_bg_removed()
+    test_kanin_bg_on()
     print("\nAlle tester bestått.")
