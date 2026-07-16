@@ -202,6 +202,156 @@ def _emit(pattern, positions, cx: int, cy: int, pe,
 
 
 # --------------------------------------------------------------------------- #
+# Connected-component fill helpers                                              #
+# --------------------------------------------------------------------------- #
+
+def _seg_components(mask, row_spacing: int):
+    """
+    Group horizontal scanline segments into connected components.
+    Segments in adjacent sampled rows are connected when their x-ranges overlap
+    or are within row_spacing pixels of each other (handles thin curved regions
+    that shift by up to their own width between sampled rows).
+    Returns list of {y: [(start, end), ...]} dicts, one per component.
+    """
+    from collections import defaultdict
+    h, _ = mask.shape
+    tol = row_spacing  # horizontal tolerance for connectivity
+    row_segs: dict = {}
+    for y in range(0, h, row_spacing):
+        segs = _runs(mask[y])
+        if segs:
+            row_segs[y] = segs
+    if not row_segs:
+        return []
+
+    par: dict = {}
+
+    def find(k):
+        while par.get(k, k) != k:
+            par[k] = par.get(par.get(k, k), par.get(k, k))
+            k = par.get(k, k)
+        return k
+
+    def union(a, b):
+        a, b = find(a), find(b)
+        if a != b:
+            par[b] = a
+
+    sorted_ys = sorted(row_segs)
+    for i in range(1, len(sorted_ys)):
+        y_cur, y_prv = sorted_ys[i], sorted_ys[i - 1]
+        for si, (s1, e1) in enumerate(row_segs[y_cur]):
+            for pj, (s2, e2) in enumerate(row_segs[y_prv]):
+                if s1 <= e2 + tol and s2 <= e1 + tol:
+                    union((y_cur, si), (y_prv, pj))
+
+    groups: dict = defaultdict(list)
+    for y, segs in row_segs.items():
+        for si in range(len(segs)):
+            groups[find((y, si))].append((y, si))
+
+    result = []
+    for members in groups.values():
+        comp: dict = defaultdict(list)
+        for y, si in members:
+            comp[y].append(row_segs[y][si])
+        result.append(dict(comp))
+    return result
+
+
+def _component_pts(comp, max_stitch: int):
+    """Serpentine-ordered (x, y) point list for one connected component."""
+    pts: list = []
+    sorted_ys = sorted(comp)
+    for row_idx, y in enumerate(sorted_ys):
+        segs = sorted(comp[y])
+        row_pts: list = []
+        for s, e in segs:
+            x = s
+            while x <= e:
+                row_pts.append((x, y))
+                x += max_stitch
+            if not row_pts or row_pts[-1][0] != e:
+                row_pts.append((e, y))
+        if row_idx % 2 == 1:
+            row_pts.reverse()
+        pts.extend(row_pts)
+    return pts
+
+
+def _component_area(comp):
+    """Approximate pixel count (area) of a component."""
+    return sum(e - s + 1 for segs in comp.values() for s, e in segs)
+
+
+def _sample_path(path: list, step: int):
+    """Down-sample a pixel path to ~step-unit spacing."""
+    if not path:
+        return []
+    out = [path[0]]
+    acc = 0.0
+    for i in range(1, len(path)):
+        acc += math.hypot(path[i][0] - path[i - 1][0],
+                          path[i][1] - path[i - 1][1])
+        if acc >= step:
+            out.append(path[i])
+            acc = 0.0
+    if out[-1] != path[-1]:
+        out.append(path[-1])
+    return out
+
+
+def _trace_contour(mask, step: int):
+    """
+    Trace the outer boundary of a binary mask with Moore-neighbour contour
+    following and return points sampled at ~step px intervals.
+    """
+    import numpy as np
+    h, w = mask.shape
+    # boundary = foreground pixels with ≥1 background 4-neighbour
+    inner = np.zeros_like(mask, dtype=bool)
+    inner[1:-1, 1:-1] = (
+        mask[1:-1, 1:-1] & mask[:-2, 1:-1] &
+        mask[2:, 1:-1]   & mask[1:-1, :-2] & mask[1:-1, 2:]
+    )
+    bnd = mask & ~inner
+    ys, xs = np.where(bnd)
+    if len(xs) == 0:
+        return []
+    idx = int(np.argmin(ys * w + xs))
+    sy, sx = int(ys[idx]), int(xs[idx])
+
+    D8 = [(-1, 0), (-1, 1), (0, 1), (1, 1),
+          (1, 0),  (1, -1), (0, -1), (-1, -1)]
+    cur_y, cur_x = sy, sx
+    prev_d = 6
+    path = [(cur_x, cur_y)]
+    seen = {(cur_y, cur_x)}
+
+    for _ in range(w * h):
+        back = (prev_d + 4) % 8
+        moved = False
+        for i in range(1, 9):
+            di = (back + i) % 8
+            dy, dx = D8[di]
+            ny, nx = cur_y + dy, cur_x + dx
+            if 0 <= ny < h and 0 <= nx < w and bnd[ny, nx]:
+                if (ny, nx) == (sy, sx) and len(path) > 2:
+                    path.append((nx, ny))
+                    return _sample_path(path, step)
+                if (ny, nx) not in seen:
+                    cur_y, cur_x = ny, nx
+                    prev_d = di
+                    path.append((cur_x, cur_y))
+                    seen.add((cur_y, cur_x))
+                    moved = True
+                    break
+        if not moved:
+            break
+    return _sample_path(path, step)
+
+
+# --------------------------------------------------------------------------- #
 # Background removal                                                            #
 # --------------------------------------------------------------------------- #
 
@@ -251,7 +401,7 @@ def convert_image_to_pes(image_bytes: bytes,
     Returns (pes_bytes, metadata_dict).
     """
     import numpy as np
-    from PIL import Image, ImageFilter
+    from PIL import Image
     import pyembroidery
 
     # ── 1. Load & resize to target size (1 px = 0.1 mm = 1 pyembroidery unit) ─
@@ -307,21 +457,18 @@ def convert_image_to_pes(image_bytes: bytes,
     first = True
 
     if stitch_type == 'fill':
-        ROW  = 4    # 0.4 mm fill row spacing
-        ULAY = 20   # 2.0 mm underlay column spacing
-        MAX  = 30   # 3.0 mm max stitch length
+        ROW      = 4    # 0.4 mm fill row spacing
+        ULAY     = 20   # 2.0 mm underlay column spacing
+        MAX      = 30   # 3.0 mm max stitch length
+        CTOUR    = 20   # 2.0 mm contour stitch spacing
+        MIN_AREA = 300  # 3 mm² minimum (1 px = 0.1 mm → 3 mm² = 300 px)
 
         for (r, g, b), mask_raw in zip(palette, masks):
-            if 0.299 * r + 0.587 * g + 0.114 * b > 230 and num_colors > 1:
-                continue
-
-            m = Image.fromarray(mask_raw.astype(np.uint8) * 255, 'L')
-            m = m.filter(ImageFilter.MinFilter(3)).filter(ImageFilter.MaxFilter(3))
-            mask = np.array(m) > 128
-
+            mask = mask_raw.astype(bool)
             if not mask.any():
                 continue
 
+            # Detect thin features for warning (before component filtering)
             if not has_thin:
                 for y in range(0, new_h, ROW * 2):
                     for s, e in _runs(mask[y]):
@@ -331,25 +478,56 @@ def convert_image_to_pes(image_bytes: bytes,
                     if has_thin:
                         break
 
+            # Find connected components and drop noise (< 3 mm²)
+            comps = _seg_components(mask, ROW)
+            sig_comps = [c for c in comps if _component_area(c) >= MIN_AREA]
+            if not sig_comps:
+                continue
+
             if not first:
                 pattern.add_stitch_absolute(pyembroidery.COLOR_BREAK, 0, 0)
             pattern.add_thread(_make_thread(r, g, b))
             active_colors.append({'r': r, 'g': g, 'b': b})
             first = False
 
+            # Underlay: vertical scanlines over full mask
             _emit(pattern, _scanline_v(mask, ULAY, MAX), cx, cy, pyembroidery,
                   sc, jc, tc)
-            _emit(pattern, _scanline_h(mask, ROW, MAX), cx, cy, pyembroidery,
-                  sc, jc, tc)
+
+            # Fill: serpentine per component; explicit TRIM between components
+            for ci, comp in enumerate(sig_comps):
+                comp_pts = _component_pts(comp, MAX)
+                if not comp_pts:
+                    continue
+                if ci > 0:
+                    pattern.add_stitch_absolute(pyembroidery.TRIM, 0, 0)
+                    tc[0] += 1
+                _emit(pattern, comp_pts, cx, cy, pyembroidery, sc, jc, tc)
+
+            # Contour: running stitch outline around each component
+            for comp in sig_comps:
+                min_y = min(comp)
+                max_y = max(comp)
+                min_x = min(s for segs in comp.values() for s, e in segs)
+                max_x = max(e for segs in comp.values() for s, e in segs)
+                pad = 2
+                y0 = max(0, min_y - pad)
+                y1 = min(new_h, max_y + ROW + pad)
+                x0 = max(0, min_x - pad)
+                x1 = min(new_w, max_x + pad + 1)
+                sub_mask = mask[y0:y1, x0:x1]
+                ctour = _trace_contour(sub_mask, CTOUR)
+                if ctour:
+                    ctour = [(px + x0, py + y0) for px, py in ctour]
+                    pattern.add_stitch_absolute(pyembroidery.TRIM, 0, 0)
+                    tc[0] += 1
+                    _emit(pattern, ctour, cx, cy, pyembroidery, sc, jc, tc)
 
     elif stitch_type == 'cross':
         CELL = 25
         HALF = CELL // 2
 
         for (r, g, b), mask_raw in zip(palette, masks):
-            if 0.299 * r + 0.587 * g + 0.114 * b > 230 and num_colors > 1:
-                continue
-
             mask = mask_raw.astype(bool)
             if not mask.any():
                 continue
@@ -406,6 +584,11 @@ def convert_image_to_pes(image_bytes: bytes,
             pass
 
     # ── 5. Metadata & warnings ────────────────────────────────────────────────
+    # Count directly from the generated stitch list for accuracy
+    sc[0] = sum(1 for s in pattern.stitches if s[2] == pyembroidery.STITCH)
+    tc[0] = sum(1 for s in pattern.stitches if s[2] == pyembroidery.TRIM)
+    jc[0] = sum(1 for s in pattern.stitches if s[2] == pyembroidery.JUMP)
+
     width_mm, height_mm = _extract_extents(pattern)
     width_mm  = width_mm  or round(new_w / 10.0, 1)
     height_mm = height_mm or round(new_h / 10.0, 1)

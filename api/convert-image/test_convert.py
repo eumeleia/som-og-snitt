@@ -32,6 +32,23 @@ def make_circle_png(size: int = 200, radius: int = 80) -> bytes:
     return buf.getvalue()
 
 
+def make_3color_png() -> bytes:
+    """
+    Three solid-colour panels side by side — no background, no antialiasing.
+    Yellow | Cyan | Violet: chosen so Pillow MEDIANCUT cleanly separates them.
+    """
+    import numpy as np
+    from PIL import Image
+    arr = np.zeros((60, 90, 3), dtype=np.uint8)
+    arr[:, 0:30]  = [220, 210, 10]   # yellow
+    arr[:, 30:60] = [10,  200, 195]  # cyan
+    arr[:, 60:90] = [150, 10,  200]  # violet
+    img = Image.fromarray(arr)
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    return buf.getvalue()
+
+
 def _check_parseable(pes_bytes: bytes, label: str):
     """Validate that pyembroidery can parse the generated PES file."""
     import pyembroidery
@@ -63,17 +80,41 @@ def test_fill_1color():
 
 
 def test_fill_3colors():
-    """Fill stitch, 3 colours (circle image = 2 active), 80 mm."""
+    """
+    3 clearly separated colour regions → exactly 3 threads, 2 COLOR_CHANGEs,
+    and trim_count < 2 × number_of_regions (= 6).
+    """
     print("test_fill_3colors ...", end=" ", flush=True)
-    img = make_circle_png()
-    pes, meta = convert_image_to_pes(img, 'fill', 80.0, 3)
+    import pyembroidery
+    img = make_3color_png()
+    # 3 solid panels → exactly 3 colours, no background removal needed
+    pes, meta = convert_image_to_pes(img, 'fill', 60.0, 3)
 
-    assert len(pes) > 0
-    assert meta['stitch_count'] > 0
+    assert len(pes) > 0,             "PES is empty"
+    assert meta['stitch_count'] > 0, f"no stitches"
+    assert meta['color_count'] == 3, \
+        f"expected 3 threads, got {meta['color_count']}"
+
+    # 2 COLOR_CHANGEs implied by 3 threads; verify via re-parsed file
+    with tempfile.NamedTemporaryFile(suffix='.pes', delete=False) as f:
+        f.write(pes)
+        tmp = f.name
+    try:
+        parsed = pyembroidery.read(tmp)
+        n_threads = len([t for t in parsed.threadlist if t is not None])
+    finally:
+        os.unlink(tmp)
+    assert n_threads == 3, f"PES has {n_threads} threads, expected 3"
+
+    num_regions = 3  # one per colour square
+    assert meta['trim_count'] < 2 * num_regions, \
+        f"trim_count={meta['trim_count']} ≥ 2×{num_regions}={2*num_regions}"
+
     assert meta['width_mm']  <= 100
     assert meta['height_mm'] <= 100
     _check_parseable(pes, "fill_3colors")
-    print(f"OK  ({meta['stitch_count']} stitches, {meta['color_count']} colour(s))")
+    print(f"OK  ({meta['stitch_count']} stitches, {meta['color_count']} colours, "
+          f"{meta['trim_count']} trims)")
 
 
 def test_cross_stitch():
