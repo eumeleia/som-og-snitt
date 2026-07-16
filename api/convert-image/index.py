@@ -666,6 +666,171 @@ def _compute_bg_mask(img_arr):
 
 
 # --------------------------------------------------------------------------- #
+# Lab k-means quantisation                                                     #
+# --------------------------------------------------------------------------- #
+
+def _rgb_arr_to_lab(rgb):
+    """Vectorized sRGB (N×3 uint8 or float) → CIELab (N×3 float64)."""
+    import numpy as np
+    c = np.asarray(rgb, dtype=np.float64) / 255.0
+    lin = np.where(c > 0.04045, ((c + 0.055) / 1.055) ** 2.4, c / 12.92)
+    M = np.array([[0.4124564, 0.3575761, 0.1804375],
+                  [0.2126729, 0.7151522, 0.0721750],
+                  [0.0193339, 0.1191920, 0.9503041]])
+    xyz = lin @ M.T / [0.95047, 1.00000, 1.08883]
+    f = np.where(xyz > 0.008856, xyz ** (1.0 / 3), 7.787 * xyz + 16.0 / 116)
+    L = 116 * f[:, 1] - 16
+    a = 500 * (f[:, 0] - f[:, 1])
+    b = 200 * (f[:, 1] - f[:, 2])
+    return np.stack([L, a, b], axis=1)
+
+
+def _assign_clusters(lab_px, centers, batch=40000):
+    """Assign N Lab pixels to nearest of k centers (memory-safe batching)."""
+    import numpy as np
+    n = len(lab_px)
+    labels = np.empty(n, dtype=np.int32)
+    for s in range(0, n, batch):
+        e = min(s + batch, n)
+        d = np.sum((lab_px[s:e, np.newaxis] - centers[np.newaxis]) ** 2, axis=2)
+        labels[s:e] = np.argmin(d, axis=1)
+    return labels
+
+
+def _kmeans_lab(lab_px, k, n_iter=25, seed=42, max_train=30000):
+    """K-means++ in Lab space. Returns (centers k×3, all_labels N, counts k)."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    n = len(lab_px)
+    if n > max_train:
+        train = lab_px[rng.choice(n, max_train, replace=False)]
+    else:
+        train = lab_px
+    nt = len(train)
+    # K-means++ init
+    ctrs = [train[int(rng.integers(nt))].copy()]
+    for _ in range(k - 1):
+        d2 = np.min(
+            np.sum((train[:, np.newaxis] - np.array(ctrs)[np.newaxis]) ** 2, axis=2),
+            axis=1)
+        probs = d2 / d2.sum()
+        ctrs.append(train[int(rng.choice(nt, p=probs))].copy())
+    centers = np.array(ctrs, dtype=np.float64)
+    # Iterate
+    labels = np.zeros(nt, dtype=np.int32)
+    for it in range(n_iter):
+        new_labels = _assign_clusters(train, centers)
+        if it > 0 and np.all(new_labels == labels):
+            break
+        labels = new_labels
+        for i in range(k):
+            m = labels == i
+            if m.any():
+                centers[i] = train[m].mean(axis=0)
+    all_labels = _assign_clusters(lab_px, centers)
+    counts = np.bincount(all_labels, minlength=k)
+    return centers, all_labels, counts
+
+
+def _merge_clusters(centers, labels, counts, n_final,
+                    de_vol=12.0, chroma_min=25.0, chroma_de_min=20.0):
+    """
+    Greedy merge k→n_final. Protects high-chroma clusters (C*>chroma_min
+    that are far from all others: min ΔE > chroma_de_min) from voluntary merges.
+    """
+    import numpy as np
+    n = len(centers)
+    active = list(range(n))
+    cur_lab = labels.copy()
+    cur_cnt = counts.astype(np.float64).copy()
+    cur_c   = centers.copy()
+
+    while len(active) > n_final:
+        act = np.array(active)
+        ac = cur_c[act]
+        diff = ac[:, np.newaxis] - ac[np.newaxis]
+        de_mat = np.sqrt(np.sum(diff ** 2, axis=2))
+        np.fill_diagonal(de_mat, np.inf)
+
+        chroma   = np.sqrt(ac[:, 1] ** 2 + ac[:, 2] ** 2)
+        min_de   = de_mat.min(axis=1)
+        protected = (chroma > chroma_min) & (min_de > chroma_de_min)
+
+        # Upper-triangle merge matrix — block protected clusters and ΔE ≥ threshold
+        merge_de = np.full_like(de_mat, np.inf)
+        for ii in range(len(act)):
+            if protected[ii]:
+                continue
+            for jj in range(ii + 1, len(act)):
+                if not protected[jj]:
+                    merge_de[ii, jj] = de_mat[ii, jj]
+        merge_de[merge_de >= de_vol] = np.inf
+
+        if merge_de.min() < np.inf:
+            ii, jj = np.unravel_index(np.argmin(merge_de), merge_de.shape)
+        else:
+            de_upper = de_mat.copy()
+            for ii in range(len(act)):
+                de_upper[ii, :ii + 1] = np.inf
+            ii, jj = np.unravel_index(np.argmin(de_upper), de_upper.shape)
+
+        i, j = int(act[ii]), int(act[jj])
+        ci, cj = cur_cnt[i], cur_cnt[j]
+        total = ci + cj
+        if total > 0:
+            cur_c[i] = (cur_c[i] * ci + cur_c[j] * cj) / total
+        cur_cnt[i] = total
+        cur_lab[cur_lab == j] = i
+        active.remove(j)
+
+    sorted_act = sorted(active)
+    remap = np.full(n, -1, dtype=np.int32)
+    for new, old in enumerate(sorted_act):
+        remap[old] = new
+    return cur_c[sorted_act], remap[cur_lab]
+
+
+def _quantize_chroma_aware(img_arr, n_colors, fg_1d=None):
+    """
+    Chroma-aware Lab k-means (over-cluster 3×, then greedy merge).
+    fg_1d: (H*W,) bool — only these pixels participate in quantisation.
+    Returns (palette [(r,g,b)…], masks [H×W bool …]) sorted brightest-first.
+    """
+    import numpy as np
+    h, w = img_arr.shape[:2]
+    pixels = img_arr.reshape(-1, 3)
+    pix_lab = _rgb_arr_to_lab(pixels)
+
+    if fg_1d is None:
+        fg_1d = np.ones(h * w, dtype=bool)
+
+    fg_lab = pix_lab[fg_1d]
+    if len(fg_lab) == 0:
+        return [(128, 128, 128)] * n_colors, [np.zeros((h, w), dtype=bool)] * n_colors
+
+    k_over = max(24, 3 * n_colors)
+    centers, labels, counts = _kmeans_lab(fg_lab, k_over)
+    _, labels = _merge_clusters(centers, labels, counts, n_colors)
+
+    labels_full = np.full(h * w, -1, dtype=np.int32)
+    labels_full[fg_1d] = labels
+
+    palette, masks = [], []
+    for i in range(n_colors):
+        m1d = labels_full == i
+        if m1d.any():
+            mean_rgb = pixels[m1d].mean(axis=0)
+            palette.append(tuple(int(round(float(v))) for v in mean_rgb))
+        else:
+            palette.append((128, 128, 128))
+        masks.append(m1d.reshape(h, w))
+
+    lum = [0.299 * r + 0.587 * g + 0.114 * b for r, g, b in palette]
+    order = sorted(range(n_colors), key=lambda i: -lum[i])
+    return [palette[o] for o in order], [masks[o] for o in order]
+
+
+# --------------------------------------------------------------------------- #
 # Main conversion                                                               #
 # --------------------------------------------------------------------------- #
 
@@ -727,36 +892,14 @@ def convert_image_to_pes(image_bytes: bytes,
         img_mf = Image.fromarray(img_mf_arr)
 
     if num_colors == 1:
-        gray = np.mean(img_arr.astype(float), axis=2)
+        gray = np.mean(img_mf_arr.astype(float), axis=2)
         masks = [gray < 128]
         palette = [(0, 0, 0)]
+        _soft_bg_pct = None
     else:
-        if bg_mask is not None and (~bg_mask).any():
-            # Quantise foreground-only pixels with FASTOCTREE so that:
-            # (a) background doesn't waste palette slots, and
-            # (b) small but visually distinct colours (black, pink) that MEDIANCUT
-            #     would absorb into dominant clusters are preserved.
-            fg_px = img_mf_arr[~bg_mask]
-            N_fg = len(fg_px)
-            side = max(1, int(math.ceil(math.sqrt(N_fg))))
-            canvas = np.empty((side * side, 3), dtype=np.uint8)
-            canvas[:N_fg] = fg_px
-            canvas[N_fg:] = np.tile(fg_px,
-                                    (math.ceil(side * side / N_fg), 1))[:side * side - N_fg]
-            q_ref = Image.fromarray(canvas.reshape(side, side, 3)).quantize(
-                colors=num_colors, method=Image.Quantize.FASTOCTREE)
-            q = img_mf.quantize(palette=q_ref, dither=0)
-        else:
-            # No background mask — MEDIANCUT gives clean results for solid-colour images
-            q = img_mf.quantize(colors=num_colors, method=Image.Quantize.MEDIANCUT)
-        raw = q.getpalette()
-        palette_all = [(raw[i * 3], raw[i * 3 + 1], raw[i * 3 + 2])
-                       for i in range(num_colors)]
-        idx_arr = np.array(q, dtype=np.uint8)
-        lum = [0.299 * r + 0.587 * g + 0.114 * b for r, g, b in palette_all]
-        order = sorted(range(num_colors), key=lambda i: -lum[i])
-        palette = [palette_all[o] for o in order]
-        masks = [(idx_arr == o) for o in order]
+        fg_1d = (~bg_mask).reshape(-1) if bg_mask is not None else None
+        palette, masks = _quantize_chroma_aware(img_mf_arr, num_colors, fg_1d=fg_1d)
+        _soft_bg_pct = None
 
     # Apply background exclusion to all masks
     if bg_mask is not None:
