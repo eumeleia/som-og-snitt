@@ -432,6 +432,57 @@ def test_kanin_bg_on():
     print(f"OK  ({meta['stitch_count']} stitches, {meta['color_count']} colours)")
 
 
+def make_enclosed_bg_test_png() -> bytes:
+    """
+    100×100 white image with:
+    - A black 'O' ring (enclosed white hole in centre) simulating a closed letter.
+      The white hole should be classified as background (no stitches inside).
+    - A cream ellipse on the right side — clearly distinct from white (ΔE > 8)
+      and must survive as a foreground colour.
+    """
+    from PIL import Image, ImageDraw
+    img = Image.new('RGB', (100, 100), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    # Black 'O': outer disc, then white interior hole
+    draw.ellipse([5, 20, 55, 80], fill=(0, 0, 0))       # outer black ring
+    draw.ellipse([18, 33, 42, 67], fill=(255, 255, 255)) # inner white hole
+    # Cream element: RGB (235, 210, 165) → ΔE ≈ 30 from pure white
+    draw.ellipse([62, 28, 95, 72], fill=(235, 210, 165))
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    return buf.getvalue()
+
+
+def test_enclosed_bg_holes():
+    """
+    Image with a closed-letter 'O' shape on white background + cream element:
+    - Enclosed white hole inside 'O' must be classified as background → no white thread.
+    - Cream element (ΔE > 8 from white) must survive in the palette.
+    """
+    print("test_enclosed_bg_holes ...", end=" ", flush=True)
+    img = make_enclosed_bg_test_png()
+    pes, meta = convert_image_to_pes(img, 'fill', 100.0, 5, remove_bg=True)
+
+    assert len(pes) > 0, "PES is empty"
+
+    colors = meta['colors']
+
+    # No near-white thread (background including enclosed holes was removed)
+    has_white = any(c['r'] > 220 and c['g'] > 220 and c['b'] > 220 for c in colors)
+    assert not has_white, \
+        f"White/near-white thread leaked into palette (enclosed hole not removed): {colors}"
+
+    # Cream element survives (ΔE > 8 from white, so must not be removed with background)
+    has_cream = any(
+        c['r'] > 200 and c['g'] > 170 and c['b'] > 100 and c['b'] < 200
+        for c in colors
+    )
+    assert has_cream, \
+        f"Cream element was incorrectly removed as background: {colors}"
+
+    print(f"OK  ({meta['stitch_count']} stitches, {meta['color_count']} colours)")
+
+
 if __name__ == '__main__':
     test_fill_1color()
     test_fill_3colors()
@@ -442,4 +493,5 @@ if __name__ == '__main__':
     test_rev_10colors()
     test_kanin_bg_removed()
     test_kanin_bg_on()
+    test_enclosed_bg_holes()
     print("\nAlle tester bestått.")

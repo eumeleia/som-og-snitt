@@ -642,7 +642,13 @@ def _trace_contour(mask, step: int):
 
 def _compute_bg_mask(img_arr):
     """
-    Flood-fill from all 4 corners with tolerance 30 (squared = 900).
+    Flood-fill from all 4 corners (RGB tolerance 30) to detect background.
+    Also handles:
+    - fake-transparency checkerboard: seeds both alternating colours so the
+      full checkerboard border is removed.
+    - enclosed background holes (e.g. interior of letter 'o'/'e'/'a'): any
+      connected region of close-to-background pixels (ΔE < 5 in Lab) that
+      does not touch the image border is reclassified as background.
     Returns boolean mask (H×W): True = background pixel.
     """
     import numpy as np
@@ -653,7 +659,39 @@ def _compute_bg_mask(img_arr):
     visited = np.zeros((h, w), dtype=bool)
     TOLERANCE_SQ = 30 * 30
 
-    for start_y, start_x in ((0, 0), (0, w - 1), (h - 1, 0), (h - 1, w - 1)):
+    # ── Phase 0: detect checkerboard (fake transparency) ──────────────────────
+    # Scan the top row for an alternating light/achromatic pattern with a
+    # regular period.  If found, add the alternate colour as an extra seed so
+    # both checkerboard colours get flood-filled.
+    _seeds = [(0, 0), (0, w - 1), (h - 1, 0), (h - 1, w - 1)]
+    _top = img_arr[0, :min(128, w)].astype(np.int32)
+    _corner = _top[0]
+    _corner_is_light = (float(np.mean(_corner)) > 150 and
+                        int(_corner.max()) - int(_corner.min()) < 40)
+    if _corner_is_light and len(_top) > 4:
+        _xi0 = -1
+        for _i in range(1, len(_top)):
+            _d2 = int(np.sum((_top[_i] - _corner) ** 2))
+            if TOLERANCE_SQ < _d2 < 15000:          # noticeably different but still light
+                _c = _top[_i]
+                if float(_c.mean()) > 150 and int(_c.max()) - int(_c.min()) < 40:
+                    _xi0 = _i
+                    break
+        if _xi0 > 0:
+            # Verify regular period: the colour at xi0+period must differ from xi0
+            for _xi2 in range(_xi0 + 1, len(_top)):
+                _d2b = int(np.sum((_top[_xi2] - _top[_xi0]) ** 2))
+                if _d2b > TOLERANCE_SQ:
+                    _period = _xi2 - _xi0
+                    _xi3 = _xi2 + _period
+                    if _xi3 < len(_top):
+                        _d3 = int(np.sum((_top[_xi3] - _top[_xi2]) ** 2))
+                        if _d3 > TOLERANCE_SQ:      # alternates again — confirmed
+                            _seeds.append((0, _xi0))
+                    break
+
+    # ── Phase 1: flood-fill from seeds ────────────────────────────────────────
+    for start_y, start_x in _seeds:
         if visited[start_y, start_x]:
             continue
         seed = img_arr[start_y, start_x].astype(np.int32)
@@ -669,6 +707,49 @@ def _compute_bg_mask(img_arr):
                     if 0 <= ny < h and 0 <= nx < w and not visited[ny, nx]:
                         visited[ny, nx] = True
                         queue.append((ny, nx))
+
+    # ── Phase 2: reclassify enclosed close-colour regions ─────────────────────
+    # Find connected components of pixels that are (a) not yet background and
+    # (b) within ΔE 5 of the detected background mean in Lab space.  Any such
+    # component that does not touch the image border is an enclosed background
+    # hole (like the interior of a letter) and is added to bg_mask.
+    bg_pix = img_arr[bg_mask]
+    if len(bg_pix) == 0:
+        return bg_mask
+
+    bg_lab_mean = _rgb_arr_to_lab(bg_pix).mean(axis=0)
+
+    # Vectorised ΔE map: cheap because _rgb_arr_to_lab is numpy-vectorised
+    all_lab = _rgb_arr_to_lab(img_arr.reshape(-1, 3)).reshape(h, w, 3)
+    de_map = np.sqrt(np.sum((all_lab - bg_lab_mean) ** 2, axis=2))
+
+    # close_mask: background-coloured pixels not yet classified as background
+    close_mask = (de_map < 5.0) & ~bg_mask
+
+    # BFS over close_mask pixels only; skip components touching the border
+    comp_vis = ~close_mask          # non-close pixels treated as already visited
+    for _sy, _sx in np.argwhere(close_mask):
+        if comp_vis[_sy, _sx]:
+            continue
+        touches_border = False
+        comp_ys: list = []
+        comp_xs: list = []
+        q = deque([(_sy, _sx)])
+        comp_vis[_sy, _sx] = True
+        while q:
+            cy, cx = q.popleft()
+            comp_ys.append(cy)
+            comp_xs.append(cx)
+            if cy == 0 or cy == h - 1 or cx == 0 or cx == w - 1:
+                touches_border = True
+            for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                ny, nx = cy + dy, cx + dx
+                if 0 <= ny < h and 0 <= nx < w and not comp_vis[ny, nx]:
+                    comp_vis[ny, nx] = True
+                    q.append((ny, nx))
+        if not touches_border:
+            bg_mask[np.array(comp_ys), np.array(comp_xs)] = True
+
     return bg_mask
 
 
