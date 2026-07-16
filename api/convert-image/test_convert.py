@@ -276,6 +276,27 @@ def test_rev_alpha():
     print("  OK")
 
 
+def test_rev_10colors():
+    """
+    rev.png with 10 requested colors: noise auto-removal should yield ≥ 4 threads
+    and keep total trims under 105.
+    """
+    print("test_rev_10colors ...", flush=True)
+    img = _load_rev_png()
+    pes, meta = convert_image_to_pes(img, 'fill', 100.0, 10, remove_bg=True)
+    assert len(pes) > 0, "PES is empty"
+    sc, tc, threads, runs = _parse_pes_runs(pes)
+    import statistics
+    median_run = statistics.median(runs) if runs else 0
+    print(f"  10-colors: {threads} threads, {tc} trims, "
+          f"median run={median_run:.0f}, {sc} stitches")
+    assert threads >= 4, \
+        f"only {threads} threads — expected ≥ 4 after noise removal"
+    assert tc < 105, \
+        f"{tc} trims — expected < 105"
+    print("  OK")
+
+
 if __name__ == '__main__':
     test_fill_1color()
     test_fill_3colors()
@@ -283,4 +304,5 @@ if __name__ == '__main__':
     test_max_size()
     test_rev_flood_fill()
     test_rev_alpha()
+    test_rev_10colors()
     print("\nAlle tester bestått.")

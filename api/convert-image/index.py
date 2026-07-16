@@ -791,21 +791,36 @@ def convert_image_to_pes(image_bytes: bytes,
             pes_bytes = f.read()
         # Re-parse the written file so metadata matches what external tools see
         _parsed = pyembroidery.read(tmp)
-        ghost_color_count = 0
+        ghost_color_count      = 0
+        fragmented_color_count = 0
         if _parsed is not None and _parsed.stitches:
             sc[0] = sum(1 for s in _parsed.stitches if s[2] == pyembroidery.STITCH)
             tc[0] = sum(1 for s in _parsed.stitches if s[2] == pyembroidery.TRIM)
             jc[0] = sum(1 for s in _parsed.stitches if s[2] == pyembroidery.JUMP)
-            # Count threads with very few stitches (likely quantisation noise)
-            _cur = 0
+            _cur_sc      = 0   # stitches in current thread block
+            _cur_run     = 0   # stitches in current unbroken run
+            _thread_runs: list = []
             for _, _, _cmd in _parsed.stitches:
                 if _cmd == pyembroidery.STITCH:
-                    _cur += 1
+                    _cur_sc  += 1
+                    _cur_run += 1
+                elif _cmd in (pyembroidery.TRIM, pyembroidery.JUMP):
+                    if _cur_run > 0:
+                        _thread_runs.append(_cur_run)
+                        _cur_run = 0
                 elif _cmd in (pyembroidery.COLOR_CHANGE, pyembroidery.COLOR_BREAK,
                               pyembroidery.END):
-                    if _cur < 50:
+                    if _cur_run > 0:
+                        _thread_runs.append(_cur_run)
+                        _cur_run = 0
+                    if _cur_sc < 50:
                         ghost_color_count += 1
-                    _cur = 0
+                    elif _thread_runs:
+                        _med = sorted(_thread_runs)[len(_thread_runs) // 2]
+                        if _med < 10:
+                            fragmented_color_count += 1
+                    _cur_sc      = 0
+                    _thread_runs = []
         else:
             sc[0] = sum(1 for s in pattern.stitches if s[2] == pyembroidery.STITCH)
             tc[0] = sum(1 for s in pattern.stitches if s[2] == pyembroidery.TRIM)
@@ -843,6 +858,11 @@ def convert_image_to_pes(image_bytes: bytes,
         warnings.append(
             f"{ghost_color_count} av fargene dekker svært lite (under 50 sting) — "
             "sannsynligvis kantstøy fra bildet. Prøv færre farger for et renere resultat."
+        )
+    if fragmented_color_count > 0:
+        warnings.append(
+            f"{fragmented_color_count} av fargene har svært korte løp (median under 10 sting) — "
+            "trolig kantstøy. Prøv færre farger for et renere resultat."
         )
     if has_thin:
         warnings.append(
