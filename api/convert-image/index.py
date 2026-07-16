@@ -410,6 +410,20 @@ def _fill_holes(mask):
     return mask | ~outside
 
 
+def _dilate_mask(mask, radius: int):
+    """4-connected binary dilation by `radius` pixels."""
+    import numpy as np
+    result = mask.copy()
+    for _ in range(radius):
+        nxt = result.copy()
+        nxt[1:]  |= result[:-1]
+        nxt[:-1] |= result[1:]
+        nxt[:, 1:]  |= result[:, :-1]
+        nxt[:, :-1] |= result[:, 1:]
+        result = nxt
+    return result
+
+
 def _satin_pts(comp: dict):
     """
     Satin stitch: edge-to-edge zigzag across the narrow form, alternating
@@ -604,6 +618,15 @@ def convert_image_to_pes(image_bytes: bytes,
     # Apply background exclusion to all masks
     if bg_mask is not None:
         masks = [m & ~bg_mask for m in masks]
+
+    # Expand each color region ~0.3 mm (3 px) into later-stitched regions only,
+    # preventing fabric-pullback gaps at color boundaries.
+    for i in range(len(masks) - 1):
+        later = np.zeros_like(masks[i], dtype=bool)
+        for j in range(i + 1, len(masks)):
+            later |= masks[j]
+        if later.any():
+            masks[i] = masks[i] | (_dilate_mask(masks[i], 3) & later)
 
     # ── 3. Build pyembroidery pattern ─────────────────────────────────────────
     pattern = pyembroidery.EmbPattern()
