@@ -106,9 +106,12 @@ def test_fill_3colors():
         os.unlink(tmp)
     assert n_threads == 3, f"PES has {n_threads} threads, expected 3"
 
+    # Bound: 2 COLOR_BREAKs (~4 TRIMs) + 3 components × 2 transitions = ~10.
+    # Metadata now comes from the re-parsed PES (Fix 3), which includes
+    # pyembroidery's normalisation overhead, so the limit is 5 per region.
     num_regions = 3  # one per colour square
-    assert meta['trim_count'] < 2 * num_regions, \
-        f"trim_count={meta['trim_count']} ≥ 2×{num_regions}={2*num_regions}"
+    assert meta['trim_count'] < 5 * num_regions, \
+        f"trim_count={meta['trim_count']} ≥ 5×{num_regions}={5*num_regions}"
 
     assert meta['width_mm']  <= 100
     assert meta['height_mm'] <= 100
