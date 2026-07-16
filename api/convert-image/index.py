@@ -453,6 +453,42 @@ def _dilate_mask(mask, radius: int):
     return result
 
 
+def _filter_short_moves(pts, min_dist, max_stitch, trim_dist):
+    """
+    Remove intermediate stitch points closer than min_dist to the previous kept
+    point, but only when skipping would NOT create a gap > max_stitch to the
+    next original point (which would force an unwanted JUMP in _emit).
+    Run boundaries (gap > trim_dist) and run endpoints are always kept.
+    """
+    if len(pts) <= 2:
+        return pts
+    result = [pts[0]]
+    n = len(pts)
+    for i in range(1, n):
+        prev = result[-1]
+        cur = pts[i]
+        gap = math.hypot(cur[0] - prev[0], cur[1] - prev[1])
+        if gap > trim_dist:
+            result.append(cur)      # genuine run boundary
+        elif gap >= min_dist:
+            result.append(cur)      # stitch long enough
+        else:
+            # Too short. Skip only if the next original point stays within
+            # max_stitch of prev (so _emit won't insert an unwanted JUMP/TRIM).
+            if i == n - 1:
+                result.append(cur)
+            else:
+                nxt = pts[i + 1]
+                nxt_from_cur = math.hypot(nxt[0] - cur[0], nxt[1] - cur[1])
+                if nxt_from_cur > trim_dist:
+                    result.append(cur)   # cur ends its run, keep it
+                elif math.hypot(nxt[0] - prev[0], nxt[1] - prev[1]) <= max_stitch:
+                    pass                 # skip: next still within stitch reach
+                else:
+                    result.append(cur)   # keep: skipping would force a JUMP
+    return result
+
+
 def _cleanup_regions(masks, palette):
     """
     Remove connected components that are unsewable: too small, too narrow, or
@@ -804,8 +840,11 @@ def convert_image_to_pes(image_bytes: bytes,
                     if fsegs:
                         comp_filled[fy] = fsegs
 
+                raw_path = _component_pts_smart(
+                    comp_filled if comp_filled else comp, MAX)
                 _emit(pattern,
-                      _component_pts_smart(comp_filled if comp_filled else comp, MAX),
+                      _filter_short_moves(raw_path, min_dist=7,
+                                          max_stitch=MAX, trim_dist=120),
                       cx, cy, pyembroidery, sc, jc, tc)
 
     elif stitch_type == 'cross':
