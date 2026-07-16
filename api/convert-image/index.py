@@ -183,7 +183,7 @@ def _scanline_v(mask, col_spacing: int, max_stitch: int):
 
 
 def _emit(pattern, positions, cx: int, cy: int, pe,
-          sc: list, jc: list, tc: list):
+          sc: list, jc: list, tc: list, max_stitch: int = 30):
     """Emit stitches for a list of (px,py) positions into the pattern."""
     prev = None
     for px, py in positions:
@@ -198,7 +198,7 @@ def _emit(pattern, positions, cx: int, cy: int, pe,
                 tc[0] += 1
                 pattern.add_stitch_absolute(pe.JUMP, ax, ay)
                 jc[0] += 1
-            elif dist > 30:                 # > 3 mm → jump
+            elif dist > max_stitch:         # → jump
                 pattern.add_stitch_absolute(pe.JUMP, ax, ay)
                 jc[0] += 1
             else:
@@ -408,6 +408,27 @@ def _fill_holes(mask):
                 outside[ny, nx] = True
                 queue.append((ny, nx))
     return mask | ~outside
+
+
+def _satin_pts(comp: dict):
+    """
+    Satin stitch: edge-to-edge zigzag across the narrow form, alternating
+    direction each row.  Works on the ROW-spaced component dict directly.
+    """
+    pts = []
+    forward = True
+    for y in sorted(comp):
+        segs = sorted(comp[y])
+        if forward:
+            for s, e in segs:
+                pts.append((s, y))
+                pts.append((e, y))
+        else:
+            for s, e in reversed(segs):
+                pts.append((e, y))
+                pts.append((s, y))
+        forward = not forward
+    return pts
 
 
 def _trace_contour(mask, step: int):
@@ -628,6 +649,13 @@ def convert_image_to_pes(image_bytes: bytes,
                 if ci > 0:
                     pattern.add_stitch_absolute(pyembroidery.TRIM, 0, 0)
                     tc[0] += 1
+
+                avg_width = _component_area(comp) / max(1, len(comp))
+                if avg_width < 30:
+                    # Narrow feature (< ~3 mm): satin edge-to-edge zigzag
+                    _emit(pattern, _satin_pts(comp),
+                          cx, cy, pyembroidery, sc, jc, tc, max_stitch=120)
+                    continue
 
                 comp_m = _comp_mask_full(comp, new_h, new_w, mask)
                 if not comp_m.any():
