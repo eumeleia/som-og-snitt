@@ -619,6 +619,44 @@ def convert_image_to_pes(image_bytes: bytes,
     if bg_mask is not None:
         masks = [m & ~bg_mask for m in masks]
 
+    # Detect and merge noise colors (antialiasing edges, thin rings).
+    # A color is noise when its components are all tiny fragments OR when the
+    # pixels form consistently thin stripes (< 1 mm avg width).
+    # Noise pixels are reassigned to the nearest non-noise palette color.
+    _noise_idx: set = set()
+    for _i, _m in enumerate(masks):
+        if not _m.any():
+            _noise_idx.add(_i)
+            continue
+        _comps = _seg_components(_m, 4)
+        if not _comps:
+            _noise_idx.add(_i)
+            continue
+        _areas  = [_component_area(_c) for _c in _comps]
+        _total  = sum(_areas)
+        _nrows  = sum(len(_c) for _c in _comps)
+        _avg_w  = _total / max(1, _nrows)
+        _median = sorted(_areas)[len(_areas) // 2]
+        _maxar  = max(_areas)
+        # Small fragments: median area < 2 mm² AND no component > 10 mm²
+        # Thin strips:     average width < 0.4 mm (4 px) — pure antialiasing
+        if (_median < 50 and _maxar < 250) or _avg_w < 4:
+            _noise_idx.add(_i)
+
+    _non_noise_idx = [_i for _i in range(len(palette)) if _i not in _noise_idx]
+    if _non_noise_idx and _noise_idx:
+        for _ni in sorted(_noise_idx):
+            if not masks[_ni].any():
+                continue
+            _nr, _ng, _nb = palette[_ni]
+            _best = min(_non_noise_idx, key=lambda _j: (
+                (palette[_j][0] - _nr) ** 2 +
+                (palette[_j][1] - _ng) ** 2 +
+                (palette[_j][2] - _nb) ** 2
+            ))
+            masks[_best] = masks[_best] | masks[_ni]
+            masks[_ni]   = np.zeros_like(masks[_ni], dtype=bool)
+
     # Expand each color region ~0.3 mm (3 px) into later-stitched regions only,
     # preventing fabric-pullback gaps at color boundaries.
     for i in range(len(masks) - 1):
