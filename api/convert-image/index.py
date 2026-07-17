@@ -1230,36 +1230,31 @@ def convert_image_to_pes(image_bytes: bytes,
     has_thin = False
     first = True
 
-    _auto_angles: list = []
+    _active_angles: list = []
 
     if stitch_type == 'fill':
         ROW      = 4    # 0.4 mm fill row spacing
         MAX      = 30   # 3.0 mm max stitch length
         MIN_AREA = 300  # 3 mm² minimum (1 px = 0.1 mm → 3 mm² = 300 px)
 
-        # Compute per-colour fill angles; None → auto-assign via graph colouring
-        if fill_angles is None:
-            _pal_lab = np.array([list(_rgb_to_lab(r, g, b)) for r, g, b in palette])
-            _pal_chroma = np.sqrt(_pal_lab[:, 1] ** 2 + _pal_lab[:, 2] ** 2)
-            _pal_diff = _pal_lab[:, np.newaxis] - _pal_lab[np.newaxis]
-            _pal_de = np.sqrt(np.sum(_pal_diff ** 2, axis=2))
-            np.fill_diagonal(_pal_de, np.inf)
-            _pal_min_de = _pal_de.min(axis=1)
-            _prot_idx = {i for i in range(len(palette))
-                         if _pal_chroma[i] > 25.0 and _pal_min_de[i] > 20.0}
-            _angles = _assign_fill_angles(masks, protected_indices=_prot_idx)
-        else:
-            _angles = list(fill_angles)
-            while len(_angles) < len(palette):
-                _angles.append(0)
-        _auto_angles = list(_angles)
+        # Pre-compute per-palette auto angles (used when fill_angles is None or
+        # when a per-active-colour entry is None meaning "keep auto").
+        _pal_lab = np.array([list(_rgb_to_lab(r, g, b)) for r, g, b in palette])
+        _pal_chroma = np.sqrt(_pal_lab[:, 1] ** 2 + _pal_lab[:, 2] ** 2)
+        _pal_diff = _pal_lab[:, np.newaxis] - _pal_lab[np.newaxis]
+        _pal_de = np.sqrt(np.sum(_pal_diff ** 2, axis=2))
+        np.fill_diagonal(_pal_de, np.inf)
+        _pal_min_de = _pal_de.min(axis=1)
+        _prot_idx = {i for i in range(len(palette))
+                     if _pal_chroma[i] > 25.0 and _pal_min_de[i] > 20.0}
+        _auto_pal_angles = _assign_fill_angles(masks, protected_indices=_prot_idx)
+
+        _active_color_idx = 0
 
         for palette_idx, ((r, g, b), mask_raw) in enumerate(zip(palette, masks)):
             mask = mask_raw.astype(bool)
             if not mask.any():
                 continue
-
-            angle = _angles[palette_idx] if palette_idx < len(_angles) else 0
 
             # Detect thin features for warning (before component filtering)
             if not has_thin:
@@ -1277,10 +1272,22 @@ def convert_image_to_pes(image_bytes: bytes,
             if not sig_comps:
                 continue
 
+            # Angle for this active colour: per-active-colour override (may be null)
+            # or auto-assigned from the graph colouring.
+            _auto_angle = _auto_pal_angles[palette_idx] if palette_idx < len(_auto_pal_angles) else 0
+            if (fill_angles is not None
+                    and _active_color_idx < len(fill_angles)
+                    and fill_angles[_active_color_idx] is not None):
+                angle = int(fill_angles[_active_color_idx])
+            else:
+                angle = _auto_angle
+
             if not first:
                 pattern.add_stitch_absolute(pyembroidery.COLOR_BREAK, 0, 0)
             pattern.add_thread(_make_thread(r, g, b))
             active_colors.append({'r': r, 'g': g, 'b': b})
+            _active_angles.append(angle)
+            _active_color_idx += 1
             first = False
 
             for ci, comp in enumerate(sig_comps):
@@ -1494,7 +1501,7 @@ def convert_image_to_pes(image_bytes: bytes,
         'colors':       active_colors,
         'warnings':     warnings,
         'info':         info,
-        'auto_angles':  _auto_angles,
+        'auto_angles':  _active_angles,
     }
 
 

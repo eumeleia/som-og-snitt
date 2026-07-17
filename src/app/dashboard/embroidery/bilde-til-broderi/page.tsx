@@ -19,6 +19,7 @@ interface ConversionMeta {
   colors: { r: number; g: number; b: number }[]
   warnings: string[]
   info?: string[]
+  auto_angles?: number[]
 }
 
 interface ConversionResult {
@@ -233,6 +234,8 @@ export default function BildeTilBroderiPage() {
   const [saving, setSaving]                     = useState(false)
   const [saved, setSaved]                       = useState(false)
   const [savedEmbroideryId, setSavedEmbroideryId] = useState<string | null>(null)
+  // Per-color angle overrides: null = Auto (use server's auto_angles)
+  const [angleOverrides, setAngleOverrides]     = useState<(number | null)[]>([])
 
   const canvasRef    = useRef<HTMLCanvasElement>(null)
   const imgElRef     = useRef<HTMLImageElement | null>(null)
@@ -251,6 +254,7 @@ export default function BildeTilBroderiPage() {
     setResult(null)
     setSaved(false)
     setError(null)
+    setAngleOverrides([])
     const url = URL.createObjectURL(f)
     const img = new window.Image()
     img.onload = () => {
@@ -288,6 +292,11 @@ export default function BildeTilBroderiPage() {
       tmp.getContext('2d')!.drawImage(imgEl, 0, 0, cw, ch)
       const imgB64 = tmp.toDataURL('image/jpeg', 0.82).split(',')[1]
 
+      // fill_angles is per-active-color; null entry = "keep auto for this color"
+      // Only send it when at least one entry has an explicit override.
+      const hasOverride = stitchType === 'fill' && angleOverrides.some(a => a !== null)
+      const fillAngles = hasOverride ? angleOverrides.map(a => a ?? null) : null
+
       const convRes = await fetch('/api/convert-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -297,6 +306,7 @@ export default function BildeTilBroderiPage() {
           size_mm:     sizeMm,
           num_colors:  numColors,
           remove_bg:   removeBg,
+          fill_angles: fillAngles,
         }),
       })
       const convData = await convRes.json()
@@ -321,7 +331,14 @@ export default function BildeTilBroderiPage() {
       const pesBlob    = b64ToBlob(convData.pes_data, 'application/octet-stream')
       const pesBlobUrl = URL.createObjectURL(pesBlob)
 
-      setResult({ pesBlobUrl, pesB64: convData.pes_data, previewDataUrl, meta: convData.metadata })
+      const newMeta: ConversionMeta = convData.metadata
+      setResult({ pesBlobUrl, pesB64: convData.pes_data, previewDataUrl, meta: newMeta })
+      // Keep overrides that were explicitly set; pad/trim to new active-color count
+      setAngleOverrides(prev => {
+        const n = newMeta.colors.length
+        const next: (number | null)[] = Array.from({ length: n }, (_, i) => prev[i] ?? null)
+        return next
+      })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Ukjent feil')
     } finally {
@@ -665,17 +682,53 @@ export default function BildeTilBroderiPage() {
                 value={formatTime(result.meta.est_seconds)} />
             </div>
 
-            {/* Thread colour swatches */}
+            {/* Thread colour swatches + fill-angle selectors (fill only) */}
             {result.meta.colors.length > 0 && (
-              <div className="flex items-center gap-2 flex-wrap pt-1">
-                {result.meta.colors.map((c, i) => (
-                  <span
-                    key={i}
-                    className="w-5 h-5 rounded-full border border-stone-300 shadow-sm flex-shrink-0"
-                    style={{ backgroundColor: `rgb(${c.r},${c.g},${c.b})` }}
-                    title={`Farge ${i + 1}: rgb(${c.r},${c.g},${c.b})`}
-                  />
-                ))}
+              <div className="space-y-1.5 pt-1">
+                {result.meta.colors.map((c, i) => {
+                  const autoAngle = result.meta.auto_angles?.[i] ?? 0
+                  const override  = angleOverrides[i] ?? null
+                  const current   = override ?? autoAngle
+                  return (
+                    <div key={i} className="flex items-center gap-2">
+                      <span
+                        className="w-5 h-5 rounded-full border border-stone-300 shadow-sm flex-shrink-0"
+                        style={{ backgroundColor: `rgb(${c.r},${c.g},${c.b})` }}
+                        title={`Farge ${i + 1}: rgb(${c.r},${c.g},${c.b})`}
+                      />
+                      {stitchType === 'fill' && (
+                        <div className="flex gap-1">
+                          {([null, 0, 45, 90, 135] as (number | null)[]).map(val => {
+                            const label = val === null ? 'Auto' : `${val}°`
+                            const active = val === null ? override === null : override === val
+                            return (
+                              <button
+                                key={String(val)}
+                                onClick={() => {
+                                  setAngleOverrides(prev => {
+                                    const next = [...prev]
+                                    while (next.length <= i) next.push(null)
+                                    next[i] = val
+                                    return next
+                                  })
+                                }}
+                                className={`px-1.5 py-0.5 rounded text-xs transition-colors ${
+                                  active
+                                    ? 'bg-[#C9A57A] text-white font-medium'
+                                    : 'bg-stone-100 text-stone-500 hover:bg-stone-200'
+                                }`}
+                                title={val === null ? `Auto (${autoAngle}°)` : `${val}°`}
+                              >
+                                {label}
+                              </button>
+                            )
+                          })}
+                          <span className="text-xs text-stone-400 self-center ml-0.5">{current}°</span>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             )}
 
@@ -712,6 +765,18 @@ export default function BildeTilBroderiPage() {
 
           {/* Actions */}
           <div className="space-y-2">
+            {angleOverrides.some(a => a !== null) && (
+              <button
+                onClick={handleConvert}
+                disabled={converting}
+                className="w-full py-2.5 bg-[#C9A57A] hover:bg-[#b8926a] disabled:opacity-50 text-white rounded-xl text-sm font-medium transition-colors flex items-center justify-center gap-2"
+              >
+                {converting ? (
+                  <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                ) : null}
+                {converting ? 'Konverterer…' : 'Re-konverter med nye vinkler'}
+              </button>
+            )}
             <div className="flex gap-2">
               <a
                 href={result.pesBlobUrl}
