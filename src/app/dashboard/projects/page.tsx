@@ -68,6 +68,7 @@ interface ProjectData {
   equipmentList: string[]
   pdfComments: PdfComment[]
   pdfAnnotations: PdfAnnotation[]
+  pdfBookmarks?: Record<string, number>
   sortOrder?: number
   completedDate?: string
 }
@@ -112,6 +113,7 @@ const EMPTY: ProjectData = {
   equipmentList: [],
   pdfComments: [],
   pdfAnnotations: [],
+  pdfBookmarks: {},
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1016,6 +1018,7 @@ interface PendingAnnotation {
 
 function PdfViewerModal({
   pdf, annotations, onAddAnnotation, onUpdateAnnotation, onDeleteAnnotation, onMoveAnnotation, onClose, initialPage,
+  bookmarkPage, onSetBookmark, onRemoveBookmark,
 }: {
   pdf: PdfItem
   annotations: PdfAnnotation[]
@@ -1025,6 +1028,9 @@ function PdfViewerModal({
   onMoveAnnotation: (id: string, x: number, y: number) => void
   onClose: (lastPage: number) => void
   initialPage?: number
+  bookmarkPage?: number
+  onSetBookmark: (page: number) => void
+  onRemoveBookmark: () => void
 }) {
   const [pages, setPages]         = useState<string[]>([])
   const [loading, setLoading]     = useState(true)
@@ -1037,6 +1043,7 @@ function PdfViewerModal({
   const [selectedId, setSelectedId]   = useState<string | null>(null)
   const [editingId, setEditingId]     = useState<string | null>(null)
   const [editText, setEditText]       = useState('')
+  const [currentPage, setCurrentPage] = useState(initialPage ?? 1)
   const textboxCancelRef = useRef(false)
 
   // Drag state
@@ -1110,7 +1117,7 @@ function PdfViewerModal({
         const p = parseInt((e.target as HTMLElement).dataset.page ?? '0', 10)
         if (e.intersectionRatio > bestRatio) { bestRatio = e.intersectionRatio; bestPage = p }
       })
-      if (bestRatio > 0) lastPageRef.current = bestPage
+      if (bestRatio > 0) { lastPageRef.current = bestPage; setCurrentPage(bestPage) }
     }, { threshold: [0, 0.25, 0.5, 0.75, 1.0] })
     Object.values(pageContainerRefs.current).forEach(el => { if (el) observer.observe(el) })
     return () => observer.disconnect()
@@ -1231,6 +1238,23 @@ function PdfViewerModal({
             </button>
           ))}
         </div>
+        <button
+          onClick={() => {
+            if (currentPage === bookmarkPage) { onRemoveBookmark() }
+            else { onSetBookmark(currentPage) }
+          }}
+          title={currentPage === bookmarkPage ? 'Slett bokmerke' : 'Sett bokmerke på denne siden'}
+          className={`px-2 py-2 sm:px-3 sm:py-1.5 rounded-lg text-sm transition-colors min-h-[44px] sm:min-h-0 flex items-center gap-1 ${
+            currentPage === bookmarkPage
+              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+              : 'text-stone-400 hover:text-stone-200 hover:bg-stone-700'
+          }`}>
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+              d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+          </svg>
+          <span className="hidden sm:inline">Bokmerke</span>
+        </button>
       </div>
 
       {activeTool && (
@@ -1286,6 +1310,22 @@ function PdfViewerModal({
                     draggable={false}
                   />
 
+                  {bookmarkPage === pageNum && (
+                    <div
+                      className="absolute top-2 right-2 z-10"
+                      onClick={e => { e.stopPropagation(); onRemoveBookmark() }}
+                      title="Slett bokmerke"
+                      style={{ cursor: 'pointer' }}>
+                      <div className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium"
+                        style={{ backgroundColor: 'rgba(245, 158, 11, 0.85)', color: '#1c1917', backdropFilter: 'blur(4px)' }}>
+                        <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                          <path d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                        </svg>
+                        Bokmerke
+                      </div>
+                    </div>
+                  )}
+
                   {/* Existing annotations */}
                   {pageAnnotations.map(ann => {
                     const isSelected  = selectedId === ann.id
@@ -1319,7 +1359,8 @@ function PdfViewerModal({
                           <div className="absolute z-20 min-w-48 max-w-64 rounded-xl shadow-2xl border border-stone-700 overflow-hidden"
                             style={{ backgroundColor: '#292524', top: '100%', left: '50%',
                               transform: `translateX(${popupOffset(ann.x)})`, marginTop: '8px' }}
-                            onClick={e => e.stopPropagation()}>
+                            onClick={e => e.stopPropagation()}
+                            onPointerDown={e => e.stopPropagation()}>
                             <div className="px-3 py-2.5">
                               <p className="text-sm text-stone-200 whitespace-pre-wrap leading-relaxed">{ann.text}</p>
                             </div>
@@ -1345,7 +1386,8 @@ function PdfViewerModal({
                           <div className="absolute z-20 w-64 rounded-xl shadow-2xl border border-stone-600 overflow-hidden"
                             style={{ backgroundColor: '#292524', top: '100%', left: '50%',
                               transform: `translateX(${popupOffset(ann.x)})`, marginTop: '8px' }}
-                            onClick={e => e.stopPropagation()}>
+                            onClick={e => e.stopPropagation()}
+                            onPointerDown={e => e.stopPropagation()}>
                             <textarea autoFocus value={editText}
                               onChange={e => setEditText(e.target.value)}
                               onKeyDown={e => {
@@ -1385,7 +1427,8 @@ function PdfViewerModal({
                         {isEditing ? (
                           <div className="rounded-lg border border-amber-500/60 overflow-hidden"
                             style={{ backgroundColor: 'rgba(41,37,36,0.95)', backdropFilter: 'blur(4px)' }}
-                            onClick={e => e.stopPropagation()}>
+                            onClick={e => e.stopPropagation()}
+                            onPointerDown={e => e.stopPropagation()}>
                             <textarea autoFocus value={editText}
                               onChange={e => setEditText(e.target.value)}
                               onKeyDown={e => {
@@ -1414,7 +1457,8 @@ function PdfViewerModal({
                             <p className="text-xs text-stone-800 whitespace-pre-wrap leading-relaxed">{ann.text}</p>
                             {isSelected && (
                               <div className="flex gap-1 mt-1.5 pt-1.5 border-t border-stone-300/50"
-                                onClick={e => e.stopPropagation()}>
+                                onClick={e => e.stopPropagation()}
+                                onPointerDown={e => e.stopPropagation()}>
                                 <button onClick={() => startEdit(ann)}
                                   className="flex-1 text-xs text-stone-500 hover:text-stone-700 transition-colors py-0.5">
                                   Rediger
@@ -1752,7 +1796,11 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
   }
 
   function updatePdfAnnotation(id: string, text: string) {
-    upd({ pdfAnnotations: (form.pdfAnnotations ?? []).map(a => a.id === id ? { ...a, text } : a) })
+    setForm(f => {
+      const next = { ...f, pdfAnnotations: (f.pdfAnnotations ?? []).map(a => a.id === id ? { ...a, text } : a) }
+      pendingRef.current = next
+      return next
+    })
   }
 
   function deletePdfAnnotation(id: string) {
@@ -1761,6 +1809,24 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
 
   function movePdfAnnotation(id: string, x: number, y: number) {
     upd({ pdfAnnotations: (form.pdfAnnotations ?? []).map(a => a.id === id ? { ...a, x, y } : a) })
+  }
+
+  function setPdfBookmark(pdfId: string, page: number) {
+    setForm(f => {
+      const next = { ...f, pdfBookmarks: { ...(f.pdfBookmarks ?? {}), [pdfId]: page } }
+      pendingRef.current = next
+      return next
+    })
+  }
+
+  function removePdfBookmark(pdfId: string) {
+    setForm(f => {
+      const bm = { ...(f.pdfBookmarks ?? {}) }
+      delete bm[pdfId]
+      const next = { ...f, pdfBookmarks: bm }
+      pendingRef.current = next
+      return next
+    })
   }
 
   // ── Stoffberegner helpers ───────────────────────────────────────────────────
@@ -2692,7 +2758,10 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
           onUpdateAnnotation={updatePdfAnnotation}
           onDeleteAnnotation={deletePdfAnnotation}
           onMoveAnnotation={movePdfAnnotation}
-          initialPage={lastPdfPages[showPdfViewer.id] ?? 1}
+          initialPage={form.pdfBookmarks?.[showPdfViewer.id] ?? lastPdfPages[showPdfViewer.id] ?? 1}
+          bookmarkPage={form.pdfBookmarks?.[showPdfViewer.id]}
+          onSetBookmark={page => setPdfBookmark(showPdfViewer!.id, page)}
+          onRemoveBookmark={() => removePdfBookmark(showPdfViewer!.id)}
           onClose={page => {
             setLastPdfPages(prev => ({ ...prev, [showPdfViewer!.id]: page }))
             setShowPdfViewer(null)

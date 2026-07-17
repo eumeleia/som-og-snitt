@@ -41,6 +41,18 @@ interface RecipeData {
 
 interface Recipe { id: string; created_at: string; data: RecipeData }
 
+interface RoAnnotation {
+  id: string; pdfId: string; page: number; text: string
+  type: 'pin' | 'textbox'; x: number; y: number
+  width?: number; height?: number; projectName: string
+}
+interface RoPdfItem { id: string; name: string; url: string; displayName?: string }
+interface RoProjectData {
+  name: string
+  pdfs: RoPdfItem[]
+  pdfAnnotations: RoAnnotation[]
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const PDF_TYPES: PdfType[] = ['Oppskrift', 'Mønster', 'Annet']
@@ -1151,6 +1163,192 @@ function StartProjectButton({ recipe, router }: {
   )
 }
 
+// ── RecipePdfViewerModal ──────────────────────────────────────────────────────
+
+function RecipePdfViewerModal({
+  pdf, annotations, onClose,
+}: {
+  pdf: RoPdfItem
+  annotations: RoAnnotation[]
+  onClose: () => void
+}) {
+  const [pages, setPages]           = useState<string[]>([])
+  const [loading, setLoading]       = useState(true)
+  const [loadedCount, setLoadedCount] = useState(0)
+  const [totalCount, setTotalCount] = useState(0)
+  const [error, setError]           = useState('')
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const pageContainerRefs           = useRef<Record<number, HTMLDivElement | null>>({})
+
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      try {
+        const res = await fetch(pdf.url)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const data = new Uint8Array(await res.arrayBuffer())
+        const pdfjs = await import('pdfjs-dist')
+        pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+          'pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url
+        ).href
+        const doc = await pdfjs.getDocument({ data }).promise
+        if (cancelled) return
+        setTotalCount(doc.numPages)
+        const imgs: string[] = []
+        for (let i = 1; i <= doc.numPages; i++) {
+          if (cancelled) return
+          const page = await doc.getPage(i)
+          const viewport = page.getViewport({ scale: 1.5 })
+          const canvas = document.createElement('canvas')
+          canvas.width = viewport.width
+          canvas.height = viewport.height
+          const ctx = canvas.getContext('2d')!
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          await page.render({ canvas, canvasContext: ctx as any, viewport }).promise
+          imgs.push(canvas.toDataURL('image/jpeg', 0.85))
+          setLoadedCount(i)
+          setPages([...imgs])
+        }
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Kunne ikke laste PDF')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [pdf.url])
+
+  function popupOffset(x: number) {
+    return x > 70 ? '-90%' : x < 30 ? '0%' : '-50%'
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col" style={{ backgroundColor: '#1c1917' }}>
+      {/* Toolbar */}
+      <div className="flex items-center gap-2 sm:gap-3 px-3 py-2 sm:px-4 sm:py-3 flex-shrink-0 border-b border-stone-700"
+        style={{ backgroundColor: '#292524' }}>
+        <button onClick={onClose}
+          className="flex items-center gap-1.5 px-2.5 py-2 sm:px-3 sm:py-1.5 rounded-lg text-sm text-stone-300 hover:text-white hover:bg-stone-700 transition-colors flex-shrink-0 min-h-[44px] sm:min-h-0">
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
+          <span className="hidden sm:inline">Lukk</span>
+        </button>
+        <h2 className="flex-1 font-serif text-base sm:text-lg text-stone-200 truncate min-w-0">
+          {pdf.displayName?.trim() || pdf.name}
+        </h2>
+        {loading && totalCount > 0 && (
+          <span className="text-xs text-stone-400 flex-shrink-0 hidden sm:inline">{loadedCount}/{totalCount} sider</span>
+        )}
+        {annotations.length > 0 && (
+          <span className="text-xs text-sky-400 flex-shrink-0 flex items-center gap-1">
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
+            </svg>
+            {annotations.length} notat{annotations.length !== 1 ? 'er' : ''} fra prosjekter
+          </span>
+        )}
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto" style={{ WebkitOverflowScrolling: 'touch' }}
+        onClick={() => setSelectedId(null)}>
+        {loading && pages.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-24 gap-4">
+            <div className="w-8 h-8 border-2 border-stone-600 border-t-stone-300 rounded-full animate-spin" />
+            <p className="text-sm text-stone-400">
+              {totalCount > 0 ? `Laster side ${loadedCount} av ${totalCount}…` : 'Laster PDF…'}
+            </p>
+          </div>
+        )}
+        {error && (
+          <div className="max-w-md mx-auto mt-16 p-4 bg-red-900/30 border border-red-700 rounded-xl text-sm text-red-300">
+            {error}
+          </div>
+        )}
+        <div className="max-w-3xl mx-auto px-3 py-6 space-y-10">
+          {pages.map((dataUrl, i) => {
+            const pageNum = i + 1
+            const pageAnns = annotations.filter(a => a.page === pageNum)
+            const pagePins = pageAnns.filter(a => a.type === 'pin')
+            return (
+              <div key={pageNum}>
+                <p className="text-xs text-stone-500 mb-2 text-center tracking-wider uppercase">
+                  Side {pageNum}{totalCount > 0 && ` av ${totalCount}`}
+                </p>
+                <div className="relative"
+                  ref={el => { pageContainerRefs.current[pageNum] = el }}
+                  data-page={pageNum}>
+                  <img src={dataUrl} alt={`Side ${pageNum}`}
+                    className="w-full block select-none rounded-xl shadow-2xl"
+                    draggable={false} />
+                  {pageAnns.map(ann => {
+                    const isSelected = selectedId === ann.id
+                    const pinNumber = pagePins.findIndex(a => a.id === ann.id) + 1
+                    if (ann.type === 'pin') return (
+                      <div key={ann.id}
+                        style={{ position: 'absolute', left: `${ann.x}%`, top: `${ann.y}%`,
+                          transform: 'translate(-50%, -50%)', zIndex: 10 }}
+                        onClick={e => { e.stopPropagation(); setSelectedId(prev => prev === ann.id ? null : ann.id) }}>
+                        <div className={`w-5 h-5 sm:w-6 sm:h-6 rounded-full flex items-center justify-center text-xs font-bold
+                          cursor-pointer shadow-md transition-transform hover:scale-110 select-none ${
+                          isSelected ? 'bg-sky-400 text-stone-900 ring-2 ring-sky-200' : 'bg-sky-500 text-white'}`}>
+                          {pinNumber}
+                        </div>
+                        {isSelected && (
+                          <div className="absolute z-20 min-w-48 max-w-64 rounded-xl shadow-2xl border border-stone-700 overflow-hidden"
+                            style={{ backgroundColor: '#292524', top: '100%', left: '50%',
+                              transform: `translateX(${popupOffset(ann.x)})`, marginTop: '8px' }}
+                            onClick={e => e.stopPropagation()}
+                            onPointerDown={e => e.stopPropagation()}>
+                            <div className="px-3 py-2.5">
+                              <p className="text-sm text-stone-200 whitespace-pre-wrap leading-relaxed">{ann.text}</p>
+                              <p className="text-xs text-sky-400 mt-1.5">fra {ann.projectName}</p>
+                            </div>
+                            <div className="flex border-t border-stone-700">
+                              <button onClick={() => setSelectedId(null)}
+                                className="flex-1 py-2 text-xs text-stone-500 hover:text-stone-300 hover:bg-stone-700 transition-colors">
+                                Lukk
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )
+                    if (ann.type === 'textbox') return (
+                      <div key={ann.id}
+                        style={{ position: 'absolute', left: `${ann.x}%`, top: `${ann.y}%`,
+                          width: `${ann.width ?? 30}%`, zIndex: 10 }}
+                        onClick={e => { e.stopPropagation(); setSelectedId(prev => prev === ann.id ? null : ann.id) }}>
+                        <div className={`rounded-lg px-2.5 py-2 cursor-pointer shadow-md transition-all ${
+                          isSelected ? 'ring-2 ring-sky-400/60' : ''}`}
+                          style={{ backgroundColor: 'rgba(224,242,254,0.92)', backdropFilter: 'blur(4px)',
+                            boxShadow: '0 2px 8px rgba(0,0,0,0.3)' }}>
+                          <p className="text-xs text-stone-800 whitespace-pre-wrap leading-relaxed">{ann.text}</p>
+                          <p className="text-xs text-sky-500 mt-1">fra {ann.projectName}</p>
+                        </div>
+                      </div>
+                    )
+                    return null
+                  })}
+                </div>
+              </div>
+            )
+          })}
+          {loading && pages.length > 0 && (
+            <div className="flex items-center justify-center gap-2 py-4 text-stone-500 text-sm">
+              <div className="w-4 h-4 border-2 border-stone-600 border-t-stone-400 rounded-full animate-spin" />
+              Laster side {loadedCount + 1}…
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── RecipeDetail ──────────────────────────────────────────────────────────────
 
 function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
@@ -1168,6 +1366,8 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
   const [showFocalModal, setShowFocalModal]       = useState(false)
   const [showGalleryPicker, setShowGalleryPicker] = useState(false)
   const [toast, setToast]                   = useState('')
+  const [showPdfViewer, setShowPdfViewer] = useState<RoPdfItem | null>(null)
+  const [roAnnotations, setRoAnnotations] = useState<RoAnnotation[]>([])
 
   // PDF form
   const [pdfTab, setPdfTab]         = useState<'file' | 'link'>('file')
@@ -1205,6 +1405,32 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
   function showToast(msg: string) {
     setToast(msg)
     setTimeout(() => setToast(''), 3500)
+  }
+
+  async function openPdfViewer(pdf: RoPdfItem) {
+    setShowPdfViewer(pdf)
+    setRoAnnotations([])
+    try {
+      const { data: rows } = await supabase
+        .from('projects')
+        .select('data')
+        .eq('data->>recipeId', recipe.id)
+      const collected: RoAnnotation[] = []
+      for (const row of (rows ?? [])) {
+        const pd = row.data as RoProjectData
+        // Match by URL first, then by name
+        const matchPdf = (pd.pdfs ?? []).find(p => p.url === pdf.url)
+          ?? (pd.pdfs ?? []).find(p =>
+              (p.displayName?.trim() || p.name).toLowerCase() ===
+              (pdf.displayName?.trim() || pdf.name).toLowerCase()
+            )
+        if (!matchPdf) continue
+        for (const ann of (pd.pdfAnnotations ?? []).filter(a => a.pdfId === matchPdf.id)) {
+          collected.push({ ...ann, projectName: pd.name })
+        }
+      }
+      setRoAnnotations(collected)
+    } catch { /* silent — just show no annotations */ }
   }
 
   async function doSave(data: RecipeData) {
@@ -1734,6 +1960,10 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
                             className="text-xs text-sky-500 hover:underline">
                             Åpne ↗
                           </a>
+                          <button onClick={() => openPdfViewer(pdf)}
+                            className="text-xs text-stone-500 hover:text-stone-700 transition-colors">
+                            Åpne i leser
+                          </button>
                           <select value={typeVal}
                             onChange={e => updatePdfType(pdf.id, e.target.value as PdfType)}
                             className="text-xs text-stone-400 bg-transparent border-none outline-none cursor-pointer hover:text-stone-600 transition-colors">
@@ -1797,6 +2027,13 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-red-600 text-white text-sm px-4 py-2 rounded-lg shadow-lg whitespace-nowrap z-50">
           {toast}
         </div>
+      )}
+      {showPdfViewer && (
+        <RecipePdfViewerModal
+          pdf={showPdfViewer}
+          annotations={roAnnotations}
+          onClose={() => setShowPdfViewer(null)}
+        />
       )}
     </div>
   )
