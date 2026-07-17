@@ -279,7 +279,9 @@ function ProjectCard({ project, onEdit, onDelete, onOpenRecipePdf }: {
           <p className="text-xs text-stone-500 truncate">
             {d.status === 'Fullført' && d.completedDate
               ? `Fullført ${fmtDate(d.completedDate)}`
-              : (d.recipientName ?? '') ? `Til ${d.recipientName}` : ' '}
+              : (d.recipientName ?? '')
+                ? `Til ${d.recipientName}${(d.size ?? '') ? ` · ${d.size}` : ''}`
+                : ' '}
           </p>
         </div>
       </div>
@@ -1981,9 +1983,16 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
           </button>
-          <h1 className="font-serif text-xl sm:text-2xl text-stone-800 flex-1 truncate">
-            {form.name || <span className="text-stone-300 font-light italic">Nytt prosjekt</span>}
-          </h1>
+          <div className="flex-1 min-w-0">
+            <h1 className="font-serif text-xl sm:text-2xl text-stone-800 truncate">
+              {form.name || <span className="text-stone-300 font-light italic">Nytt prosjekt</span>}
+            </h1>
+            {(form.recipientName ?? '') && (
+              <p className="text-xs text-stone-400 truncate -mt-0.5">
+                {`Til ${form.recipientName}${(form.size ?? '') ? ` · ${form.size}` : ''}`}
+              </p>
+            )}
+          </div>
           <div className="flex items-center gap-3 flex-shrink-0">
             {saveStatus === 'saving' && (
               <span className="text-xs text-stone-400 flex items-center gap-1.5"><Spinner /> Lagrer…</span>
