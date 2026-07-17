@@ -2827,6 +2827,10 @@ export default function ProjectsPage() {
   const [catDropdownOpen, setCatDropdownOpen]   = useState(false)
   const [sortDropdownOpen, setSortDropdownOpen] = useState(false)
   const [autoOpenPdfId, setAutoOpenPdfId]       = useState<string | null>(null)
+  const [listPdfViewer, setListPdfViewer]       = useState<{ project: Project; pdf: PdfItem } | null>(null)
+  const [listPdfAnnotations, setListPdfAnnotations] = useState<PdfAnnotation[]>([])
+  const [listPdfBookmarks, setListPdfBookmarks]     = useState<Record<string, number>>({})
+  const listPdfViewerRef = useRef<{ project: Project; pdf: PdfItem } | null>(null)
   const catDropdownRef  = useRef<HTMLDivElement>(null)
   const sortDropdownRef = useRef<HTMLDivElement>(null)
 
@@ -2934,12 +2938,24 @@ export default function ProjectsPage() {
   function openEdit(p: Project) { setAutoOpenPdfId(null); setCurrentProject(p); setShowDetail(true) }
   function handleBack()         { setShowDetail(false); setCurrentProject(null); load() }
 
+  // Open the recipe PDF as a modal overlay directly from the list,
+  // so closing it returns the user to the list (same filter/tab).
   function handleOpenRecipePdf(p: Project) {
     const pdf = (p.data.pdfs ?? []).find(x => (x.type ?? 'Annet') === 'Oppskrift')
     if (!pdf) return
-    setAutoOpenPdfId(pdf.id)
-    setCurrentProject(p)
-    setShowDetail(true)
+    const viewer = { project: p, pdf }
+    listPdfViewerRef.current = viewer
+    setListPdfViewer(viewer)
+    setListPdfAnnotations(p.data.pdfAnnotations ?? [])
+    setListPdfBookmarks(p.data.pdfBookmarks ?? {})
+  }
+
+  function saveListPdfData(annotations: PdfAnnotation[], bookmarks: Record<string, number>) {
+    const v = listPdfViewerRef.current
+    if (!v) return
+    const newData = { ...v.project.data, pdfAnnotations: annotations, pdfBookmarks: bookmarks }
+    supabase.from('projects').update({ data: newData }).eq('id', v.project.id)
+    setProjects(ps => ps.map(p => p.id === v.project.id ? { ...p, data: newData } : p))
   }
 
   const filtered = projects.filter(p =>
@@ -3198,6 +3214,52 @@ export default function ProjectsPage() {
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
         </svg>
       </button>
+
+      {/* PDF viewer opened from card "Oppskrift" button — closes back to list */}
+      {listPdfViewer && (
+        <PdfViewerModal
+          pdf={listPdfViewer.pdf}
+          annotations={listPdfAnnotations}
+          onAddAnnotation={a => {
+            const newAnn = { ...a, id: uid(), createdAt: new Date().toISOString() }
+            const next = [...listPdfAnnotations, newAnn]
+            setListPdfAnnotations(next)
+            saveListPdfData(next, listPdfBookmarks)
+          }}
+          onUpdateAnnotation={(id, text) => {
+            const next = listPdfAnnotations.map(a => a.id === id ? { ...a, text } : a)
+            setListPdfAnnotations(next)
+            saveListPdfData(next, listPdfBookmarks)
+          }}
+          onDeleteAnnotation={id => {
+            const next = listPdfAnnotations.filter(a => a.id !== id)
+            setListPdfAnnotations(next)
+            saveListPdfData(next, listPdfBookmarks)
+          }}
+          onMoveAnnotation={(id, x, y) => {
+            const next = listPdfAnnotations.map(a => a.id === id ? { ...a, x, y } : a)
+            setListPdfAnnotations(next)
+            saveListPdfData(next, listPdfBookmarks)
+          }}
+          initialPage={listPdfBookmarks[listPdfViewer.pdf.id] ?? 1}
+          bookmarkPage={listPdfBookmarks[listPdfViewer.pdf.id]}
+          onSetBookmark={page => {
+            const next = { ...listPdfBookmarks, [listPdfViewer!.pdf.id]: page }
+            setListPdfBookmarks(next)
+            saveListPdfData(listPdfAnnotations, next)
+          }}
+          onRemoveBookmark={() => {
+            const next = { ...listPdfBookmarks }
+            delete next[listPdfViewer!.pdf.id]
+            setListPdfBookmarks(next)
+            saveListPdfData(listPdfAnnotations, next)
+          }}
+          onClose={() => {
+            listPdfViewerRef.current = null
+            setListPdfViewer(null)
+          }}
+        />
+      )}
     </>
   )
 }
