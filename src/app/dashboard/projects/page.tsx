@@ -2154,7 +2154,14 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
           )}
 
           {linkedStatus === 'found' && linkedRecipe && (
-            <div className="flex items-center gap-3 p-3 bg-white rounded-xl border border-stone-200">
+            <div
+              className="flex items-center gap-3 p-3 bg-white rounded-xl border border-stone-200 cursor-pointer hover:bg-stone-50 transition-colors"
+              onClick={() => {
+                const pdf = oppskriftPdfs[0]
+                if (pdf) setShowPdfViewer(pdf)
+              }}
+              title="Åpne oppskrift"
+            >
               <div className="w-14 h-14 rounded-lg overflow-hidden bg-stone-100 flex-shrink-0">
                 {linkedRecipe.data.images[0]?.url ? (
                   <img src={linkedRecipe.data.images[0].url} alt={linkedRecipe.data.name}
@@ -2181,7 +2188,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
                 )}
               </div>
               <button
-                onClick={() => upd({ recipeId: '', recipeName: '' })}
+                onClick={e => { e.stopPropagation(); upd({ recipeId: '', recipeName: '' }) }}
                 className="p-1.5 text-stone-300 hover:text-red-400 transition-colors flex-shrink-0"
                 title="Fjern kobling">
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
