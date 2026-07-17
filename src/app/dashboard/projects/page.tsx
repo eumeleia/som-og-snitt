@@ -1588,6 +1588,8 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
   const [showRecipePicker, setShowRecipePicker] = useState(false)
   const [pickerRecipes, setPickerRecipes]   = useState<PickerRecipe[]>([])
   const [sizeManual, setSizeManual]         = useState(false)
+  const [detailsOpen, setDetailsOpen]       = useState(() => (project?.data.status ?? 'Planlagt') !== 'Aktiv')
+  const [equipmentOpen, setEquipmentOpen]   = useState(() => (project?.data.status ?? 'Planlagt') !== 'Aktiv')
 
   // Linked recipe state
   const [linkedRecipe, setLinkedRecipe]     = useState<PickerRecipe | null>(null)
@@ -2096,66 +2098,23 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
           )}
         </div>
 
-        {/* ── 2. Detaljer ── */}
-        <SectionHeading>Detaljer</SectionHeading>
-        <div className="space-y-5">
-          <div>
-            <label className={labelCls}>Prosjektnavn</label>
-            <input className={inputCls} value={form.name} autoFocus
-              onChange={e => upd({ name: e.target.value })}
-              placeholder="Gi prosjektet et navn…" />
-          </div>
-          <div>
-            <label className={labelCls}>Til hvem</label>
-            <input className={inputCls} value={form.recipientName ?? ''}
-              onChange={e => upd({ recipientName: e.target.value })}
-              placeholder="F.eks. Emma, meg selv…" />
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className={labelCls}>Status</label>
-              <select className={inputCls} value={form.status}
-                onChange={e => upd({ status: e.target.value as Status })}>
-                {STATUSES.map(s => <option key={s}>{s}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className={labelCls}>Kategori</label>
-              <select className={inputCls} value={form.category}
-                onChange={e => upd({ category: e.target.value as Category })}>
-                {CATEGORIES.map(c => <option key={c}>{c}</option>)}
-              </select>
-            </div>
-          </div>
-          <div>
-            <label className={labelCls}>Dato</label>
-            <div className="flex gap-2">
-              <input type="date" className={`${inputCls} flex-1`} value={form.date}
-                onChange={e => upd({ date: e.target.value })} />
-              <button onClick={() => upd({ date: toDay() })}
-                className="px-4 py-2 text-sm border border-stone-200 rounded-lg bg-white hover:bg-stone-50 text-stone-600 transition-colors">
-                I dag
-              </button>
-            </div>
-          </div>
-          {form.status === 'Fullført' && (
-            <div>
-              <label className={labelCls}>Fullføringsdato</label>
-              <div className="flex gap-2">
-                <input type="date" className={`${inputCls} flex-1`} value={form.completedDate ?? ''}
-                  onChange={e => upd({ completedDate: e.target.value })} />
-                <button onClick={() => upd({ completedDate: toDay() })}
-                  className="px-4 py-2 text-sm border border-stone-200 rounded-lg bg-white hover:bg-stone-50 text-stone-600 transition-colors">
-                  I dag
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
+        {/* ── b. Detaljer / oppskrift-rad ── */}
+        <div className="flex items-center gap-3 mt-6 flex-wrap">
+          <button
+            onClick={() => setDetailsOpen(o => !o)}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-xl border text-sm font-medium transition-colors flex-shrink-0 ${
+              detailsOpen
+                ? 'bg-stone-800 text-white border-stone-800'
+                : 'bg-white text-stone-600 border-stone-200 hover:bg-stone-50'
+            }`}
+          >
+            Detaljer
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5}
+                d={detailsOpen ? 'M5 15l7-7 7 7' : 'M19 9l-7 7-7-7'} />
+            </svg>
+          </button>
 
-        {/* ── 3. Koblet oppskrift ── */}
-        <SectionHeading>Koblet oppskrift</SectionHeading>
-        <div>
           {linkedStatus === 'loading' && (
             <div className="flex items-center gap-2 text-sm text-stone-400">
               <Spinner /> Laster oppskrift…
@@ -2164,140 +2123,143 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
 
           {linkedStatus === 'found' && linkedRecipe && (
             <div
-              className="flex items-center gap-3 p-3 bg-white rounded-xl border border-stone-200 cursor-pointer hover:bg-stone-50 transition-colors"
+              className="flex-1 flex items-center gap-2 px-3 py-2 bg-white rounded-xl border border-stone-200 cursor-pointer hover:bg-stone-50 transition-colors min-w-0"
               onClick={() => {
-                const pdf = oppskriftPdfs[0]
+                const pdf = (form.pdfs ?? []).find(p => (p.type ?? 'Annet') === 'Oppskrift')
                 if (pdf) setShowPdfViewer(pdf)
               }}
               title="Åpne oppskrift"
             >
-              <div className="w-14 h-14 rounded-lg overflow-hidden bg-stone-100 flex-shrink-0">
+              <div className="w-7 h-7 rounded-md overflow-hidden bg-stone-100 flex-shrink-0">
                 {linkedRecipe.data.images[0]?.url ? (
-                  <img src={linkedRecipe.data.images[0].url} alt={linkedRecipe.data.name}
+                  <img src={linkedRecipe.data.images[0].url} alt=""
                     className="w-full h-full object-cover"
                     style={{ objectPosition: `${linkedRecipe.data.focalX ?? 50}% ${linkedRecipe.data.focalY ?? 50}%` }} />
                 ) : (
                   <div className="w-full h-full flex items-center justify-center">
-                    <svg className="w-6 h-6 text-stone-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <svg className="w-3.5 h-3.5 text-stone-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
                         d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414A1 1 0 0119 9.414V19a2 2 0 01-2 2z" />
                     </svg>
                   </div>
                 )}
               </div>
-              <div className="flex-1 min-w-0">
-                <p className="font-medium text-stone-800 text-sm truncate">{linkedRecipe.data.name}</p>
-                {linkedRecipe.data.designer && (
-                  <p className="text-xs text-stone-400 truncate">{linkedRecipe.data.designer}</p>
-                )}
-                {linkedRecipe.data.category && (
-                  <span className="inline-block mt-1 px-2 py-0.5 rounded border text-xs font-medium bg-rose-50 text-rose-700 border-rose-200">
-                    {linkedRecipe.data.category}
-                  </span>
-                )}
-              </div>
+              <span className="text-sm text-stone-700 truncate flex-1 min-w-0">{linkedRecipe.data.name}</span>
               <button
                 onClick={e => { e.stopPropagation(); upd({ recipeId: '', recipeName: '' }) }}
-                className="p-1.5 text-stone-300 hover:text-red-400 transition-colors flex-shrink-0"
-                title="Fjern kobling">
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                className="p-1 text-stone-300 hover:text-red-400 transition-colors flex-shrink-0"
+                title="Fjern kobling"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </button>
-            </div>
-          )}
-
-          {linkedStatus === 'deleted' && (
-            <div className="p-3 bg-stone-50 rounded-xl border border-stone-200">
-              <p className="text-sm text-stone-400">
-                Originaloppskrift slettet
-                {(form.recipeName ?? '') && (
-                  <> — <em>{form.recipeName}</em></>
-                )}
-              </p>
             </div>
           )}
 
           {(linkedStatus === 'none' || linkedStatus === 'deleted') && (
             <button
               onClick={openRecipePicker}
-              className="mt-3 flex items-center gap-2 px-4 py-2.5 border border-stone-200 rounded-xl text-sm text-stone-600 hover:bg-stone-50 hover:border-stone-300 transition-colors">
-              <svg className="w-4 h-4 text-stone-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              className="flex items-center gap-1.5 px-3 py-2 border border-stone-200 rounded-xl text-sm text-stone-500 hover:bg-stone-50 hover:border-stone-300 transition-colors"
+            >
+              <svg className="w-3.5 h-3.5 text-stone-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
                   d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
               </svg>
-              Koble til oppskrift
+              Koble oppskrift
             </button>
           )}
         </div>
 
-        {/* ── 4. Størrelse ── */}
-        <SectionHeading>Størrelse</SectionHeading>
-        <div className="space-y-3">
-          {linkedSizes.length > 0 && !sizeManual ? (
-            <div className="space-y-2">
-              <select
-                className={inputCls}
-                value={form.size ?? ''}
-                onChange={e => upd({ size: e.target.value })}>
-                <option value="">Velg størrelse…</option>
-                {linkedSizes.map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
-              <button onClick={() => setSizeManual(true)}
-                className="text-xs text-stone-400 hover:text-stone-600 transition-colors">
-                Skriv inn manuelt
-              </button>
+        {/* ── 2. Detaljer (collapsible) ── */}
+        {detailsOpen && (
+          <div className="mt-6 space-y-5">
+            <div>
+              <label className={labelCls}>Prosjektnavn</label>
+              <input className={inputCls} value={form.name}
+                onChange={e => upd({ name: e.target.value })}
+                placeholder="Gi prosjektet et navn…" />
             </div>
-          ) : (
-            <div className="space-y-2">
-              <input className={inputCls} value={form.size ?? ''}
-                onChange={e => upd({ size: e.target.value })}
-                placeholder="F.eks. 38, M, L/XL…" />
-              {linkedSizes.length > 0 && (
-                <button onClick={() => setSizeManual(false)}
-                  className="text-xs text-stone-400 hover:text-stone-600 transition-colors">
-                  ← Tilbake til størrelsesliste
+            <div>
+              <label className={labelCls}>Til hvem</label>
+              <input className={inputCls} value={form.recipientName ?? ''}
+                onChange={e => upd({ recipientName: e.target.value })}
+                placeholder="F.eks. Emma, meg selv…" />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className={labelCls}>Status</label>
+                <select className={inputCls} value={form.status}
+                  onChange={e => upd({ status: e.target.value as Status })}>
+                  {STATUSES.map(s => <option key={s}>{s}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className={labelCls}>Kategori</label>
+                <select className={inputCls} value={form.category}
+                  onChange={e => upd({ category: e.target.value as Category })}>
+                  {CATEGORIES.map(c => <option key={c}>{c}</option>)}
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className={labelCls}>Dato</label>
+              <div className="flex gap-2">
+                <input type="date" className={`${inputCls} flex-1`} value={form.date}
+                  onChange={e => upd({ date: e.target.value })} />
+                <button onClick={() => upd({ date: toDay() })}
+                  className="px-4 py-2 text-sm border border-stone-200 rounded-lg bg-white hover:bg-stone-50 text-stone-600 transition-colors">
+                  I dag
                 </button>
+              </div>
+            </div>
+            {form.status === 'Fullført' && (
+              <div>
+                <label className={labelCls}>Fullføringsdato</label>
+                <div className="flex gap-2">
+                  <input type="date" className={`${inputCls} flex-1`} value={form.completedDate ?? ''}
+                    onChange={e => upd({ completedDate: e.target.value })} />
+                  <button onClick={() => upd({ completedDate: toDay() })}
+                    className="px-4 py-2 text-sm border border-stone-200 rounded-lg bg-white hover:bg-stone-50 text-stone-600 transition-colors">
+                    I dag
+                  </button>
+                </div>
+              </div>
+            )}
+            <div>
+              <label className={labelCls}>Størrelse</label>
+              {linkedSizes.length > 0 && !sizeManual ? (
+                <div className="space-y-2">
+                  <select
+                    className={inputCls}
+                    value={form.size ?? ''}
+                    onChange={e => upd({ size: e.target.value })}>
+                    <option value="">Velg størrelse…</option>
+                    {linkedSizes.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                  <button onClick={() => setSizeManual(true)}
+                    className="text-xs text-stone-400 hover:text-stone-600 transition-colors">
+                    Skriv inn manuelt
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <input className={inputCls} value={form.size ?? ''}
+                    onChange={e => upd({ size: e.target.value })}
+                    placeholder="F.eks. 38, M, L/XL…" />
+                  {linkedSizes.length > 0 && (
+                    <button onClick={() => setSizeManual(false)}
+                      className="text-xs text-stone-400 hover:text-stone-600 transition-colors">
+                      ← Tilbake til størrelsesliste
+                    </button>
+                  )}
+                </div>
               )}
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
-        {/* ── 5. Utstyr ── */}
-        <SectionHeading>Utstyr</SectionHeading>
-        <div className="space-y-2">
-          {(form.equipmentList ?? []).map((item, idx) => (
-            <div key={idx} className="flex gap-2 items-center">
-              <input
-                className={`${inputCls} flex-1`}
-                value={item}
-                onChange={e => {
-                  const next = [...(form.equipmentList ?? [])]
-                  next[idx] = e.target.value
-                  upd({ equipmentList: next })
-                }}
-                placeholder={`Utstyr ${idx + 1}`}
-              />
-              <button
-                onClick={() => upd({ equipmentList: (form.equipmentList ?? []).filter((_, i) => i !== idx) })}
-                className="p-2 text-stone-300 hover:text-red-400 transition-colors flex-shrink-0">
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-          ))}
-          <button
-            onClick={() => upd({ equipmentList: [...(form.equipmentList ?? []), ''] })}
-            className="flex items-center gap-1.5 text-sm text-stone-400 hover:text-stone-600 transition-colors mt-1">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
-            Legg til
-          </button>
-        </div>
-
-        {/* ── 6. Stoffer ── */}
+        {/* ── 3. Stoffer ── */}
         <SectionHeading>Stoffer</SectionHeading>
         <div className="space-y-4">
           <div>
@@ -2404,14 +2366,177 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
           )}
         </div>
 
-        {/* ── 7. Notater ── */}
+        {/* ── 4. Notater ── */}
         <SectionHeading>Notater &amp; Justeringer</SectionHeading>
         <textarea className={`${inputCls} resize-y`} style={{ minHeight: 180 }}
           value={form.notes}
           onChange={e => upd({ notes: e.target.value })}
           placeholder="Stoff, teknikker, endringer, observasjoner…" />
 
-        {/* ── 8. PDF-arkiv ── */}
+        {/* ── 5. Stoffberegner ── */}
+        <SectionHeading>Stoffberegner</SectionHeading>
+        <div className="space-y-4">
+          {oppskriftPdfs.length === 0 ? (
+            <p className="text-sm text-stone-400 italic">
+              Merk en PDF som «Oppskrift» i PDF-arkivet for å bruke stoffberegneren.
+            </p>
+          ) : (
+            oppskriftPdfs.map(pdf => {
+              const isActive    = form.fabricCalc.pdfId === pdf.id
+              const showSizes   = isActive && calcAvailableSizes.length > 0
+              const loadingSz   = calcLoadingStep === 'sizes' && isActive
+              const loadingCalc = calcLoadingStep === 'calc' && isActive
+
+              return (
+                <div key={pdf.id} className="p-4 bg-white rounded-xl border border-stone-200 space-y-3">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="w-7 h-7 bg-red-50 rounded-md flex items-center justify-center flex-shrink-0">
+                      <svg className="w-4 h-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414A1 1 0 0119 9.414V19a2 2 0 01-2 2z" />
+                      </svg>
+                    </div>
+                    <span className="text-sm font-medium text-stone-700">{pdf.displayName?.trim() || pdf.name}</span>
+                  </div>
+
+                  {!showSizes && (
+                    <div className="space-y-1.5">
+                      <button onClick={() => selectSizes(pdf)} disabled={calcLoadingStep !== ''}
+                        className="flex items-center gap-2 px-4 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                        {loadingSz && <Spinner />}
+                        {loadingSz ? 'Laster størrelser…' : 'Velg størrelse'}
+                      </button>
+                      {loadingSz && calcProgress && isActive && (
+                        <p className="text-xs text-stone-400">{calcProgress}</p>
+                      )}
+                    </div>
+                  )}
+
+                  {showSizes && (
+                    <div className="space-y-2">
+                      <p className="text-xs font-semibold tracking-widest uppercase text-stone-400">Velg størrelse</p>
+                      <div className="flex flex-wrap gap-2">
+                        {calcAvailableSizes.map(sz => (
+                          <button key={sz}
+                            onClick={() => { if (form.fabricCalc.size !== sz) upd({ fabricCalc: { ...form.fabricCalc, size: sz, result: '' } }) }}
+                            className={`px-4 py-2 rounded-lg text-sm border transition-colors font-medium ${
+                              form.fabricCalc.size === sz
+                                ? 'bg-stone-800 text-white border-stone-800'
+                                : 'bg-white text-stone-700 border-stone-200 hover:border-stone-400 hover:bg-stone-50'
+                            }`}>
+                            {sz}
+                          </button>
+                        ))}
+                      </div>
+                      <button onClick={() => selectSizes(pdf)} disabled={calcLoadingStep !== ''}
+                        className="text-xs text-stone-400 hover:text-stone-600 transition-colors disabled:opacity-40">
+                        ↺ Last inn størrelser på nytt
+                      </button>
+                    </div>
+                  )}
+
+                  {isActive && !showSizes && form.fabricCalc.size && !loadingSz && (
+                    <p className="text-xs text-stone-500">
+                      Valgt størrelse: <strong>{form.fabricCalc.size}</strong>{' '}
+                      <button onClick={() => selectSizes(pdf)} disabled={calcLoadingStep !== ''}
+                        className="text-stone-400 hover:text-stone-600 underline underline-offset-2 transition-colors disabled:opacity-40">
+                        Endre
+                      </button>
+                    </p>
+                  )}
+
+                  {isActive && form.fabricCalc.size && (
+                    <div className="space-y-1.5">
+                      <button onClick={runFabricCalc} disabled={calcLoadingStep !== ''}
+                        className="flex items-center gap-2 px-4 py-2 text-white text-sm rounded-lg transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
+                        style={{ backgroundColor: '#C9A57A' }}>
+                        {loadingCalc && <Spinner />}
+                        {loadingCalc ? 'Beregner…' : `Beregn stoffmengde – str. ${form.fabricCalc.size}`}
+                      </button>
+                      {loadingCalc && calcProgress && isActive && (
+                        <p className="text-xs text-stone-400">{calcProgress}</p>
+                      )}
+                    </div>
+                  )}
+
+                  {isActive && form.fabricCalc.result && (
+                    <div className="bg-amber-50 border border-amber-100 rounded-xl p-4">
+                      <p className="text-xs tracking-widest uppercase text-amber-500 mb-3">
+                        Stoffbehov — størrelse {form.fabricCalc.size}
+                      </p>
+                      <div className="text-sm text-stone-700 leading-relaxed [&>h2]:font-['Cormorant_Garamond',serif] [&>h2]:text-lg [&>h2]:font-semibold [&>h2]:text-stone-800 [&>h2]:mt-4 [&>h2]:mb-1 [&>h2:first-child]:mt-0 [&>ul]:list-disc [&>ul]:pl-5 [&>ul]:space-y-0.5 [&>p]:my-1 [&_strong]:font-semibold">
+                        <ReactMarkdown>{form.fabricCalc.result}</ReactMarkdown>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })
+          )}
+          {calcError && (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-700">{calcError}</div>
+          )}
+        </div>
+
+        {/* ── 5b. Utstyr (collapsible) ── */}
+        <div
+          onClick={() => setEquipmentOpen(o => !o)}
+          className="flex items-center gap-4 mt-12 mb-5 cursor-pointer group"
+        >
+          <h2 className="font-serif text-xl text-stone-600 whitespace-nowrap group-hover:text-stone-800 transition-colors">
+            Utstyr{(form.equipmentList ?? []).length > 0 ? ` (${form.equipmentList.length})` : ''}
+          </h2>
+          <div className="flex-1 border-t border-stone-200" />
+          <svg className="w-4 h-4 text-stone-400 group-hover:text-stone-600 flex-shrink-0 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d={equipmentOpen ? 'M5 15l7-7 7 7' : 'M19 9l-7 7-7-7'} />
+          </svg>
+        </div>
+        {equipmentOpen && (
+          <div className="space-y-2">
+            {(form.equipmentList ?? []).map((item, idx) => (
+              <div key={idx} className="flex gap-2 items-center">
+                <input
+                  className={`${inputCls} flex-1`}
+                  value={item}
+                  onChange={e => {
+                    const next = [...(form.equipmentList ?? [])]
+                    next[idx] = e.target.value
+                    upd({ equipmentList: next })
+                  }}
+                  placeholder={`Utstyr ${idx + 1}`}
+                />
+                <button
+                  onClick={() => upd({ equipmentList: (form.equipmentList ?? []).filter((_, i) => i !== idx) })}
+                  className="p-2 text-stone-300 hover:text-red-400 transition-colors flex-shrink-0">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            ))}
+            <button
+              onClick={() => upd({ equipmentList: [...(form.equipmentList ?? []), ''] })}
+              className="flex items-center gap-1.5 text-sm text-stone-400 hover:text-stone-600 transition-colors mt-1">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              Legg til
+            </button>
+          </div>
+        )}
+
+        {/* ── 6. Vedlikehold & Pleie ── */}
+        <SectionHeading>Vedlikehold &amp; Pleie</SectionHeading>
+        <div>
+          <label className={labelCls}>Pleie &amp; Vedlikehold</label>
+          <textarea className={`${inputCls} resize-y`} style={{ minHeight: 180 }}
+            value={form.care.details}
+            onChange={e => upd({ care: { details: e.target.value } })}
+            placeholder="Pleieinstruksjoner…" />
+        </div>
+
+        {/* ── 7. PDF-arkiv ── */}
         <SectionHeading>PDF-arkiv</SectionHeading>
         <div className="space-y-4">
           <div className="bg-stone-50 rounded-xl border border-stone-100 overflow-hidden">
@@ -2588,121 +2713,6 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
           ) : (
             <p className="text-center py-8 text-sm text-stone-300">Ingen PDF-er ennå</p>
           )}
-        </div>
-
-        {/* ── 9. Stoffberegner ── */}
-        <SectionHeading>Stoffberegner</SectionHeading>
-        <div className="space-y-4">
-          {oppskriftPdfs.length === 0 ? (
-            <p className="text-sm text-stone-400 italic">
-              Merk en PDF som «Oppskrift» i PDF-arkivet for å bruke stoffberegneren.
-            </p>
-          ) : (
-            oppskriftPdfs.map(pdf => {
-              const isActive    = form.fabricCalc.pdfId === pdf.id
-              const showSizes   = isActive && calcAvailableSizes.length > 0
-              const loadingSz   = calcLoadingStep === 'sizes' && isActive
-              const loadingCalc = calcLoadingStep === 'calc' && isActive
-
-              return (
-                <div key={pdf.id} className="p-4 bg-white rounded-xl border border-stone-200 space-y-3">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <div className="w-7 h-7 bg-red-50 rounded-md flex items-center justify-center flex-shrink-0">
-                      <svg className="w-4 h-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414A1 1 0 0119 9.414V19a2 2 0 01-2 2z" />
-                      </svg>
-                    </div>
-                    <span className="text-sm font-medium text-stone-700">{pdf.displayName?.trim() || pdf.name}</span>
-                  </div>
-
-                  {!showSizes && (
-                    <div className="space-y-1.5">
-                      <button onClick={() => selectSizes(pdf)} disabled={calcLoadingStep !== ''}
-                        className="flex items-center gap-2 px-4 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
-                        {loadingSz && <Spinner />}
-                        {loadingSz ? 'Laster størrelser…' : 'Velg størrelse'}
-                      </button>
-                      {loadingSz && calcProgress && isActive && (
-                        <p className="text-xs text-stone-400">{calcProgress}</p>
-                      )}
-                    </div>
-                  )}
-
-                  {showSizes && (
-                    <div className="space-y-2">
-                      <p className="text-xs font-semibold tracking-widest uppercase text-stone-400">Velg størrelse</p>
-                      <div className="flex flex-wrap gap-2">
-                        {calcAvailableSizes.map(sz => (
-                          <button key={sz}
-                            onClick={() => { if (form.fabricCalc.size !== sz) upd({ fabricCalc: { ...form.fabricCalc, size: sz, result: '' } }) }}
-                            className={`px-4 py-2 rounded-lg text-sm border transition-colors font-medium ${
-                              form.fabricCalc.size === sz
-                                ? 'bg-stone-800 text-white border-stone-800'
-                                : 'bg-white text-stone-700 border-stone-200 hover:border-stone-400 hover:bg-stone-50'
-                            }`}>
-                            {sz}
-                          </button>
-                        ))}
-                      </div>
-                      <button onClick={() => selectSizes(pdf)} disabled={calcLoadingStep !== ''}
-                        className="text-xs text-stone-400 hover:text-stone-600 transition-colors disabled:opacity-40">
-                        ↺ Last inn størrelser på nytt
-                      </button>
-                    </div>
-                  )}
-
-                  {isActive && !showSizes && form.fabricCalc.size && !loadingSz && (
-                    <p className="text-xs text-stone-500">
-                      Valgt størrelse: <strong>{form.fabricCalc.size}</strong>{' '}
-                      <button onClick={() => selectSizes(pdf)} disabled={calcLoadingStep !== ''}
-                        className="text-stone-400 hover:text-stone-600 underline underline-offset-2 transition-colors disabled:opacity-40">
-                        Endre
-                      </button>
-                    </p>
-                  )}
-
-                  {isActive && form.fabricCalc.size && (
-                    <div className="space-y-1.5">
-                      <button onClick={runFabricCalc} disabled={calcLoadingStep !== ''}
-                        className="flex items-center gap-2 px-4 py-2 text-white text-sm rounded-lg transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
-                        style={{ backgroundColor: '#C9A57A' }}>
-                        {loadingCalc && <Spinner />}
-                        {loadingCalc ? 'Beregner…' : `Beregn stoffmengde – str. ${form.fabricCalc.size}`}
-                      </button>
-                      {loadingCalc && calcProgress && isActive && (
-                        <p className="text-xs text-stone-400">{calcProgress}</p>
-                      )}
-                    </div>
-                  )}
-
-                  {isActive && form.fabricCalc.result && (
-                    <div className="bg-amber-50 border border-amber-100 rounded-xl p-4">
-                      <p className="text-xs tracking-widest uppercase text-amber-500 mb-3">
-                        Stoffbehov — størrelse {form.fabricCalc.size}
-                      </p>
-                      <div className="text-sm text-stone-700 leading-relaxed [&>h2]:font-['Cormorant_Garamond',serif] [&>h2]:text-lg [&>h2]:font-semibold [&>h2]:text-stone-800 [&>h2]:mt-4 [&>h2]:mb-1 [&>h2:first-child]:mt-0 [&>ul]:list-disc [&>ul]:pl-5 [&>ul]:space-y-0.5 [&>p]:my-1 [&_strong]:font-semibold">
-                        <ReactMarkdown>{form.fabricCalc.result}</ReactMarkdown>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )
-            })
-          )}
-          {calcError && (
-            <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-700">{calcError}</div>
-          )}
-        </div>
-
-        {/* ── 10. Vedlikehold & Pleie ── */}
-        <SectionHeading>Vedlikehold &amp; Pleie</SectionHeading>
-        <div>
-          <label className={labelCls}>Pleie &amp; Vedlikehold</label>
-          <textarea className={`${inputCls} resize-y`} style={{ minHeight: 180 }}
-            value={form.care.details}
-            onChange={e => upd({ care: { details: e.target.value } })}
-            placeholder="Pleieinstruksjoner…" />
         </div>
 
         {/* ── 11. Bildegalleri (Planlagt/Aktiv) ── */}
