@@ -727,6 +727,7 @@ def _compute_bg_mask(img_arr):
     close_mask = (de_map < 5.0) & ~bg_mask
 
     # BFS over close_mask pixels only; skip components touching the border
+    _enclosed_px = 0
     comp_vis = ~close_mask          # non-close pixels treated as already visited
     for _sy, _sx in np.argwhere(close_mask):
         if comp_vis[_sy, _sx]:
@@ -749,8 +750,9 @@ def _compute_bg_mask(img_arr):
                     q.append((ny, nx))
         if not touches_border:
             bg_mask[np.array(comp_ys), np.array(comp_xs)] = True
+            _enclosed_px += len(comp_ys)
 
-    return bg_mask
+    return bg_mask, _enclosed_px
 
 
 # --------------------------------------------------------------------------- #
@@ -1023,6 +1025,7 @@ def convert_image_to_pes(image_bytes: bytes,
 
     # ── 1b. Background mask ───────────────────────────────────────────────────
     bg_mask = None
+    _enclosed_bg_px = 0
     if remove_bg:
         if has_alpha:
             # Use NEAREST for alpha to avoid blur creating spurious semi-transparent pixels
@@ -1032,9 +1035,9 @@ def convert_image_to_pes(image_bytes: bytes,
             if not bg_mask.any():
                 # All pixels fully opaque (e.g. RGBA with white background) —
                 # fall back to flood-fill from corners
-                bg_mask = _compute_bg_mask(img_arr)
+                bg_mask, _enclosed_bg_px = _compute_bg_mask(img_arr)
         else:
-            bg_mask = _compute_bg_mask(img_arr)
+            bg_mask, _enclosed_bg_px = _compute_bg_mask(img_arr)
 
     # Apply bg_mask BEFORE quantisation so background pixels don't bias colour clusters
     if bg_mask is not None:
@@ -1349,6 +1352,13 @@ def convert_image_to_pes(image_bytes: bytes,
         warnings.append(
             f"Bakgrunn sys som én farge ({_soft_bg_pct * 100:.0f} % av bildet). "
             "Bruk «Fjern bakgrunn» for å stryke bakgrunnen helt."
+        )
+    # 1 px = 0.1 mm → 1 mm² = 100 px² → 20 mm² = 2000 px²
+    if remove_bg and _enclosed_bg_px > 2000:
+        warnings.append(
+            "Store hvite/bakgrunnsfargede områder inne i motivet ble fjernet som bakgrunn — "
+            "hvis de er del av designet (ansikter, tekst-kontur), gi dem en annen farge i bildet "
+            "eller bruk transparent PNG."
         )
     if _removed_region_count > 0:
         warnings.append(
