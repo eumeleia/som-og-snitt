@@ -398,6 +398,111 @@ def _component_pts_smart(comp: dict, max_stitch: int):
     return path
 
 
+def _fill_angled(comp_m, angle_deg: float, orig_h: int, orig_w: int,
+                 row_spacing: int, max_stitch: int):
+    """
+    Generate a fill path for comp_m at the given angle.
+    Rotates the mask by -angle_deg, runs the standard horizontal fill,
+    then rotates the resulting points back by +angle_deg.
+    angle_deg == 0 uses the unrotated code path (bit-identical to the original).
+    """
+    import math
+    import numpy as np
+    from scipy.ndimage import rotate as _nd_rotate
+
+    if angle_deg == 0:
+        comp_m_filled = _fill_holes(comp_m)
+        comp_filled = {}
+        for fy in range(0, orig_h, row_spacing):
+            fsegs = list(_runs(comp_m_filled[fy]))
+            if fsegs:
+                comp_filled[fy] = fsegs
+        return _component_pts_smart(comp_filled if comp_filled else {}, max_stitch)
+
+    rad = math.radians(angle_deg)
+    cos_t = math.cos(rad)
+    sin_t = math.sin(rad)
+
+    rotated = _nd_rotate(comp_m.astype(np.uint8), -angle_deg,
+                         reshape=True, order=0, cval=0).astype(bool)
+    rot_h, rot_w = rotated.shape
+    rot_filled = _fill_holes(rotated)
+    rot_comp: dict = {}
+    for fy in range(0, rot_h, row_spacing):
+        fsegs = list(_runs(rot_filled[fy]))
+        if fsegs:
+            rot_comp[fy] = fsegs
+
+    rot_path = _component_pts_smart(rot_comp if rot_comp else {}, max_stitch)
+    if not rot_path:
+        return []
+
+    rot_cx = rot_w / 2.0
+    rot_cy = rot_h / 2.0
+    orig_cx = orig_w / 2.0
+    orig_cy = orig_h / 2.0
+
+    result = []
+    prev_xy = None
+    for rx, ry in rot_path:
+        dxr = rx - rot_cx
+        dyr = ry - rot_cy
+        dx = dxr * cos_t - dyr * sin_t
+        dy = dxr * sin_t + dyr * cos_t
+        ox = max(0, min(orig_w - 1, int(round(orig_cx + dx))))
+        oy = max(0, min(orig_h - 1, int(round(orig_cy + dy))))
+        xy = (ox, oy)
+        if xy != prev_xy:
+            result.append(xy)
+            prev_xy = xy
+    return result
+
+
+def _assign_fill_angles(masks, protected_indices=None):
+    """
+    Greedy graph-colouring over a region-adjacency graph to assign fill angles.
+    Adjacent regions get different angles from {0, 45, 90, 135}.
+    Largest region and protected (small-detail) colours get 0°.
+    """
+    import numpy as np
+    ANGLES = [0, 45, 90, 135]
+    n = len(masks)
+    if n == 0:
+        return []
+    protected_indices = set(protected_indices or [])
+    areas = [int(m.astype(bool).sum()) for m in masks]
+
+    dilated = []
+    for m in masks:
+        mb = m.astype(bool)
+        d = mb.copy()
+        for _ in range(2):
+            nxt = d.copy()
+            nxt[1:] |= d[:-1]
+            nxt[:-1] |= d[1:]
+            nxt[:, 1:] |= d[:, :-1]
+            nxt[:, :-1] |= d[:, 1:]
+            d = nxt
+        dilated.append(d)
+
+    adj: list = [set() for _ in range(n)]
+    for i in range(n):
+        for j in range(i + 1, n):
+            if np.logical_and(dilated[i], masks[j].astype(bool)).any():
+                adj[i].add(j)
+                adj[j].add(i)
+
+    order = sorted(range(n), key=lambda i: -areas[i])
+    angle_map: dict = {}
+    for idx in order:
+        if idx in protected_indices:
+            angle_map[idx] = 0
+            continue
+        used = {angle_map[nb] for nb in adj[idx] if nb in angle_map}
+        angle_map[idx] = next((a for a in ANGLES if a not in used), 0)
+    return [angle_map.get(i, 0) for i in range(n)]
+
+
 def _sample_path(path: list, step: int):
     """Down-sample a pixel path to ~step-unit spacing."""
     if not path:
@@ -1000,7 +1105,8 @@ def convert_image_to_pes(image_bytes: bytes,
                          stitch_type: str,
                          size_mm: float,
                          num_colors: int,
-                         remove_bg: bool = False):
+                         remove_bg: bool = False,
+                         fill_angles=None):
     """
     Convert raw image bytes to a PES file.
     Returns (pes_bytes, metadata_dict).
@@ -1124,15 +1230,36 @@ def convert_image_to_pes(image_bytes: bytes,
     has_thin = False
     first = True
 
+    _auto_angles: list = []
+
     if stitch_type == 'fill':
         ROW      = 4    # 0.4 mm fill row spacing
         MAX      = 30   # 3.0 mm max stitch length
         MIN_AREA = 300  # 3 mm² minimum (1 px = 0.1 mm → 3 mm² = 300 px)
 
-        for (r, g, b), mask_raw in zip(palette, masks):
+        # Compute per-colour fill angles; None → auto-assign via graph colouring
+        if fill_angles is None:
+            _pal_lab = np.array([list(_rgb_to_lab(r, g, b)) for r, g, b in palette])
+            _pal_chroma = np.sqrt(_pal_lab[:, 1] ** 2 + _pal_lab[:, 2] ** 2)
+            _pal_diff = _pal_lab[:, np.newaxis] - _pal_lab[np.newaxis]
+            _pal_de = np.sqrt(np.sum(_pal_diff ** 2, axis=2))
+            np.fill_diagonal(_pal_de, np.inf)
+            _pal_min_de = _pal_de.min(axis=1)
+            _prot_idx = {i for i in range(len(palette))
+                         if _pal_chroma[i] > 25.0 and _pal_min_de[i] > 20.0}
+            _angles = _assign_fill_angles(masks, protected_indices=_prot_idx)
+        else:
+            _angles = list(fill_angles)
+            while len(_angles) < len(palette):
+                _angles.append(0)
+        _auto_angles = list(_angles)
+
+        for palette_idx, ((r, g, b), mask_raw) in enumerate(zip(palette, masks)):
             mask = mask_raw.astype(bool)
             if not mask.any():
                 continue
+
+            angle = _angles[palette_idx] if palette_idx < len(_angles) else 0
 
             # Detect thin features for warning (before component filtering)
             if not has_thin:
@@ -1172,17 +1299,7 @@ def convert_image_to_pes(image_bytes: bytes,
                 if not comp_m.any():
                     continue
 
-                # Fill enclosed holes so the greedy path stays continuous
-                # within each arm — eliminates within-component gap crossings.
-                comp_m_filled = _fill_holes(comp_m)
-                comp_filled = {}
-                for fy in range(0, new_h, ROW):
-                    fsegs = list(_runs(comp_m_filled[fy]))
-                    if fsegs:
-                        comp_filled[fy] = fsegs
-
-                raw_path = _component_pts_smart(
-                    comp_filled if comp_filled else comp, MAX)
+                raw_path = _fill_angled(comp_m, angle, new_h, new_w, ROW, MAX)
                 _emit(pattern,
                       _filter_short_moves(raw_path, min_dist=7,
                                           max_stitch=MAX, trim_dist=120),
@@ -1377,6 +1494,7 @@ def convert_image_to_pes(image_bytes: bytes,
         'colors':       active_colors,
         'warnings':     warnings,
         'info':         info,
+        'auto_angles':  _auto_angles,
     }
 
 
@@ -1399,11 +1517,12 @@ class handler(BaseHTTPRequestHandler):
                 return
             body = json.loads(self.rfile.read(n))
 
-            img_b64    = body.get('image_data', '')
-            s_type     = body.get('stitch_type', 'fill')
-            size_mm    = float(body.get('size_mm', 100))
-            n_colors   = int(body.get('num_colors', 3))
-            rem_bg     = bool(body.get('remove_bg', False))
+            img_b64      = body.get('image_data', '')
+            s_type       = body.get('stitch_type', 'fill')
+            size_mm      = float(body.get('size_mm', 100))
+            n_colors     = int(body.get('num_colors', 3))
+            rem_bg       = bool(body.get('remove_bg', False))
+            fill_angles  = body.get('fill_angles', None)  # list[int] | null
 
             if not img_b64:
                 self._json(400, {'error': 'Mangler image_data'})
@@ -1420,7 +1539,8 @@ class handler(BaseHTTPRequestHandler):
 
             img_bytes = base64.b64decode(img_b64)
             pes_bytes, meta = convert_image_to_pes(
-                img_bytes, s_type, size_mm, n_colors, rem_bg
+                img_bytes, s_type, size_mm, n_colors, rem_bg,
+                fill_angles=fill_angles,
             )
             self._json(200, {
                 'pes_data': base64.b64encode(pes_bytes).decode(),
