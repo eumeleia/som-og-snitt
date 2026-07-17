@@ -30,6 +30,13 @@ interface ConversionResult {
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
+const FABRIC_COLORS = [
+  { hex: '#ffffff', label: 'Hvit' },
+  { hex: '#f4ede0', label: 'Naturhvit' },
+  { hex: '#cfc9c0', label: 'Lys grå' },
+  { hex: '#1a2744', label: 'Marine' },
+]
+
 function uid() {
   return Math.random().toString(36).slice(2, 10)
 }
@@ -46,6 +53,30 @@ function formatTime(sec: number): string {
   const m = Math.floor(sec / 60)
   const s = sec % 60
   return s > 0 ? `${m} min ${s} sek` : `${m} min`
+}
+
+/**
+ * Composite a transparent PNG data URL onto white and return as JPEG base64.
+ * Used when saving cover images from the transparent preview.
+ */
+function transparentPngToJpegB64(dataUrl: string): Promise<string | null> {
+  return new Promise(resolve => {
+    const img = new window.Image()
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas')
+        canvas.width  = img.naturalWidth
+        canvas.height = img.naturalHeight
+        const ctx = canvas.getContext('2d')!
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(0, 0, canvas.width, canvas.height)
+        ctx.drawImage(img, 0, 0)
+        resolve(canvas.toDataURL('image/jpeg', 0.82).split(',')[1])
+      } catch { resolve(null) }
+    }
+    img.onerror = () => resolve(null)
+    img.src = dataUrl
+  })
 }
 
 /**
@@ -198,6 +229,7 @@ export default function BildeTilBroderiPage() {
   const [converting, setConverting]             = useState(false)
   const [error, setError]                       = useState<string | null>(null)
   const [result, setResult]                     = useState<ConversionResult | null>(null)
+  const [fabricColor, setFabricColor]           = useState<string>('#ffffff')
   const [saving, setSaving]                     = useState(false)
   const [saved, setSaved]                       = useState(false)
   const [savedEmbroideryId, setSavedEmbroideryId] = useState<string | null>(null)
@@ -275,7 +307,7 @@ export default function BildeTilBroderiPage() {
         const renderRes = await fetch('/api/render-pes', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pes_data: convData.pes_data }),
+          body: JSON.stringify({ pes_data: convData.pes_data, transparent_bg: true }),
         })
         if (renderRes.ok) {
           const rd = await renderRes.json()
@@ -325,16 +357,19 @@ export default function BildeTilBroderiPage() {
 
       let coverUrl = ''
       if (result.previewDataUrl) {
-        const coverB64      = result.previewDataUrl.split(',')[1]
-        const coverBlob     = b64ToBlob(coverB64, 'image/jpeg')
-        const coverFilename = `bilde-broderi-cover-${ts}-${uid()}.jpg`
-        const { error: covErr } = await supabase.storage
-          .from('embroidery-files')
-          .upload(coverFilename, coverBlob, { contentType: 'image/jpeg' })
-        if (!covErr) {
-          const { data: covUrlData } = supabase.storage
-            .from('embroidery-files').getPublicUrl(coverFilename)
-          coverUrl = covUrlData.publicUrl
+        // Composite transparent preview onto white before storing as cover
+        const coverB64 = await transparentPngToJpegB64(result.previewDataUrl)
+        if (coverB64) {
+          const coverBlob     = b64ToBlob(coverB64, 'image/jpeg')
+          const coverFilename = `bilde-broderi-cover-${ts}-${uid()}.jpg`
+          const { error: covErr } = await supabase.storage
+            .from('embroidery-files')
+            .upload(coverFilename, coverBlob, { contentType: 'image/jpeg' })
+          if (!covErr) {
+            const { data: covUrlData } = supabase.storage
+              .from('embroidery-files').getPublicUrl(coverFilename)
+            coverUrl = covUrlData.publicUrl
+          }
         }
       }
 
@@ -566,13 +601,44 @@ export default function BildeTilBroderiPage() {
 
           {/* PES rendered preview */}
           {result.previewDataUrl ? (
-            <div className="w-full aspect-square bg-stone-100 rounded-2xl overflow-hidden border border-stone-200 flex items-center justify-center">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={result.previewDataUrl}
-                alt="Broderiforhåndsvisning"
-                className="w-full h-full object-contain"
-              />
+            <div className="space-y-2">
+              {/* Fabric colour picker — only affects the preview, not the PES file */}
+              <div className="flex items-center gap-2.5">
+                <span className="text-xs text-stone-500 flex-shrink-0">Stoff:</span>
+                <div className="flex items-center gap-1.5">
+                  {FABRIC_COLORS.map(fc => (
+                    <button
+                      key={fc.hex}
+                      onClick={() => setFabricColor(fc.hex)}
+                      className={`w-5 h-5 rounded-full border-2 transition-transform flex-shrink-0 ${
+                        fabricColor === fc.hex
+                          ? 'border-stone-600 scale-110'
+                          : 'border-stone-300 hover:border-stone-400'
+                      }`}
+                      style={{ backgroundColor: fc.hex }}
+                      title={fc.label}
+                    />
+                  ))}
+                  <input
+                    type="color"
+                    value={fabricColor}
+                    onChange={e => setFabricColor(e.target.value)}
+                    className="w-5 h-5 rounded-full cursor-pointer border border-stone-300 p-0"
+                    title="Egendefinert stoff"
+                  />
+                </div>
+              </div>
+              <div
+                className="w-full aspect-square rounded-2xl overflow-hidden border border-stone-200 flex items-center justify-center"
+                style={{ backgroundColor: fabricColor }}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={result.previewDataUrl}
+                  alt="Broderiforhåndsvisning"
+                  className="w-full h-full object-contain"
+                />
+              </div>
             </div>
           ) : (
             <div className="w-full aspect-square bg-stone-100 rounded-2xl border border-stone-200 flex items-center justify-center text-stone-400 text-sm">

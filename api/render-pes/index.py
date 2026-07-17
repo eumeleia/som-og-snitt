@@ -7,10 +7,13 @@ import traceback
 from http.server import BaseHTTPRequestHandler
 
 
-def render_pes(pes_bytes: bytes):
+def render_pes(pes_bytes: bytes, transparent_bg: bool = False):
     """
-    Renders PES embroidery file to PNG using pyembroidery + Pillow.
-    Returns (png_bytes, width_mm, height_mm) or raises on failure.
+    Renders PES embroidery file using pyembroidery + Pillow.
+    transparent_bg=False → white-background JPEG (for covers/thumbnails).
+    transparent_bg=True  → RGBA PNG with transparent background (for live preview
+                           with user-chosen fabric colour).
+    Returns (image_bytes, width_mm, height_mm) or raises on failure.
     """
     import pyembroidery
     from PIL import Image
@@ -47,6 +50,35 @@ def render_pes(pes_bytes: bytes):
                     height_mm = round(h / 10.0, 1)
         except Exception:
             pass
+
+        if transparent_bg:
+            # Render without background_color so pyembroidery leaves it transparent
+            pyembroidery.write(pattern, tmp_png, {'scale': 5})
+            img = Image.open(tmp_png)
+            if img.mode != 'RGBA':
+                img = img.convert('RGBA')
+            # Trim transparent margins using the alpha channel
+            try:
+                alpha = img.split()[3]
+                bbox = alpha.getbbox()
+                if bbox:
+                    bbox_w = bbox[2] - bbox[0]
+                    bbox_h = bbox[3] - bbox[1]
+                    margin = max(10, int(max(bbox_w, bbox_h) * 0.05))
+                    left = max(0, bbox[0] - margin)
+                    top = max(0, bbox[1] - margin)
+                    right = min(img.width, bbox[2] + margin)
+                    bottom = min(img.height, bbox[3] + margin)
+                    if right > left and bottom > top:
+                        img = img.crop((left, top, right, bottom))
+            except Exception:
+                pass
+            max_size = 800
+            if max(img.width, img.height) > max_size:
+                img.thumbnail((max_size, max_size), Image.LANCZOS)
+            out = io.BytesIO()
+            img.save(out, format='PNG', optimize=True)
+            return out.getvalue(), width_mm, height_mm
 
         # Render at scale 5 for a crisp result
         pyembroidery.write(pattern, tmp_png, {'scale': 5, 'background_color': 0xFFFFFF})
@@ -92,9 +124,7 @@ def render_pes(pes_bytes: bytes):
 
         out = io.BytesIO()
         img.save(out, format='JPEG', quality=80, optimize=True)
-        png_bytes = out.getvalue()
-
-        return png_bytes, width_mm, height_mm
+        return out.getvalue(), width_mm, height_mm
 
     finally:
         try:
@@ -180,10 +210,12 @@ class handler(BaseHTTPRequestHandler):
                 self._json(200, result)
                 return
 
-            png_bytes, width_mm, height_mm = render_pes(pes_bytes)
-            png_b64 = base64.b64encode(png_bytes).decode('utf-8')
+            transparent_bg = bool(body.get('transparent_bg', False))
+            img_bytes, width_mm, height_mm = render_pes(pes_bytes, transparent_bg)
+            img_b64 = base64.b64encode(img_bytes).decode('utf-8')
 
-            result = {'png_base64': png_b64, 'content_type': 'image/jpeg'}
+            content_type = 'image/png' if transparent_bg else 'image/jpeg'
+            result = {'png_base64': img_b64, 'content_type': content_type}
             if width_mm is not None:
                 result['width_mm'] = width_mm
                 result['height_mm'] = height_mm
