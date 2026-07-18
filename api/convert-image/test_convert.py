@@ -483,6 +483,118 @@ def test_enclosed_bg_holes():
     print(f"OK  ({meta['stitch_count']} stitches, {meta['color_count']} colours)")
 
 
+def make_portrait_test_png() -> bytes:
+    """
+    Synthetic posterized portrait: 10 horizontal skin-tone bands, each 20×200 px.
+    Adjacent bands are ΔE ≈ 7-9 apart (above ΔE=5, below ΔE=12), so portrait
+    mode (ΔE=5 merge) keeps them separate while standard mode can collapse some.
+    """
+    import numpy as np
+    from PIL import Image
+
+    colors = [
+        (255, 224, 189),
+        (248, 209, 165),
+        (238, 193, 142),
+        (225, 177, 121),
+        (210, 161, 102),
+        (194, 144,  83),
+        (177, 127,  66),
+        (159, 111,  52),
+        (140,  95,  40),
+        (120,  80,  28),
+    ]
+    arr = np.zeros((200, 200, 3), dtype=np.uint8)
+    for i, c in enumerate(colors):
+        arr[i * 20:(i + 1) * 20, :] = c
+    buf = io.BytesIO()
+    Image.fromarray(arr).save(buf, format='PNG')
+    return buf.getvalue()
+
+
+def _parse_pes_thread_stitches(pes_bytes: bytes) -> list:
+    """Return list of stitch counts per thread (in order)."""
+    import pyembroidery
+    with tempfile.NamedTemporaryFile(suffix='.pes', delete=False) as f:
+        f.write(pes_bytes)
+        tmp = f.name
+    try:
+        parsed = pyembroidery.read(tmp)
+    finally:
+        os.unlink(tmp)
+
+    assert parsed is not None
+    counts: list = []
+    cur = 0
+    for _, _, cmd in parsed.stitches:
+        if cmd == pyembroidery.STITCH:
+            cur += 1
+        elif cmd in (pyembroidery.COLOR_CHANGE, pyembroidery.COLOR_BREAK,
+                     pyembroidery.END):
+            if cur > 0:
+                counts.append(cur)
+            cur = 0
+    return counts
+
+
+def test_stencil_mode():
+    """
+    Stencil mode on a portrait test image:
+    - Valid 1-thread PES (re-parsed with pyembroidery)
+    - color_count == 1
+    - No thin-region warning (thickening raised all features above 1 mm)
+    """
+    print("test_stencil_mode ...", end=" ", flush=True)
+    img = make_portrait_test_png()
+    pes, meta = convert_image_to_pes(
+        img, 'fill', 80.0, 1,
+        preprocessing_mode='portrait_stencil',
+        detail_level=50,
+        line_thickness_mm=1.5,
+    )
+    assert len(pes) > 0, "PES is empty"
+    assert meta['color_count'] == 1, f"Expected 1 color, got {meta['color_count']}"
+    _check_parseable(pes, "stencil_mode")
+
+    sc, tc, threads, runs = _parse_pes_runs(pes)
+    assert threads == 1, f"Expected 1 thread, got {threads}"
+
+    warn_text = ' '.join(meta.get('warnings', []))
+    assert 'smalere enn 1 mm' not in warn_text, \
+        f"Thin-region warning after stencil thickening: {warn_text}"
+
+    print(f"OK  ({meta['stitch_count']} stitches, {threads} thread)")
+
+
+def test_portrait_color_mode():
+    """
+    Portrait colour mode on a 10-band skin-tone image (10 colours requested):
+    - At least 8 threads survive (portrait ΔE=5 keeps close tones distinct)
+    - No single thread accounts for > 40% of total stitches
+    """
+    print("test_portrait_color_mode ...", end=" ", flush=True)
+    img = make_portrait_test_png()
+    pes, meta = convert_image_to_pes(
+        img, 'fill', 80.0, 10,
+        preprocessing_mode='portrait_color',
+        smoothing=1,
+    )
+    assert len(pes) > 0, "PES is empty"
+    _check_parseable(pes, "portrait_color")
+
+    sc, tc, threads, runs = _parse_pes_runs(pes)
+    assert threads >= 8, f"Expected ≥ 8 threads, got {threads}"
+
+    thread_counts = _parse_pes_thread_stitches(pes)
+    total = sum(thread_counts)
+    if total > 0 and thread_counts:
+        max_frac = max(thread_counts) / total
+        assert max_frac < 0.40, \
+            f"Single thread has {max_frac * 100:.0f}% of stitches — expected < 40%"
+
+    print(f"OK  ({threads} threads, {meta['stitch_count']} stitches)")
+
+
 if __name__ == '__main__':
     test_fill_1color()
     test_fill_3colors()
@@ -494,4 +606,6 @@ if __name__ == '__main__':
     test_kanin_bg_removed()
     test_kanin_bg_on()
     test_enclosed_bg_holes()
+    test_stencil_mode()
+    test_portrait_color_mode()
     print("\nAlle tester bestått.")

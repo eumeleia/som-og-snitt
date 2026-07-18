@@ -670,6 +670,81 @@ def _cleanup_regions(masks, palette):
     return new_masks, removed_count
 
 
+def _preprocess_portrait_color(img_arr, smoothing):
+    """
+    Edge-preserving smoothing for portrait colour mode.
+    smoothing: 0=low (1×3x3), 1=medium (2×5x5), 2=high (3×7x7 median passes).
+    Returns preprocessed RGB uint8 array (same shape as input).
+    """
+    from PIL import Image
+    from PIL import ImageFilter as _IF
+    img = Image.fromarray(img_arr)
+    if smoothing == 0:
+        img = img.filter(_IF.MedianFilter(size=3))
+    elif smoothing == 1:
+        img = img.filter(_IF.MedianFilter(size=5))
+        img = img.filter(_IF.MedianFilter(size=5))
+    else:
+        img = img.filter(_IF.MedianFilter(size=7))
+        img = img.filter(_IF.MedianFilter(size=7))
+        img = img.filter(_IF.MedianFilter(size=7))
+    import numpy as np
+    return np.array(img, dtype=np.uint8)
+
+
+def _preprocess_stencil(img_arr, detail_level, line_thickness_mm):
+    """
+    Convert to binary stencil (black-on-white) for stencil/silhouette mode.
+
+    detail_level: 0–100; maps to adaptive-threshold offset C = detail_level−50.
+        C > 0 → less black (more detail); C < 0 → more black.
+    line_thickness_mm: 1.2–2.5; morphological dilation radius to ensure
+        all black features are at least this wide (in mm, where 1 px = 0.1 mm).
+
+    Returns H×W bool mask (True = black / filled).
+    """
+    import numpy as np
+    from scipy.ndimage import (median_filter as _mf, uniform_filter as _uf,
+                               binary_dilation as _dil, label as _lbl)
+
+    # Luminosity grayscale
+    gray = (0.299 * img_arr[:, :, 0] +
+            0.587 * img_arr[:, :, 1] +
+            0.114 * img_arr[:, :, 2]).astype(np.float32)
+
+    # Edge-preserving smoothing (two 5×5 median passes)
+    gray = _mf(gray, size=5).astype(np.float32)
+    gray = _mf(gray, size=5).astype(np.float32)
+
+    # Adaptive threshold: pixel becomes black if gray < local_mean − C
+    block = max(5, min(41, gray.shape[0] // 4 * 2 + 1))  # odd, ≥5
+    local_mean = _uf(gray, size=block)
+    C = float(detail_level) - 50.0
+    binary = gray < (local_mean - C)
+
+    # Morphological thickening to minimum width
+    # radius = half minimum width in pixels (1 px = 0.1 mm)
+    radius_px = max(1, int(round(line_thickness_mm * 5.0)))
+    r = radius_px
+    Y, X = np.ogrid[-r:r + 1, -r:r + 1]
+    disk = (X ** 2 + Y ** 2) <= r ** 2
+    binary = _dil(binary, structure=disk)
+
+    # Remove white islands (holes) and black islands < 3 mm² (300 px)
+    MIN_ISLAND = 300
+    white = ~binary
+    wl, nw = _lbl(white)
+    for c in range(1, nw + 1):
+        if (wl == c).sum() < MIN_ISLAND:
+            binary[wl == c] = True
+    bl, nb = _lbl(binary)
+    for c in range(1, nb + 1):
+        if (bl == c).sum() < MIN_ISLAND:
+            binary[bl == c] = False
+
+    return binary
+
+
 def _satin_pts(comp: dict):
     """
     Satin stitch: edge-to-edge zigzag across the narrow form, alternating
@@ -985,10 +1060,11 @@ def _merge_clusters(centers, labels, counts, n_final,
     return cur_c[sorted_act], remap[cur_lab]
 
 
-def _quantize_chroma_aware(img_arr, n_colors, fg_1d=None):
+def _quantize_chroma_aware(img_arr, n_colors, fg_1d=None, de_vol=12.0):
     """
     Chroma-aware Lab k-means (over-cluster 3×, then greedy merge).
     fg_1d: (H*W,) bool — only these pixels participate in quantisation.
+    de_vol: ΔE merge threshold; use 5.0 for portrait colour mode.
     Returns (palette [(r,g,b)…], masks [H×W bool …]) sorted brightest-first.
     """
     import numpy as np
@@ -1005,7 +1081,7 @@ def _quantize_chroma_aware(img_arr, n_colors, fg_1d=None):
 
     k_over = max(24, 3 * n_colors)
     centers, labels, counts = _kmeans_lab(fg_lab, k_over)
-    _, labels = _merge_clusters(centers, labels, counts, n_colors)
+    _, labels = _merge_clusters(centers, labels, counts, n_colors, de_vol=de_vol)
 
     labels_full = np.full(h * w, -1, dtype=np.int32)
     labels_full[fg_1d] = labels
@@ -1106,9 +1182,17 @@ def convert_image_to_pes(image_bytes: bytes,
                          size_mm: float,
                          num_colors: int,
                          remove_bg: bool = False,
-                         fill_angles=None):
+                         fill_angles=None,
+                         preprocessing_mode: str = 'standard',
+                         smoothing: int = 1,
+                         detail_level: int = 50,
+                         line_thickness_mm: float = 1.5):
     """
     Convert raw image bytes to a PES file.
+    preprocessing_mode: 'standard' | 'portrait_color' | 'portrait_stencil'
+    smoothing: 0=low, 1=medium, 2=high (portrait_color only)
+    detail_level: 0–100 adaptive-threshold offset (portrait_stencil only)
+    line_thickness_mm: minimum sewable width 1.2–2.5 (portrait_stencil only)
     Returns (pes_bytes, metadata_dict).
     """
     import numpy as np
@@ -1128,6 +1212,15 @@ def convert_image_to_pes(image_bytes: bytes,
     img_arr = np.array(img, dtype=np.uint8)
 
     cx, cy = new_w // 2, new_h // 2
+
+    # ── 1c. Image preprocessing (portrait / stencil modes) ───────────────────
+    _stencil_mask = None
+    if preprocessing_mode == 'portrait_color':
+        img_arr = _preprocess_portrait_color(img_arr, smoothing)
+        img = Image.fromarray(img_arr)
+    elif preprocessing_mode == 'portrait_stencil':
+        num_colors = 1  # locked for stencil mode
+        _stencil_mask = _preprocess_stencil(img_arr, detail_level, line_thickness_mm)
 
     # ── 1b. Background mask ───────────────────────────────────────────────────
     bg_mask = None
@@ -1150,67 +1243,81 @@ def convert_image_to_pes(image_bytes: bytes,
         img_arr[bg_mask] = 255   # fill background with white (neutral for MEDIANCUT)
         img = Image.fromarray(img_arr)
 
-    # ── 2. Colour quantisation ────────────────────────────────────────────────
-    # Median-filter the image before quantisation to reassign antialiasing border
-    # pixels to the dominant neighbouring colour, giving cleaner palette colours.
-    from PIL import ImageFilter as _IF
-    img_mf = img.filter(_IF.MedianFilter(size=3))
-    img_mf_arr = np.array(img_mf, dtype=np.uint8)
-    if bg_mask is not None:
-        img_mf_arr[bg_mask] = 255
-        img_mf = Image.fromarray(img_mf_arr)
-
-    if num_colors == 1:
-        gray = np.mean(img_mf_arr.astype(float), axis=2)
-        masks = [gray < 128]
+    if _stencil_mask is not None:
+        # Stencil mode: skip quantisation; mask already preprocessed by _preprocess_stencil
+        if bg_mask is not None:
+            _stencil_mask = _stencil_mask & ~bg_mask
+        masks = [_stencil_mask]
         palette = [(0, 0, 0)]
         _soft_bg_pct = None
+        _removed_region_count = 0
     else:
-        _soft_bg_mask = None
-        if not remove_bg and num_colors > 1:
-            _soft_bg_mask = _detect_bg_lab(img_mf_arr)
-            _bg_frac = float(_soft_bg_mask.mean())
-            if _bg_frac < 0.05 or _bg_frac > 0.92:
-                _soft_bg_mask = None  # trivially small or whole image
-            if _soft_bg_mask is not None:
-                import numpy as _np
-                _bg_px_lab = _rgb_arr_to_lab(
-                    img_mf_arr.reshape(-1, 3)[_soft_bg_mask.reshape(-1)])
-                _bg_chroma = float(_np.sqrt(
-                    _bg_px_lab[:, 1] ** 2 + _bg_px_lab[:, 2] ** 2).mean())
-                if _bg_chroma > 20.0:
-                    _soft_bg_mask = None  # background is too colourful to be background
-        if _soft_bg_mask is not None:
-            # Reserve 1 slot for background; quantise fg with remaining slots
-            n_fg = max(1, num_colors - 1)
-            fg_1d = (~_soft_bg_mask).reshape(-1)
-            fg_pal, fg_masks = _quantize_chroma_aware(img_mf_arr, n_fg, fg_1d=fg_1d)
-            bg_px = img_mf_arr.reshape(-1, 3)[_soft_bg_mask.reshape(-1)]
-            bg_color = tuple(int(round(float(v))) for v in bg_px.mean(axis=0))
-            # bg stitched first (behind foreground); skip dilation for slot 0
-            palette = [bg_color] + fg_pal
-            masks   = [_soft_bg_mask] + fg_masks
-            _soft_bg_pct = float(_soft_bg_mask.mean())
-        else:
-            fg_1d = (~bg_mask).reshape(-1) if bg_mask is not None else None
-            palette, masks = _quantize_chroma_aware(img_mf_arr, num_colors, fg_1d=fg_1d)
+        # ── 2. Colour quantisation ────────────────────────────────────────────
+        # Median-filter before quantisation to reassign antialiasing border pixels
+        # to the dominant neighbouring colour, giving cleaner palette colours.
+        from PIL import ImageFilter as _IF
+        img_mf = img.filter(_IF.MedianFilter(size=3))
+        img_mf_arr = np.array(img_mf, dtype=np.uint8)
+        if bg_mask is not None:
+            img_mf_arr[bg_mask] = 255
+            img_mf = Image.fromarray(img_mf_arr)
+
+        # Portrait colour mode uses tighter merge threshold to preserve subtle skin tones
+        _de_vol = 5.0 if preprocessing_mode == 'portrait_color' else 12.0
+
+        if num_colors == 1:
+            gray = np.mean(img_mf_arr.astype(float), axis=2)
+            masks = [gray < 128]
+            palette = [(0, 0, 0)]
             _soft_bg_pct = None
+        else:
+            _soft_bg_mask = None
+            if not remove_bg and num_colors > 1:
+                _soft_bg_mask = _detect_bg_lab(img_mf_arr)
+                _bg_frac = float(_soft_bg_mask.mean())
+                if _bg_frac < 0.05 or _bg_frac > 0.92:
+                    _soft_bg_mask = None  # trivially small or whole image
+                if _soft_bg_mask is not None:
+                    import numpy as _np
+                    _bg_px_lab = _rgb_arr_to_lab(
+                        img_mf_arr.reshape(-1, 3)[_soft_bg_mask.reshape(-1)])
+                    _bg_chroma = float(_np.sqrt(
+                        _bg_px_lab[:, 1] ** 2 + _bg_px_lab[:, 2] ** 2).mean())
+                    if _bg_chroma > 20.0:
+                        _soft_bg_mask = None  # background is too colourful to be background
+            if _soft_bg_mask is not None:
+                # Reserve 1 slot for background; quantise fg with remaining slots
+                n_fg = max(1, num_colors - 1)
+                fg_1d = (~_soft_bg_mask).reshape(-1)
+                fg_pal, fg_masks = _quantize_chroma_aware(
+                    img_mf_arr, n_fg, fg_1d=fg_1d, de_vol=_de_vol)
+                bg_px = img_mf_arr.reshape(-1, 3)[_soft_bg_mask.reshape(-1)]
+                bg_color = tuple(int(round(float(v))) for v in bg_px.mean(axis=0))
+                # bg stitched first (behind foreground); skip dilation for slot 0
+                palette = [bg_color] + fg_pal
+                masks   = [_soft_bg_mask] + fg_masks
+                _soft_bg_pct = float(_soft_bg_mask.mean())
+            else:
+                fg_1d = (~bg_mask).reshape(-1) if bg_mask is not None else None
+                palette, masks = _quantize_chroma_aware(
+                    img_mf_arr, num_colors, fg_1d=fg_1d, de_vol=_de_vol)
+                _soft_bg_pct = None
 
-    # Apply background exclusion to all masks
-    if bg_mask is not None:
-        masks = [m & ~bg_mask for m in masks]
+        # Apply background exclusion to all masks
+        if bg_mask is not None:
+            masks = [m & ~bg_mask for m in masks]
 
-    # Region-based cleanup: remove unsewable connected components per colour mask.
-    # Pixels from removed components are reassigned to the nearest surviving colour.
-    if _soft_bg_pct is not None:
-        fg_cleaned, _removed_region_count = _cleanup_regions(masks[1:], palette[1:])
-        masks = [masks[0]] + fg_cleaned
-        fg_consol, fg_pal = _consolidate_small_colors(masks[1:], palette[1:])
-        masks = [masks[0]] + fg_consol
-        palette = [palette[0]] + fg_pal
-    else:
-        masks, _removed_region_count = _cleanup_regions(masks, palette)
-        masks, palette = _consolidate_small_colors(masks, palette)
+        # Region-based cleanup: remove unsewable connected components per colour mask.
+        # Pixels from removed components are reassigned to the nearest surviving colour.
+        if _soft_bg_pct is not None:
+            fg_cleaned, _removed_region_count = _cleanup_regions(masks[1:], palette[1:])
+            masks = [masks[0]] + fg_cleaned
+            fg_consol, fg_pal = _consolidate_small_colors(masks[1:], palette[1:])
+            masks = [masks[0]] + fg_consol
+            palette = [palette[0]] + fg_pal
+        else:
+            masks, _removed_region_count = _cleanup_regions(masks, palette)
+            masks, palette = _consolidate_small_colors(masks, palette)
 
     # Expand each color region ~0.3 mm (3 px) into later-stitched regions only,
     # preventing fabric-pullback gaps at color boundaries.
@@ -1266,9 +1373,18 @@ def convert_image_to_pes(image_bytes: bytes,
                     if has_thin:
                         break
 
-            # Find connected components and drop noise (< 3 mm²)
+            # Find connected components and drop noise (< 3 mm²).
+            # Portrait colour mode: isolated colours (ΔE > 15 to all neighbours)
+            # use a lower 1.5 mm² threshold to preserve eye highlights and similar
+            # small details that would otherwise be wrongly discarded.
             comps = _seg_components(mask, ROW)
-            sig_comps = [c for c in comps if _component_area(c) >= MIN_AREA]
+            if (preprocessing_mode == 'portrait_color'
+                    and palette_idx < len(_pal_min_de)
+                    and _pal_min_de[palette_idx] > 15.0):
+                _min_area_this = 150  # 1.5 mm² for isolated detail colour
+            else:
+                _min_area_this = MIN_AREA
+            sig_comps = [c for c in comps if _component_area(c) >= _min_area_this]
             if not sig_comps:
                 continue
 
@@ -1452,21 +1568,32 @@ def convert_image_to_pes(image_bytes: bytes,
             f"{tc[0]} trims — normalt under {trim_threshold} for "
             f"{len(active_colors)} farger; vurder enklere bilde"
         )
-    if ghost_noise_count > 0:
-        warnings.append(
-            f"{ghost_noise_count} av fargene dekker svært lite (under 50 sting) — "
-            "sannsynligvis kantstøy fra bildet. Prøv færre farger for et renere resultat."
-        )
-    if ghost_protected_count > 0:
-        info.append(
-            f"{ghost_protected_count} liten detaljfarge(r) beholdt (blad, nese o.l.) — "
-            "små motiver kan bli utydelige i søm."
-        )
-    if fragmented_color_count > 0:
-        warnings.append(
-            f"{fragmented_color_count} av fargene har svært korte løp (median under 10 sting) — "
-            "trolig kantstøy. Prøv færre farger for et renere resultat."
-        )
+    if preprocessing_mode == 'portrait_color':
+        # In portrait mode the "edge-noise" warnings are misleading: subtle close
+        # tones are intentional. Suppress them and surface a single info message.
+        if ghost_noise_count > 0 or fragmented_color_count > 0:
+            info.append("Portrettmodus: nære fargetoner beholdes med vilje.")
+        if ghost_protected_count > 0:
+            info.append(
+                f"{ghost_protected_count} liten detaljfarge(r) beholdt (øye, nese o.l.) — "
+                "små motiver kan bli utydelige i søm."
+            )
+    else:
+        if ghost_noise_count > 0:
+            warnings.append(
+                f"{ghost_noise_count} av fargene dekker svært lite (under 50 sting) — "
+                "sannsynligvis kantstøy fra bildet. Prøv færre farger for et renere resultat."
+            )
+        if ghost_protected_count > 0:
+            info.append(
+                f"{ghost_protected_count} liten detaljfarge(r) beholdt (blad, nese o.l.) — "
+                "små motiver kan bli utydelige i søm."
+            )
+        if fragmented_color_count > 0:
+            warnings.append(
+                f"{fragmented_color_count} av fargene har svært korte løp (median under 10 sting) — "
+                "trolig kantstøy. Prøv færre farger for et renere resultat."
+            )
     if has_thin:
         warnings.append(
             "Noen regioner er smalere enn 1 mm — "
@@ -1530,6 +1657,10 @@ class handler(BaseHTTPRequestHandler):
             n_colors     = int(body.get('num_colors', 3))
             rem_bg       = bool(body.get('remove_bg', False))
             fill_angles  = body.get('fill_angles', None)  # list[int] | null
+            prep_mode    = body.get('preprocessing_mode', 'standard')
+            smoothing    = int(body.get('smoothing', 1))
+            detail_lvl   = int(body.get('detail_level', 50))
+            line_thick   = float(body.get('line_thickness_mm', 1.5))
 
             if not img_b64:
                 self._json(400, {'error': 'Mangler image_data'})
@@ -1543,11 +1674,27 @@ class handler(BaseHTTPRequestHandler):
             if not (5.0 <= size_mm <= 100.0):
                 self._json(400, {'error': 'size_mm må være 5–100'})
                 return
+            if prep_mode not in ('standard', 'portrait_color', 'portrait_stencil'):
+                self._json(400, {'error': "preprocessing_mode ukjent"})
+                return
+            if not (0 <= smoothing <= 2):
+                self._json(400, {'error': 'smoothing må være 0, 1 eller 2'})
+                return
+            if not (0 <= detail_lvl <= 100):
+                self._json(400, {'error': 'detail_level må være 0–100'})
+                return
+            if not (1.0 <= line_thick <= 3.0):
+                self._json(400, {'error': 'line_thickness_mm må være 1–3'})
+                return
 
             img_bytes = base64.b64decode(img_b64)
             pes_bytes, meta = convert_image_to_pes(
                 img_bytes, s_type, size_mm, n_colors, rem_bg,
                 fill_angles=fill_angles,
+                preprocessing_mode=prep_mode,
+                smoothing=smoothing,
+                detail_level=detail_lvl,
+                line_thickness_mm=line_thick,
             )
             self._json(200, {
                 'pes_data': base64.b64encode(pes_bytes).decode(),
