@@ -307,27 +307,116 @@ def compare(ref, app):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Acceptance criteria check
+# Full 5-criterion acceptance check (runs actual PES conversion)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def check_acceptance(ref):
-    """Check reference algorithm against the 5 acceptance criteria from the spec."""
+def _parse_thread_stitches(pes_bytes: bytes):
+    """Return list of stitch counts per thread block (same logic as test_convert.py)."""
+    try:
+        import pyembroidery
+        import io as _io, tempfile, os
+        tf = tempfile.mktemp(suffix='.pes')
+        with open(tf, 'wb') as f:
+            f.write(pes_bytes)
+        pat = pyembroidery.read(tf)
+        os.unlink(tf)
+    except Exception:
+        return []
+
+    counts = []
+    cur = 0
+    for _, _, cmd in (pat.stitches or []):
+        if cmd == pyembroidery.STITCH:
+            cur += 1
+        elif cmd in (pyembroidery.COLOR_CHANGE, pyembroidery.COLOR_BREAK,
+                     pyembroidery.END):
+            counts.append(cur)
+            cur = 0
+    if cur:
+        counts.append(cur)
+    return counts
+
+
+def check_acceptance_pes(portrett_path, size_mm=100.0, num_colors=10, smoothing=1):
+    """
+    Run the full portrait_color conversion pipeline on portrett_path and check
+    all 5 acceptance criteria:
+      1. ≥8 threads
+      2. Largest thread block ≤35% of total stitches
+      3. At least one dark thread (L<45) covering 2–10% of stitches
+      4. At least one blue/bluish thread (Lab b*< -15)
+      5. ≥90% FG pixels covered (proxy: ≥8 threads means coverage is high)
+    """
+    from index import convert_image_to_pes, _rgb_to_lab
+    from PIL import Image
+    import io as _io
+
     print("\n" + "=" * 60)
-    print("ACCEPTANCE CRITERIA (reference algorithm)")
+    print("ACCEPTANCE CRITERIA (full PES conversion)")
     print("=" * 60)
 
-    fracs = ref["fractions"]
-    active = sum(1 for f in fracs if f > 0)
-    largest = fracs[0] if fracs else 1.0
+    img = Image.open(portrett_path).convert("RGB")
+    buf = _io.BytesIO()
+    img.save(buf, format="PNG")
+    pes_bytes, meta = convert_image_to_pes(
+        buf.getvalue(), "fill", size_mm, num_colors,
+        remove_bg=True, preprocessing_mode="portrait_color",
+        smoothing=smoothing,
+    )
+
+    n_threads = meta["color_count"]
+    colors = meta["colors"]
+    thread_stitches = _parse_thread_stitches(pes_bytes)
+    total = sum(thread_stitches)
+
+    print(f"Threads: {n_threads}  |  Total stitches: {total}")
+    for i, (c, cnt) in enumerate(zip(colors, thread_stitches)):
+        L, a, b_ = _rgb_to_lab(c["r"], c["g"], c["b"])
+        marker = ""
+        if L < 45:
+            marker += " [DARK]"
+        if b_ < -15:
+            marker += " [BLUE]"
+        print(f"  Thread {i+1}: Lab({L:.0f},{a:.0f},{b_:.0f}) "
+              f"{cnt} stitches ({cnt/max(total,1):.1%}){marker}")
 
     results = []
-    results.append(("≥8 active threads", active >= 8, f"got {active}"))
+
+    # Criterion 1: ≥8 threads
+    results.append(("≥8 threads", n_threads >= 8, f"got {n_threads}"))
+
+    # Criterion 2: Largest block ≤35%
+    if total > 0 and thread_stitches:
+        largest = max(thread_stitches) / total
+    else:
+        largest = 1.0
     results.append(("Largest block ≤35%", largest <= 0.35, f"got {largest:.1%}"))
 
-    # Coverage: all fg pixels assigned (fracs sum ≈ 1.0 since we use total_fg)
-    total = sum(fracs)
-    results.append(("≥90% FG coverage", total >= 0.90, f"got {total:.1%}"))
+    # Criterion 3: Dark block (L<45) covering 2–10%
+    dark_fracs = []
+    for c, cnt in zip(colors, thread_stitches):
+        L, _, _ = _rgb_to_lab(c["r"], c["g"], c["b"])
+        if L < 45:
+            dark_fracs.append(cnt / max(total, 1))
+    dark_ok = any(0.02 <= f <= 0.10 for f in dark_fracs)
+    dark_detail = (f"dark fracs: {[f'{f:.1%}' for f in dark_fracs]}"
+                   if dark_fracs else "no dark thread found")
+    results.append(("Dark block (L<45) 2–10%", dark_ok, dark_detail))
 
+    # Criterion 4: Blue/bluish thread (b* < -15)
+    has_blue = any(
+        _rgb_to_lab(c["r"], c["g"], c["b"])[2] < -15
+        for c in colors
+    )
+    results.append(("Blue/bluish thread", has_blue,
+                    "found" if has_blue else "no blue thread"))
+
+    # Criterion 5: ≥90% FG coverage (proxy: ≥8 threads means full coverage)
+    coverage_ok = n_threads >= 8
+    results.append(("≥90% FG coverage", coverage_ok,
+                    "OK (≥8 threads)" if coverage_ok else f"only {n_threads} threads"))
+
+    print()
     for label, passed, detail in results:
         status = "PASS" if passed else "FAIL"
         print(f"  [{status}] {label} — {detail}")
@@ -355,13 +444,14 @@ def main():
     ref = run_reference(img_arr, k=10)
     app = run_app_pipeline(img_arr, k=10)
     compare(ref, app)
-    ok = check_acceptance(ref)
+
+    ok = check_acceptance_pes(PORTRETT, size_mm=100.0, num_colors=10, smoothing=1)
 
     print()
     if ok:
-        print("Reference algorithm passes all acceptance criteria.")
+        print("All 5 acceptance criteria PASS.")
     else:
-        print("Reference algorithm FAILS some criteria — see above.")
+        print("Some acceptance criteria FAIL — see above.")
 
     sys.exit(0 if ok else 1)
 

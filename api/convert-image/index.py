@@ -1499,6 +1499,19 @@ def convert_image_to_pes(image_bytes: bytes,
             masks, _removed_region_count = _cleanup_regions(masks, palette)
             masks, palette = _consolidate_small_colors(masks, palette)
 
+    # Portrait colour mode: re-sort palette/masks by L* descending after cleanup so
+    # lightest skin tones stitch first and dark eye/hair features stitch last (on top).
+    if preprocessing_mode == 'portrait_color' and _stencil_mask is None:
+        _dil_off = 1 if _soft_bg_pct is not None else 0
+        _fg_pal  = palette[_dil_off:]
+        _fg_msk  = masks[_dil_off:]
+        _lum_order = sorted(
+            range(len(_fg_pal)),
+            key=lambda i: -(0.299 * _fg_pal[i][0] + 0.587 * _fg_pal[i][1] + 0.114 * _fg_pal[i][2]),
+        )
+        palette = palette[:_dil_off] + [_fg_pal[o] for o in _lum_order]
+        masks   = masks[:_dil_off]   + [_fg_msk[o]  for o in _lum_order]
+
     # Expand each color region ~0.3 mm (3 px) into later-stitched regions only,
     # preventing fabric-pullback gaps at color boundaries.
     _dil_start = 1 if _soft_bg_pct is not None else 0
