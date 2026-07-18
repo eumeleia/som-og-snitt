@@ -212,42 +212,36 @@ def run_reference(img_arr, k=10):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_app_pipeline(img_arr, k=10):
-    from PIL import Image, ImageFilter as _IF
+    """Simulate current app pipeline with portrait_color mode and smoothing=0."""
+    from index import _quantize_chroma_aware as _qca
     h, w = img_arr.shape[:2]
     total_px = h * w
 
     print("\n" + "=" * 60)
-    print("APP PIPELINE (current)")
+    print("APP PIPELINE (portrait_color, smoothing=0)")
     print("=" * 60)
 
-    # Step A: MedianFilter(3) applied in standard pipeline (portrait_color smoothing=0)
-    img_mf = Image.fromarray(img_arr).filter(_IF.MedianFilter(size=3))
-    img_mf_arr = np.array(img_mf, dtype=np.uint8)
+    # Step A: No pre-filter for smoothing=0 (fixed in STEG 2)
     unique_before = len(np.unique(img_arr.reshape(-1, 3), axis=0))
-    unique_after = len(np.unique(img_mf_arr.reshape(-1, 3), axis=0))
-    print(f"[A] After MedianFilter(3): unique colors {unique_before} → {unique_after}")
+    print(f"[A] smoothing=0 → no pre-filter. Unique colors: {unique_before}")
 
-    # Step B: BG detection ΔE<8.0 (_detect_bg_lab default)
-    bg_mask = _detect_bg_lab(img_mf_arr, de_thresh=8.0)
+    # Step B: BG detection ΔE<4.0 (fixed in STEG 2)
+    bg_mask = _detect_bg_lab(img_arr, de_thresh=4.0)
     bg_px = int(bg_mask.sum())
     fg_px = total_px - bg_px
-    print(f"[B] BG pixels (ΔE<8.0 flood-fill): {bg_px}/{total_px} = {bg_px/total_px:.1%}")
+    print(f"[B] BG pixels (ΔE<4.0 flood-fill): {bg_px}/{total_px} = {bg_px/total_px:.1%}")
     print(f"    FG pixels: {fg_px}")
 
-    # Step C: _quantize_chroma_aware (k_over=3*k=30, k-means++ init, merge ΔE=5.0 → forced n=k)
-    pix_lab = _rgb_arr_to_lab(img_mf_arr.reshape(-1, 3))
+    # Step C: portrait k-means (random init, seed=1, k=n) + soft merge ΔE<5.0
     fg_1d_arr = (~bg_mask).reshape(-1)
-
-    # Simulate what convert_image_to_pes does (with remove_bg=True → soft_bg_mask branch skipped)
-    # It calls _quantize_chroma_aware(img_mf_arr, num_colors, fg_1d=fg_1d, de_vol=5.0)
-    palette, masks = _quantize_chroma_aware(img_mf_arr, k, fg_1d=fg_1d_arr, de_vol=5.0)
+    palette, masks = _qca(img_arr, k, fg_1d=fg_1d_arr, portrait=True)
 
     total_fg = int(sum(m.sum() for m in masks))
     fractions = [int(m.sum()) / max(total_fg, 1) for m in masks]
     sorted_fracs = sorted(fractions, reverse=True)
     active = sum(1 for f in fractions if f > 0)
 
-    print(f"[C] After _quantize_chroma_aware (k_over=30, k-means++, merge ΔE=5.0 → n={k}):")
+    print(f"[C] After portrait k-means (random init k={k}, soft merge ΔE<5.0):")
     print(f"    Active clusters: {active}")
     print(f"    FG pixel fractions (sorted desc):")
     print("    " + " / ".join(f"{f:.1%}" for f in sorted_fracs if f > 0))

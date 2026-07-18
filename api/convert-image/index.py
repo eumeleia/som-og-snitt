@@ -673,19 +673,18 @@ def _cleanup_regions(masks, palette):
 def _preprocess_portrait_color(img_arr, smoothing):
     """
     Edge-preserving smoothing for portrait colour mode.
-    smoothing: 0=low (1×3x3), 1=medium (2×5x5), 2=high (3×7x7 median passes).
+    smoothing: 0=Lav (ingen filter), 1=Middels (1×5x5), 2=Høy (2×7x7 median).
     Returns preprocessed RGB uint8 array (same shape as input).
     """
+    if smoothing == 0:
+        import numpy as np
+        return np.array(img_arr, dtype=np.uint8)
     from PIL import Image
     from PIL import ImageFilter as _IF
     img = Image.fromarray(img_arr)
-    if smoothing == 0:
-        img = img.filter(_IF.MedianFilter(size=3))
-    elif smoothing == 1:
-        img = img.filter(_IF.MedianFilter(size=5))
+    if smoothing == 1:
         img = img.filter(_IF.MedianFilter(size=5))
     else:
-        img = img.filter(_IF.MedianFilter(size=7))
         img = img.filter(_IF.MedianFilter(size=7))
         img = img.filter(_IF.MedianFilter(size=7))
     import numpy as np
@@ -1002,6 +1001,85 @@ def _kmeans_lab(lab_px, k, n_iter=25, seed=42, max_train=30000):
     return centers, all_labels, counts
 
 
+def _kmeans_lab_portrait(lab_px, k, n_iter=15):
+    """
+    Portrait-mode k-means: random-sample init (not k-means++), seed=1, direct k=n.
+    Avoids k-means++ bias toward outliers (eyes, hair) that causes skin-tone collapse.
+    """
+    import numpy as np
+    rng = np.random.default_rng(1)
+    n = len(lab_px)
+    idx = rng.choice(n, k, replace=False)
+    centers = lab_px[idx].astype(np.float64)
+    labels = np.zeros(n, dtype=np.int32)
+    for _ in range(n_iter):
+        new_labels = _assign_clusters(lab_px, centers)
+        if np.all(new_labels == labels):
+            break
+        labels = new_labels
+        for i in range(k):
+            m = labels == i
+            if m.any():
+                centers[i] = lab_px[m].mean(axis=0)
+    labels = _assign_clusters(lab_px, centers)
+    counts = np.bincount(labels, minlength=k)
+    return centers, labels, counts
+
+
+def _soft_merge_clusters(centers, labels, counts,
+                         de_thresh=5.0, chroma_min=25.0, chroma_de_min=20.0):
+    """
+    Greedy merge: repeatedly merge the closest unprotected pair below de_thresh.
+    Does NOT force down to a fixed n_final — stops when no voluntary merge remains.
+    Protects high-chroma clusters (C*>chroma_min, min ΔE>chroma_de_min).
+    Returns (centers, labels, counts) with only the surviving clusters.
+    """
+    import numpy as np
+    n = len(centers)
+    active = list(range(n))
+    cur_lab = labels.copy()
+    cur_cnt = counts.astype(np.float64).copy()
+    cur_c = centers.copy()
+
+    while True:
+        act = np.array(active)
+        ac = cur_c[act]
+        diff = ac[:, np.newaxis] - ac[np.newaxis]
+        de_mat = np.sqrt(np.sum(diff ** 2, axis=2))
+        np.fill_diagonal(de_mat, np.inf)
+
+        chroma = np.sqrt(ac[:, 1] ** 2 + ac[:, 2] ** 2)
+        min_de = de_mat.min(axis=1)
+        protected = (chroma > chroma_min) & (min_de > chroma_de_min)
+
+        merge_de = np.full_like(de_mat, np.inf)
+        for ii in range(len(act)):
+            if protected[ii]:
+                continue
+            for jj in range(ii + 1, len(act)):
+                if not protected[jj]:
+                    merge_de[ii, jj] = de_mat[ii, jj]
+
+        if merge_de.min() >= de_thresh:
+            break
+
+        ii, jj = np.unravel_index(np.argmin(merge_de), merge_de.shape)
+        i, j = int(act[ii]), int(act[jj])
+        ci, cj = cur_cnt[i], cur_cnt[j]
+        total = ci + cj
+        if total > 0:
+            cur_c[i] = (cur_c[i] * ci + cur_c[j] * cj) / total
+        cur_cnt[i] = total
+        cur_lab[cur_lab == j] = i
+        active.remove(j)
+
+    sorted_act = sorted(active)
+    remap = np.full(n, -1, dtype=np.int32)
+    for new, old in enumerate(sorted_act):
+        remap[old] = new
+    return cur_c[sorted_act], remap[cur_lab], cur_cnt[sorted_act]
+
+
 def _merge_clusters(centers, labels, counts, n_final,
                     de_vol=12.0, chroma_min=25.0, chroma_de_min=20.0):
     """
@@ -1060,11 +1138,17 @@ def _merge_clusters(centers, labels, counts, n_final,
     return cur_c[sorted_act], remap[cur_lab]
 
 
-def _quantize_chroma_aware(img_arr, n_colors, fg_1d=None, de_vol=12.0):
+def _quantize_chroma_aware(img_arr, n_colors, fg_1d=None, de_vol=12.0,
+                           portrait=False):
     """
-    Chroma-aware Lab k-means (over-cluster 3×, then greedy merge).
+    Chroma-aware Lab k-means quantisation.
+
+    Standard mode: over-cluster 3×, k-means++ init, then greedy merge to n_colors.
+    Portrait mode:  direct k=n_colors, random-sample init (seed=1), soft merge
+                    (ΔE<5.0, no forced n_final) to preserve subtle skin-tone gradients.
+
     fg_1d: (H*W,) bool — only these pixels participate in quantisation.
-    de_vol: ΔE merge threshold; use 5.0 for portrait colour mode.
+    de_vol: ΔE merge threshold (standard mode only).
     Returns (palette [(r,g,b)…], masks [H×W bool …]) sorted brightest-first.
     """
     import numpy as np
@@ -1079,15 +1163,21 @@ def _quantize_chroma_aware(img_arr, n_colors, fg_1d=None, de_vol=12.0):
     if len(fg_lab) == 0:
         return [(128, 128, 128)] * n_colors, [np.zeros((h, w), dtype=bool)] * n_colors
 
-    k_over = max(24, 3 * n_colors)
-    centers, labels, counts = _kmeans_lab(fg_lab, k_over)
-    _, labels = _merge_clusters(centers, labels, counts, n_colors, de_vol=de_vol)
+    if portrait:
+        centers, labels, counts = _kmeans_lab_portrait(fg_lab, k=n_colors)
+        centers, labels, _ = _soft_merge_clusters(centers, labels, counts, de_thresh=5.0)
+        n_out = len(centers)
+    else:
+        k_over = max(24, 3 * n_colors)
+        centers, labels, counts = _kmeans_lab(fg_lab, k_over)
+        _, labels = _merge_clusters(centers, labels, counts, n_colors, de_vol=de_vol)
+        n_out = n_colors
 
     labels_full = np.full(h * w, -1, dtype=np.int32)
     labels_full[fg_1d] = labels
 
     palette, masks = [], []
-    for i in range(n_colors):
+    for i in range(n_out):
         m1d = labels_full == i
         if m1d.any():
             mean_rgb = pixels[m1d].mean(axis=0)
@@ -1097,7 +1187,7 @@ def _quantize_chroma_aware(img_arr, n_colors, fg_1d=None, de_vol=12.0):
         masks.append(m1d.reshape(h, w))
 
     lum = [0.299 * r + 0.587 * g + 0.114 * b for r, g, b in palette]
-    order = sorted(range(n_colors), key=lambda i: -lum[i])
+    order = sorted(range(n_out), key=lambda i: -lum[i])
     return [palette[o] for o in order], [masks[o] for o in order]
 
 
@@ -1255,12 +1345,15 @@ def convert_image_to_pes(image_bytes: bytes,
         # ── 2. Colour quantisation ────────────────────────────────────────────
         # Median-filter before quantisation to reassign antialiasing border pixels
         # to the dominant neighbouring colour, giving cleaner palette colours.
+        # Portrait colour mode skips the extra pass (already preprocessed above).
         from PIL import ImageFilter as _IF
-        img_mf = img.filter(_IF.MedianFilter(size=3))
-        img_mf_arr = np.array(img_mf, dtype=np.uint8)
+        if preprocessing_mode == 'portrait_color':
+            img_mf_arr = img_arr.copy()
+        else:
+            img_mf = img.filter(_IF.MedianFilter(size=3))
+            img_mf_arr = np.array(img_mf, dtype=np.uint8)
         if bg_mask is not None:
             img_mf_arr[bg_mask] = 255
-            img_mf = Image.fromarray(img_mf_arr)
 
         # Portrait colour mode uses tighter merge threshold to preserve subtle skin tones
         _de_vol = 5.0 if preprocessing_mode == 'portrait_color' else 12.0
@@ -1273,7 +1366,8 @@ def convert_image_to_pes(image_bytes: bytes,
         else:
             _soft_bg_mask = None
             if not remove_bg and num_colors > 1:
-                _soft_bg_mask = _detect_bg_lab(img_mf_arr)
+                _de_bg = 4.0 if preprocessing_mode == 'portrait_color' else 8.0
+                _soft_bg_mask = _detect_bg_lab(img_mf_arr, de_thresh=_de_bg)
                 _bg_frac = float(_soft_bg_mask.mean())
                 if _bg_frac < 0.05 or _bg_frac > 0.92:
                     _soft_bg_mask = None  # trivially small or whole image
@@ -1285,12 +1379,14 @@ def convert_image_to_pes(image_bytes: bytes,
                         _bg_px_lab[:, 1] ** 2 + _bg_px_lab[:, 2] ** 2).mean())
                     if _bg_chroma > 20.0:
                         _soft_bg_mask = None  # background is too colourful to be background
+            _portrait = preprocessing_mode == 'portrait_color'
             if _soft_bg_mask is not None:
                 # Reserve 1 slot for background; quantise fg with remaining slots
                 n_fg = max(1, num_colors - 1)
                 fg_1d = (~_soft_bg_mask).reshape(-1)
                 fg_pal, fg_masks = _quantize_chroma_aware(
-                    img_mf_arr, n_fg, fg_1d=fg_1d, de_vol=_de_vol)
+                    img_mf_arr, n_fg, fg_1d=fg_1d, de_vol=_de_vol,
+                    portrait=_portrait)
                 bg_px = img_mf_arr.reshape(-1, 3)[_soft_bg_mask.reshape(-1)]
                 bg_color = tuple(int(round(float(v))) for v in bg_px.mean(axis=0))
                 # bg stitched first (behind foreground); skip dilation for slot 0
@@ -1300,7 +1396,8 @@ def convert_image_to_pes(image_bytes: bytes,
             else:
                 fg_1d = (~bg_mask).reshape(-1) if bg_mask is not None else None
                 palette, masks = _quantize_chroma_aware(
-                    img_mf_arr, num_colors, fg_1d=fg_1d, de_vol=_de_vol)
+                    img_mf_arr, num_colors, fg_1d=fg_1d, de_vol=_de_vol,
+                    portrait=_portrait)
                 _soft_bg_pct = None
 
         # Apply background exclusion to all masks
