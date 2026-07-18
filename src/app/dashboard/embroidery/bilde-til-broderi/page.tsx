@@ -122,15 +122,45 @@ function computeBgMask(
 }
 
 /**
- * Client-side k-means colour quantisation applied directly to a canvas.
- * Scales the source image to ≤ MAX_PX before quantising for performance.
- * When removeBg is true, corner-flood-fill pixels are shown as checkerboard.
+ * O(n) box blur via integral image. Used by stencilToCanvas for adaptive threshold.
  */
-function quantizeToCanvas(
+function computeBoxBlur(src: Float32Array, w: number, h: number, r: number): Float32Array {
+  const ii = new Float64Array((w + 1) * (h + 1))
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      ii[(y + 1) * (w + 1) + (x + 1)] =
+        src[y * w + x] +
+        ii[y * (w + 1) + (x + 1)] +
+        ii[(y + 1) * (w + 1) + x] -
+        ii[y * (w + 1) + x]
+    }
+  }
+  const out = new Float32Array(w * h)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const y0 = Math.max(0, y - r), y1 = Math.min(h - 1, y + r)
+      const x0 = Math.max(0, x - r), x1 = Math.min(w - 1, x + r)
+      const area = (y1 - y0 + 1) * (x1 - x0 + 1)
+      out[y * w + x] = (
+        ii[(y1 + 1) * (w + 1) + (x1 + 1)] -
+        ii[y0 * (w + 1) + (x1 + 1)] -
+        ii[(y1 + 1) * (w + 1) + x0] +
+        ii[y0 * (w + 1) + x0]
+      ) / area
+    }
+  }
+  return out
+}
+
+/**
+ * Stencil mode preview: grayscale + adaptive threshold → black/white canvas.
+ * detailLevel 0–100; C = detailLevel−50: higher = more detail (less black).
+ */
+function stencilToCanvas(
   imgEl: HTMLImageElement,
-  k: number,
   canvas: HTMLCanvasElement,
   removeBg: boolean,
+  detailLevel: number,
 ) {
   const MAX = 250
   const { naturalWidth: nw, naturalHeight: nh } = imgEl
@@ -141,7 +171,65 @@ function quantizeToCanvas(
   canvas.height = h
 
   const ctx = canvas.getContext('2d')!
+  ctx.filter = 'blur(2px)'
   ctx.drawImage(imgEl, 0, 0, w, h)
+  ctx.filter = 'none'
+  const imageData = ctx.getImageData(0, 0, w, h)
+  const { data } = imageData
+  const n = w * h
+
+  const bgMask = removeBg ? computeBgMask(data, w, h) : null
+
+  const gray = new Float32Array(n)
+  for (let i = 0; i < n; i++) {
+    gray[i] = 0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2]
+  }
+
+  const r = Math.max(5, Math.round(20 * Math.min(w, h) / 250))
+  const localMean = computeBoxBlur(gray, w, h, r)
+  const C = detailLevel - 50
+
+  for (let i = 0; i < n; i++) {
+    if (bgMask && bgMask[i]) {
+      const x = i % w, y = (i - x) / w
+      const light = ((Math.floor(x / 8) + Math.floor(y / 8)) % 2) === 0
+      const v = light ? 220 : 180
+      data[i * 4] = data[i * 4 + 1] = data[i * 4 + 2] = v
+    } else {
+      const v = gray[i] < localMean[i] - C ? 0 : 255
+      data[i * 4] = data[i * 4 + 1] = data[i * 4 + 2] = v
+    }
+    data[i * 4 + 3] = 255
+  }
+
+  ctx.putImageData(imageData, 0, 0)
+}
+
+/**
+ * Client-side k-means colour quantisation applied directly to a canvas.
+ * Scales the source image to ≤ MAX_PX before quantising for performance.
+ * When removeBg is true, corner-flood-fill pixels are shown as checkerboard.
+ * blurPx: optional pre-blur radius (CSS pixels) for portrait-colour smoothing preview.
+ */
+function quantizeToCanvas(
+  imgEl: HTMLImageElement,
+  k: number,
+  canvas: HTMLCanvasElement,
+  removeBg: boolean,
+  blurPx = 0,
+) {
+  const MAX = 250
+  const { naturalWidth: nw, naturalHeight: nh } = imgEl
+  const scale = Math.min(1, MAX / Math.max(nw, nh))
+  const w = Math.max(1, Math.round(nw * scale))
+  const h = Math.max(1, Math.round(nh * scale))
+  canvas.width = w
+  canvas.height = h
+
+  const ctx = canvas.getContext('2d')!
+  if (blurPx > 0) ctx.filter = `blur(${blurPx}px)`
+  ctx.drawImage(imgEl, 0, 0, w, h)
+  if (blurPx > 0) ctx.filter = 'none'
   const imageData = ctx.getImageData(0, 0, w, h)
   const { data } = imageData
   const n = w * h
@@ -236,17 +324,32 @@ export default function BildeTilBroderiPage() {
   const [savedEmbroideryId, setSavedEmbroideryId] = useState<string | null>(null)
   // Per-color angle overrides: null = Auto (use server's auto_angles)
   const [angleOverrides, setAngleOverrides]     = useState<(number | null)[]>([])
+  // Preprocessing mode
+  const [prepMode, setPrepMode]                 = useState<'standard' | 'portrait_color' | 'portrait_stencil'>('standard')
+  const [smoothing, setSmoothing]               = useState(1)   // 0=lav 1=middels 2=høy
+  const [detailLevel, setDetailLevel]           = useState(50)  // 0–100 stencil threshold offset
+  const [lineThickness, setLineThickness]       = useState(1.5) // mm min sewable width
 
   const canvasRef    = useRef<HTMLCanvasElement>(null)
   const imgElRef     = useRef<HTMLImageElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const timerRef     = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const updatePreview = useCallback((img: HTMLImageElement, k: number, bg: boolean) => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    quantizeToCanvas(img, k, canvas, bg)
-  }, [])
+  const updatePreview = useCallback(
+    (img: HTMLImageElement, k: number, bg: boolean,
+     mode: 'standard' | 'portrait_color' | 'portrait_stencil',
+     sm: number, dl: number) => {
+      const canvas = canvasRef.current
+      if (!canvas) return
+      if (mode === 'portrait_stencil') {
+        stencilToCanvas(img, canvas, bg, dl)
+      } else {
+        const blurPx = mode === 'portrait_color' ? [2, 4, 6][sm] : 0
+        quantizeToCanvas(img, k, canvas, bg, blurPx)
+      }
+    },
+    [],
+  )
 
   const handleFile = (f: File) => {
     if (!f.type.startsWith('image/')) return
@@ -259,19 +362,22 @@ export default function BildeTilBroderiPage() {
     const img = new window.Image()
     img.onload = () => {
       imgElRef.current = img
-      updatePreview(img, numColors, removeBg)
+      const effK = prepMode === 'portrait_stencil' ? 1 : numColors
+      updatePreview(img, effK, removeBg, prepMode, smoothing, detailLevel)
     }
     img.src = url
   }
 
-  // Debounced preview update when sliders or removeBg toggle changes
+  // Debounced preview update when sliders or mode-related state changes
   useEffect(() => {
     if (!imgElRef.current) return
     if (timerRef.current) clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => {
-      if (imgElRef.current) updatePreview(imgElRef.current, numColors, removeBg)
+      if (!imgElRef.current) return
+      const effK = prepMode === 'portrait_stencil' ? 1 : numColors
+      updatePreview(imgElRef.current, effK, removeBg, prepMode, smoothing, detailLevel)
     }, 120)
-  }, [numColors, removeBg, updatePreview])
+  }, [numColors, removeBg, updatePreview, prepMode, smoothing, detailLevel])
 
   // Convert image → PES
   const handleConvert = async () => {
@@ -297,16 +403,22 @@ export default function BildeTilBroderiPage() {
       const hasOverride = stitchType === 'fill' && angleOverrides.some(a => a !== null)
       const fillAngles = hasOverride ? angleOverrides.map(a => a ?? null) : null
 
+      const effNumColors = prepMode === 'portrait_stencil' ? 1 : numColors
+
       const convRes = await fetch('/api/convert-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          image_data:  imgB64,
-          stitch_type: stitchType,
-          size_mm:     sizeMm,
-          num_colors:  numColors,
-          remove_bg:   removeBg,
-          fill_angles: fillAngles,
+          image_data:         imgB64,
+          stitch_type:        stitchType,
+          size_mm:            sizeMm,
+          num_colors:         effNumColors,
+          remove_bg:          removeBg,
+          fill_angles:        fillAngles,
+          preprocessing_mode: prepMode,
+          smoothing:          smoothing,
+          detail_level:       detailLevel,
+          line_thickness_mm:  lineThickness,
         }),
       })
       const convData = await convRes.json()
@@ -506,6 +618,101 @@ export default function BildeTilBroderiPage() {
       {file && (
         <div className="space-y-5">
 
+          {/* Preprocessing mode selector */}
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-stone-700">Forsystem</label>
+            <div className="flex gap-1">
+              {([
+                { value: 'standard',          label: 'Standard' },
+                { value: 'portrait_color',    label: 'Portrett (farger)' },
+                { value: 'portrait_stencil',  label: 'Portrett (stensil)' },
+              ] as const).map(({ value, label }) => (
+                <button
+                  key={value}
+                  onClick={() => setPrepMode(value)}
+                  className={`flex-1 py-2 px-1 rounded-xl border text-xs transition-colors ${
+                    prepMode === value
+                      ? 'bg-[#C9A57A] text-white border-[#C9A57A] font-medium'
+                      : 'bg-white text-stone-600 border-stone-200 hover:border-stone-400'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {prepMode !== 'standard' && (
+              <p className="text-xs text-stone-400 leading-snug">
+                Fungerer best med godt opplyste, kontrastrike bilder der ansiktet fyller mye av bildet.
+              </p>
+            )}
+          </div>
+
+          {/* Portrait (colour) — smoothing control */}
+          {prepMode === 'portrait_color' && (
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-stone-700">Glatting</label>
+              <div className="flex gap-2">
+                {([0, 1, 2] as const).map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setSmoothing(v)}
+                    className={`flex-1 py-2 px-3 rounded-xl border text-sm transition-colors ${
+                      smoothing === v
+                        ? 'bg-[#C9A57A] text-white border-[#C9A57A] font-medium'
+                        : 'bg-white text-stone-600 border-stone-200 hover:border-stone-400'
+                    }`}
+                  >
+                    {['Lav', 'Middels', 'Høy'][v]}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Portrait (stencil) — detail level + line thickness */}
+          {prepMode === 'portrait_stencil' && (
+            <>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-stone-700">Detaljnivå</label>
+                  <span className="text-sm text-stone-500 tabular-nums">{detailLevel}</span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={detailLevel}
+                  onChange={e => setDetailLevel(Number(e.target.value))}
+                  className="w-full accent-[#C9A57A]"
+                />
+                <div className="flex justify-between text-xs text-stone-400">
+                  <span>Mer svart</span>
+                  <span>Mer detaljer</span>
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-medium text-stone-700">Linjetykkelse</label>
+                  <span className="text-sm text-stone-500 tabular-nums">{lineThickness.toFixed(1)} mm</span>
+                </div>
+                <input
+                  type="range"
+                  min={1.2}
+                  max={2.5}
+                  step={0.1}
+                  value={lineThickness}
+                  onChange={e => setLineThickness(Number(e.target.value))}
+                  className="w-full accent-[#C9A57A]"
+                />
+                <div className="flex justify-between text-xs text-stone-400">
+                  <span>1.2 mm</span>
+                  <span>2.5 mm</span>
+                </div>
+              </div>
+            </>
+          )}
+
           {/* Stitch type */}
           <div className="space-y-1.5">
             <label className="text-sm font-medium text-stone-700">Stingtype</label>
@@ -549,26 +756,28 @@ export default function BildeTilBroderiPage() {
             </div>
           </div>
 
-          {/* Number of colours */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-medium text-stone-700">Antall farger</label>
-              <span className="text-sm text-stone-500 tabular-nums">{numColors}</span>
+          {/* Number of colours — hidden in stencil mode (locked to 1) */}
+          {prepMode !== 'portrait_stencil' && (
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium text-stone-700">Antall farger</label>
+                <span className="text-sm text-stone-500 tabular-nums">{numColors}</span>
+              </div>
+              <input
+                type="range"
+                min={1}
+                max={10}
+                step={1}
+                value={numColors}
+                onChange={e => setNumColors(Number(e.target.value))}
+                className="w-full accent-[#C9A57A]"
+              />
+              <div className="flex justify-between text-xs text-stone-400">
+                <span>1</span>
+                <span>10</span>
+              </div>
             </div>
-            <input
-              type="range"
-              min={1}
-              max={10}
-              step={1}
-              value={numColors}
-              onChange={e => setNumColors(Number(e.target.value))}
-              className="w-full accent-[#C9A57A]"
-            />
-            <div className="flex justify-between text-xs text-stone-400">
-              <span>1</span>
-              <span>10</span>
-            </div>
-          </div>
+          )}
 
           {/* Remove background toggle */}
           <div className="flex items-center justify-between">
