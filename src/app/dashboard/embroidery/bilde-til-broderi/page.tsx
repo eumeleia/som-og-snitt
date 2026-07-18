@@ -330,10 +330,18 @@ export default function BildeTilBroderiPage() {
   const [detailLevel, setDetailLevel]           = useState(50)  // 0–100 stencil threshold offset
   const [lineThickness, setLineThickness]       = useState(1.5) // mm min sewable width
 
-  const canvasRef    = useRef<HTMLCanvasElement>(null)
-  const imgElRef     = useRef<HTMLImageElement | null>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const timerRef     = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [fileObjectUrl, setFileObjectUrl]         = useState<string | null>(null)
+  const [portraitPreview, setPortraitPreview]     = useState<{
+    url: string
+    palette: { r: number; g: number; b: number; frac: number }[]
+  } | null>(null)
+  const [portraitPreviewLoading, setPortraitPreviewLoading] = useState(false)
+
+  const canvasRef         = useRef<HTMLCanvasElement>(null)
+  const imgElRef          = useRef<HTMLImageElement | null>(null)
+  const fileInputRef      = useRef<HTMLInputElement>(null)
+  const timerRef          = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const portraitAbortRef  = useRef<AbortController | null>(null)
 
   const updatePreview = useCallback(
     (img: HTMLImageElement, k: number, bg: boolean,
@@ -351,6 +359,56 @@ export default function BildeTilBroderiPage() {
     [],
   )
 
+  const fetchPortraitPreview = useCallback(async (
+    imgEl: HTMLImageElement,
+    k: number,
+    bg: boolean,
+    sm: number,
+  ) => {
+    if (portraitAbortRef.current) portraitAbortRef.current.abort()
+    const ctrl = new AbortController()
+    portraitAbortRef.current = ctrl
+    setPortraitPreviewLoading(true)
+    try {
+      const MAX_PX = 800
+      const sc = Math.min(1, MAX_PX / Math.max(imgEl.naturalWidth, imgEl.naturalHeight))
+      const cw = Math.round(imgEl.naturalWidth  * sc)
+      const ch = Math.round(imgEl.naturalHeight * sc)
+      const tmp = document.createElement('canvas')
+      tmp.width = cw; tmp.height = ch
+      tmp.getContext('2d')!.drawImage(imgEl, 0, 0, cw, ch)
+      const imgB64 = tmp.toDataURL('image/jpeg', 0.82).split(',')[1]
+
+      const res = await fetch('/api/convert-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: ctrl.signal,
+        body: JSON.stringify({
+          image_data: imgB64,
+          stitch_type: 'fill',
+          size_mm: 100,
+          num_colors: k,
+          remove_bg: bg,
+          preprocessing_mode: 'portrait_color',
+          smoothing: sm,
+          preview_only: true,
+        }),
+      })
+      if (!res.ok) return
+      const data = await res.json()
+      if (data.png_b64) {
+        setPortraitPreview({
+          url: `data:image/png;base64,${data.png_b64}`,
+          palette: data.palette ?? [],
+        })
+      }
+    } catch (e: unknown) {
+      if (e instanceof Error && e.name === 'AbortError') return
+    } finally {
+      setPortraitPreviewLoading(false)
+    }
+  }, [])
+
   const handleFile = (f: File) => {
     if (!f.type.startsWith('image/')) return
     setFile(f)
@@ -358,7 +416,9 @@ export default function BildeTilBroderiPage() {
     setSaved(false)
     setError(null)
     setAngleOverrides([])
+    setPortraitPreview(null)
     const url = URL.createObjectURL(f)
+    setFileObjectUrl(url)
     const img = new window.Image()
     img.onload = () => {
       imgElRef.current = img
@@ -372,12 +432,21 @@ export default function BildeTilBroderiPage() {
   useEffect(() => {
     if (!imgElRef.current) return
     if (timerRef.current) clearTimeout(timerRef.current)
-    timerRef.current = setTimeout(() => {
-      if (!imgElRef.current) return
-      const effK = prepMode === 'portrait_stencil' ? 1 : numColors
-      updatePreview(imgElRef.current, effK, removeBg, prepMode, smoothing, detailLevel)
-    }, 120)
-  }, [numColors, removeBg, updatePreview, prepMode, smoothing, detailLevel])
+    const img = imgElRef.current
+    if (prepMode === 'portrait_color') {
+      // Server-side WYSIWYG preview — debounced
+      timerRef.current = setTimeout(() => {
+        fetchPortraitPreview(img, numColors, removeBg, smoothing)
+      }, 400)
+    } else {
+      setPortraitPreview(null)
+      timerRef.current = setTimeout(() => {
+        if (!imgElRef.current) return
+        const effK = prepMode === 'portrait_stencil' ? 1 : numColors
+        updatePreview(imgElRef.current, effK, removeBg, prepMode, smoothing, detailLevel)
+      }, 120)
+    }
+  }, [numColors, removeBg, updatePreview, fetchPortraitPreview, prepMode, smoothing, detailLevel])
 
   // Convert image → PES
   const handleConvert = async () => {
@@ -591,9 +660,10 @@ export default function BildeTilBroderiPage() {
           {file ? file.name : 'Last opp bilde (JPEG / PNG)'}
         </button>
 
-        {/* Square preview window — shows quantized canvas */}
+        {/* Square preview window — shows quantized canvas or server portrait preview */}
         <div
-          className="relative w-full aspect-square bg-stone-100 rounded-2xl overflow-hidden border border-stone-200 flex items-center justify-center"
+          className="relative w-full bg-stone-100 rounded-2xl overflow-hidden border border-stone-200 flex items-center justify-center"
+          style={{ aspectRatio: prepMode === 'portrait_color' && file ? '2/1' : '1/1' }}
           onDragOver={e => { e.preventDefault() }}
           onDrop={e => {
             e.preventDefault()
@@ -605,6 +675,41 @@ export default function BildeTilBroderiPage() {
             <span className="text-stone-400 text-sm select-none">
               Dra og slipp et bilde her
             </span>
+          ) : prepMode === 'portrait_color' ? (
+            <div className="w-full h-full grid grid-cols-2">
+              {/* Left: original */}
+              <div className="relative flex items-center justify-center bg-stone-200 border-r border-stone-300">
+                {fileObjectUrl && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={fileObjectUrl}
+                    alt="Original"
+                    style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+                  />
+                )}
+                <span className="absolute bottom-1 left-0 right-0 text-center text-[10px] text-stone-400">
+                  Original
+                </span>
+              </div>
+              {/* Right: server-quantized */}
+              <div className="relative flex items-center justify-center bg-stone-100">
+                {portraitPreviewLoading && !portraitPreview && (
+                  <span className="text-[10px] text-stone-400">Laster…</span>
+                )}
+                {portraitPreview && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={portraitPreview.url}
+                    alt="Kvantisert"
+                    style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain',
+                             imageRendering: 'pixelated', opacity: portraitPreviewLoading ? 0.5 : 1 }}
+                  />
+                )}
+                <span className="absolute bottom-1 left-0 right-0 text-center text-[10px] text-stone-400">
+                  Kvantisert
+                </span>
+              </div>
+            </div>
           ) : (
             <canvas
               ref={canvasRef}

@@ -1264,6 +1264,89 @@ def _detect_bg_lab(img_arr, de_thresh=8.0):
 
 
 # --------------------------------------------------------------------------- #
+# Preview-only quantisation (WYSIWYG before full conversion)                   #
+# --------------------------------------------------------------------------- #
+
+def quantize_for_preview(image_bytes: bytes, size_mm: float, num_colors: int,
+                         remove_bg: bool = False,
+                         preprocessing_mode: str = 'standard',
+                         smoothing: int = 0):
+    """
+    Run image → quantisation pipeline without generating a PES.
+    Returns a dict with:
+      'png_b64'   : base64-encoded PNG of the quantised image (same size as would be stitched)
+      'palette'   : [{'r','g','b','frac'}, …] sorted by lightness desc
+      'bg_removed': True if background was removed
+    Used for portrait-mode WYSIWYG preview without incurring full stitching cost.
+    """
+    import numpy as np
+    from PIL import Image
+    import io as _io
+    import base64 as _b64
+
+    raw_img = Image.open(_io.BytesIO(image_bytes))
+    has_alpha = raw_img.mode in ('RGBA', 'LA', 'PA')
+    img = raw_img.convert('RGB')
+    w0, h0 = img.size
+    scale = (size_mm * 10) / max(w0, h0)
+    new_w = max(10, int(round(w0 * scale)))
+    new_h = max(10, int(round(h0 * scale)))
+    img = img.resize((new_w, new_h), Image.LANCZOS)
+    img_arr = np.array(img, dtype=np.uint8)
+
+    if preprocessing_mode == 'portrait_color':
+        img_arr = _preprocess_portrait_color(img_arr, smoothing)
+
+    bg_mask = None
+    if remove_bg:
+        if has_alpha:
+            alpha_ch = raw_img.convert('RGBA').split()[3]
+            alpha_ch = alpha_ch.resize((new_w, new_h), Image.NEAREST)
+            bg_mask = np.array(alpha_ch, dtype=np.uint8) < 128
+            if not bg_mask.any():
+                bg_mask, _ = _compute_bg_mask(img_arr)
+        else:
+            bg_mask, _ = _compute_bg_mask(img_arr)
+    if bg_mask is not None:
+        img_arr[bg_mask] = 255
+
+    _portrait = preprocessing_mode == 'portrait_color'
+    _de_bg = 4.0 if _portrait else 8.0
+    fg_1d = None
+    if bg_mask is not None:
+        fg_1d = (~bg_mask).reshape(-1)
+    else:
+        _soft_bg = _detect_bg_lab(img_arr, de_thresh=_de_bg)
+        _bg_frac = float(_soft_bg.mean())
+        if 0.05 <= _bg_frac <= 0.92:
+            fg_1d = (~_soft_bg).reshape(-1)
+
+    palette, masks = _quantize_chroma_aware(
+        img_arr, num_colors, fg_1d=fg_1d, portrait=_portrait)
+
+    # Render quantised image: each pixel gets the palette colour of its mask
+    out = np.full_like(img_arr, 255)
+    total_px = new_h * new_w
+    pal_out = []
+    for (r, g, b), m in zip(palette, masks):
+        m = m.astype(bool)
+        if not m.any():
+            continue
+        out[m] = [r, g, b]
+        pal_out.append({'r': r, 'g': g, 'b': b, 'frac': round(float(m.sum()) / total_px, 4)})
+
+    # Encode as PNG
+    pil_out = Image.fromarray(out.astype(np.uint8))
+    buf = _io.BytesIO()
+    pil_out.save(buf, format='PNG')
+    return {
+        'png_b64': _b64.b64encode(buf.getvalue()).decode(),
+        'palette': pal_out,
+        'bg_removed': bg_mask is not None,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Main conversion                                                               #
 # --------------------------------------------------------------------------- #
 
@@ -1784,7 +1867,18 @@ class handler(BaseHTTPRequestHandler):
                 self._json(400, {'error': 'line_thickness_mm må være 1–3'})
                 return
 
+            preview_only = bool(body.get('preview_only', False))
             img_bytes = base64.b64decode(img_b64)
+
+            if preview_only:
+                result = quantize_for_preview(
+                    img_bytes, size_mm, n_colors, rem_bg,
+                    preprocessing_mode=prep_mode,
+                    smoothing=smoothing,
+                )
+                self._json(200, result)
+                return
+
             pes_bytes, meta = convert_image_to_pes(
                 img_bytes, s_type, size_mm, n_colors, rem_bg,
                 fill_angles=fill_angles,
