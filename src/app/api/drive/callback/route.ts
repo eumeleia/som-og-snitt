@@ -33,14 +33,10 @@ export async function GET(req: NextRequest) {
       return NextResponse.redirect(settingsUrl)
     }
 
-    const oauth2Api = google.oauth2({ version: 'v2', auth: oauth2Client })
-    const { data: userInfo } = await oauth2Api.userinfo.get()
-    console.log('[callback] userinfo ok:', !!userInfo?.email)
-
     let upsertError: unknown = null
     try {
       const { error } = await supabaseAdmin.from('app_config').upsert(
-        { key: 'som_og_snitt_google_drive_token', value: { refresh_token: tokens.refresh_token, email: userInfo.email }, updated_at: new Date().toISOString() },
+        { key: 'som_og_snitt_google_drive_token', value: { refresh_token: tokens.refresh_token }, updated_at: new Date().toISOString() },
         { onConflict: 'key' },
       )
       upsertError = error

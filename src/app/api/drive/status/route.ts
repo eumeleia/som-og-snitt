@@ -14,6 +14,5 @@ export async function GET() {
     .single()
 
   if (!data) return NextResponse.json({ connected: false })
-  const { email } = data.value as { refresh_token: string; email?: string }
-  return NextResponse.json({ connected: true, email })
+  return NextResponse.json({ connected: true })
 }
