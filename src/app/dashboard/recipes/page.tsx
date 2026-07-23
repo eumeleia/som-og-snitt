@@ -523,8 +523,18 @@ function NewRecipeModal({ onCreate, onClose }: {
     try {
       // 1. Upload all PDFs in parallel
       setProgress('Laster opp PDF-er...')
+      const driveStatus = await fetch('/api/drive/status').then(r => r.json()) as { connected: boolean }
       const uploadResults = await Promise.all(
         pdfs.map(async ({ file, type }) => {
+          if (type === 'Mønster' && driveStatus.connected) {
+            const fd = new FormData()
+            fd.append('file', file, file.name)
+            const res = await fetch('/api/drive/upload', { method: 'POST', body: fd })
+            if (res.ok) {
+              const { fileId, webViewLink } = await res.json() as { fileId: string; webViewLink: string }
+              return { id: uid(), name: file.name, url: webViewLink, type, source: 'upload' as const, storage: 'drive' as const, driveFileId: fileId, driveLink: webViewLink, formatLabel: guessFormatLabel(file.name) }
+            }
+          }
           const filename = `recipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.pdf`
           const { error: uploadErr } = await supabase.storage
             .from('project-images')
