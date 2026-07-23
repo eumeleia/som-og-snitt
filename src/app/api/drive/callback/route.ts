@@ -26,13 +26,13 @@ export async function GET(req: NextRequest) {
     )
 
     const { tokens } = await oauth2Client.getToken(code)
+    oauth2Client.setCredentials(tokens)
     console.log('[callback] token exchange ok:', !!tokens.access_token, 'refresh:', !!tokens.refresh_token)
     if (!tokens.refresh_token) {
       settingsUrl.searchParams.set('drive', 'no_refresh_token')
       return NextResponse.redirect(settingsUrl)
     }
 
-    oauth2Client.setCredentials(tokens)
     const oauth2Api = google.oauth2({ version: 'v2', auth: oauth2Client })
     const { data: userInfo } = await oauth2Api.userinfo.get()
 
