@@ -26,6 +26,7 @@ export async function GET(req: NextRequest) {
     )
 
     const { tokens } = await oauth2Client.getToken(code)
+    console.log('[callback] token exchange ok:', !!tokens.access_token, 'refresh:', !!tokens.refresh_token)
     if (!tokens.refresh_token) {
       settingsUrl.searchParams.set('drive', 'no_refresh_token')
       return NextResponse.redirect(settingsUrl)
@@ -43,7 +44,7 @@ export async function GET(req: NextRequest) {
     settingsUrl.searchParams.set('drive', 'connected')
     return NextResponse.redirect(settingsUrl)
   } catch (err) {
-    console.error('[Drive callback]', err)
+    console.error('[Drive callback] full error:', err)
     settingsUrl.searchParams.set('drive', 'error')
     return NextResponse.redirect(settingsUrl)
   }
