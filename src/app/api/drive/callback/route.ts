@@ -35,13 +35,25 @@ export async function GET(req: NextRequest) {
 
     const oauth2Api = google.oauth2({ version: 'v2', auth: oauth2Client })
     const { data: userInfo } = await oauth2Api.userinfo.get()
+    console.log('[callback] userinfo ok:', !!userInfo?.email)
 
-    await supabaseAdmin.from('app_config').upsert(
-      { key: 'som_og_snitt_google_drive_token', value: { refresh_token: tokens.refresh_token, email: userInfo.email }, updated_at: new Date().toISOString() },
-      { onConflict: 'key' },
-    )
+    let upsertError: unknown = null
+    try {
+      const { error } = await supabaseAdmin.from('app_config').upsert(
+        { key: 'som_og_snitt_google_drive_token', value: { refresh_token: tokens.refresh_token, email: userInfo.email }, updated_at: new Date().toISOString() },
+        { onConflict: 'key' },
+      )
+      upsertError = error
+      console.log('[callback] supabase upsert error:', error)
+    } catch (e) {
+      console.error('[callback] supabase threw:', e)
+      throw e
+    }
+
+    if (upsertError) throw upsertError
 
     settingsUrl.searchParams.set('drive', 'connected')
+    console.log('[callback] redirecting to:', settingsUrl.toString())
     return NextResponse.redirect(settingsUrl)
   } catch (err) {
     console.error('[Drive callback] full error:', err)
