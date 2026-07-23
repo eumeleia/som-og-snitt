@@ -431,6 +431,10 @@ function guessType(filename: string): 'Oppskrift' | 'Mønster' | 'Annet' {
   return 'Annet'
 }
 
+function sanitizeFolderName(name: string): string {
+  return name.replace(/[/\\:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim()
+}
+
 function guessFormatLabel(filename: string): string {
   const lower = filename.toLowerCase()
   if (lower.includes('a0')) return 'A0'
@@ -521,39 +525,17 @@ function NewRecipeModal({ onCreate, onClose }: {
     const recipeData: RecipeData = { ...structuredClone(EMPTY) }
 
     try {
-      // 1. Upload all PDFs in parallel
-      setProgress('Laster opp PDF-er...')
       const driveStatus = await fetch('/api/drive/status').then(r => r.json()) as { connected: boolean }
-      const uploadResults = await Promise.all(
-        pdfs.map(async ({ file, type }) => {
-          if (type === 'Mønster' && driveStatus.connected) {
-            const fd = new FormData()
-            fd.append('file', file, file.name)
-            const res = await fetch('/api/drive/upload', { method: 'POST', body: fd })
-            if (res.ok) {
-              const { fileId, webViewLink } = await res.json() as { fileId: string; webViewLink: string }
-              return { id: uid(), name: file.name, url: webViewLink, type, source: 'upload' as const, storage: 'drive' as const, driveFileId: fileId, driveLink: webViewLink, formatLabel: guessFormatLabel(file.name) }
-            }
-          }
-          const filename = `recipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.pdf`
-          const { error: uploadErr } = await supabase.storage
-            .from('project-images')
-            .upload(filename, file, { contentType: 'application/pdf' })
-          if (uploadErr) throw new Error(`Opplasting av «${file.name}» feilet`)
-          const { data: urlData } = supabase.storage.from('project-images').getPublicUrl(filename)
-          return { id: uid(), name: file.name, url: urlData.publicUrl, type, source: 'upload' as const }
-        })
-      )
-      recipeData.pdfs = uploadResults
 
-      // 2. Analyse the first Oppskrift PDF; fall back to first PDF for cover
+      // 1. Analyse Oppskrift PDF first — name needed for Drive subfolder
       const oppskriftEntry = pdfs.find(p => p.type === 'Oppskrift') ?? null
       const coverEntry     = oppskriftEntry ?? pdfs[0] ?? null
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let pdfDoc: any = null
 
       if (oppskriftEntry) {
         const file = oppskriftEntry.file
 
-        // Extract text (first 20 pages)
         setProgress('Leser tekst...')
         const arrayBuffer = await file.arrayBuffer()
         const uint8 = new Uint8Array(arrayBuffer)
@@ -561,11 +543,11 @@ function NewRecipeModal({ onCreate, onClose }: {
         pdfjs.GlobalWorkerOptions.workerSrc = new URL(
           'pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url
         ).href
-        const pdf      = await pdfjs.getDocument({ data: uint8 }).promise
-        const numPages = Math.min(pdf.numPages, 20)
+        pdfDoc     = await pdfjs.getDocument({ data: uint8 }).promise
+        const numPages = Math.min(pdfDoc.numPages, 20)
         const parts: string[] = []
         for (let i = 1; i <= numPages; i++) {
-          const pg      = await pdf.getPage(i)
+          const pg      = await pdfDoc.getPage(i)
           const content = await pg.getTextContent()
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           parts.push(content.items.map((item: any) => (typeof item.str === 'string' ? item.str : '')).join(' '))
@@ -575,7 +557,6 @@ function NewRecipeModal({ onCreate, onClose }: {
         console.log('[PDF] Raw text (first 500 chars):', rawText.slice(0, 500))
         const text = normalizePdfText(rawText)
 
-        // Claude analysis — hybrid flow
         setProgress('Analyserer...')
         const prompt =
           `Du får tekst fra en søm-oppskrift (PDF). Returner KUN gyldig JSON, ingen forklaring:\n\n` +
@@ -651,11 +632,57 @@ function NewRecipeModal({ onCreate, onClose }: {
             }
           }
         }
+      } else {
+        recipeData.name = 'Ny oppskrift'
+      }
 
-        // Cover from page 1 of the already-loaded Oppskrift PDF
+      // 2. Upload all PDFs — Drive subfolder named after recipe, all files go there
+      setProgress('Laster opp PDF-er...')
+      const today = new Date().toISOString().slice(0, 10)
+      const folderName = driveStatus.connected
+        ? (sanitizeFolderName(recipeData.name) || `Oppskrift ${today}`)
+        : ''
+
+      const uploadResults = await Promise.all(
+        pdfs.map(async ({ file, type }) => {
+          if (driveStatus.connected) {
+            const fd = new FormData()
+            fd.append('file', file, file.name)
+            fd.append('folderName', folderName)
+            const res = await fetch('/api/drive/upload', { method: 'POST', body: fd })
+            if (res.ok) {
+              const { fileId, webViewLink } = await res.json() as { fileId: string; webViewLink: string }
+              if (type === 'Mønster') {
+                // Mønstre: Drive only
+                return { id: uid(), name: file.name, url: webViewLink, type, source: 'upload' as const, storage: 'drive' as const, driveFileId: fileId, driveLink: webViewLink, formatLabel: guessFormatLabel(file.name) }
+              }
+              // Instruksjoner (Oppskrift/Annet): Drive arkiv + Supabase arbeidskopi
+              const filename = `recipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.pdf`
+              const { error: uploadErr } = await supabase.storage
+                .from('project-images')
+                .upload(filename, file, { contentType: 'application/pdf' })
+              if (uploadErr) throw new Error(`Opplasting av «${file.name}» feilet`)
+              const { data: urlData } = supabase.storage.from('project-images').getPublicUrl(filename)
+              return { id: uid(), name: file.name, url: urlData.publicUrl, type, source: 'upload' as const, storage: 'supabase' as const, driveFileId: fileId, driveLink: webViewLink }
+            }
+          }
+          // Fallback: Supabase only
+          const filename = `recipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.pdf`
+          const { error: uploadErr } = await supabase.storage
+            .from('project-images')
+            .upload(filename, file, { contentType: 'application/pdf' })
+          if (uploadErr) throw new Error(`Opplasting av «${file.name}» feilet`)
+          const { data: urlData } = supabase.storage.from('project-images').getPublicUrl(filename)
+          return { id: uid(), name: file.name, url: urlData.publicUrl, type, source: 'upload' as const }
+        })
+      )
+      recipeData.pdfs = uploadResults
+
+      // 3. Cover image
+      if (oppskriftEntry && pdfDoc) {
         setProgress('Lager bilde...')
         try {
-          const page1    = await pdf.getPage(1)
+          const page1    = await pdfDoc.getPage(1)
           const viewport = page1.getViewport({ scale: 2 })
           const canvas   = document.createElement('canvas')
           canvas.width   = viewport.width
@@ -680,9 +707,7 @@ function NewRecipeModal({ onCreate, onClose }: {
             }
           }
         } catch { /* No cover — user can add manually */ }
-
       } else if (coverEntry) {
-        // No Oppskrift PDF — generate cover from the first PDF, no analysis
         setProgress('Lager bilde...')
         const cover = await renderAndUploadCover(coverEntry.file)
         if (cover) {
@@ -691,7 +716,6 @@ function NewRecipeModal({ onCreate, onClose }: {
           recipeData.focalX       = 50
           recipeData.focalY       = 50
         }
-        recipeData.name = 'Ny oppskrift'
       }
 
       // Create recipe

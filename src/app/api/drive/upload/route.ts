@@ -45,24 +45,53 @@ async function getOrCreateFolder(drive: ReturnType<typeof google.drive>): Promis
   return folderId
 }
 
+async function getOrCreateSubfolder(
+  drive: ReturnType<typeof google.drive>,
+  parentId: string,
+  name: string,
+): Promise<string> {
+  const safeName = name.replace(/'/g, "\\'")
+  const q = `name = '${safeName}' and mimeType = 'application/vnd.google-apps.folder' and '${parentId}' in parents and trashed = false`
+  const existing = await drive.files.list({ q, fields: 'files(id)', pageSize: 1 })
+  if (existing.data.files?.length) {
+    console.log('[upload] subfolder funnet:', name)
+    return existing.data.files[0].id!
+  }
+  const res = await drive.files.create({
+    requestBody: { name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] },
+    fields: 'id',
+  })
+  console.log('[upload] subfolder opprettet:', name)
+  return res.data.id!
+}
+
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData()
     const file = formData.get('file') as File | null
+    const folderName = (formData.get('folderName') as string | null)?.trim() ?? ''
     if (!file) return NextResponse.json({ error: 'Ingen fil' }, { status: 400 })
 
     const auth = await getOAuth2Client()
     const drive = google.drive({ version: 'v3', auth })
-    const folderId = await getOrCreateFolder(drive)
+    const rootFolderId = await getOrCreateFolder(drive)
+
+    const targetFolderId = folderName
+      ? await getOrCreateSubfolder(drive, rootFolderId, folderName)
+      : rootFolderId
+
+    console.log('[upload] laster opp:', file.name, '→', folderName || '(rot)')
 
     const buffer = Buffer.from(await file.arrayBuffer())
     const stream = Readable.from(buffer)
 
     const uploaded = await drive.files.create({
-      requestBody: { name: file.name, parents: [folderId] },
+      requestBody: { name: file.name, parents: [targetFolderId] },
       media: { mimeType: 'application/pdf', body: stream },
       fields: 'id,webViewLink',
     })
+
+    console.log('[upload] ferdig:', file.name)
 
     return NextResponse.json({
       fileId: uploaded.data.id,
