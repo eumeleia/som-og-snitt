@@ -20,7 +20,7 @@ type PdfType   = 'Oppskrift' | 'Mønster' | 'Annet'
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
 interface ImageItem { id: string; url: string }
-interface PdfItem   { id: string; name: string; url: string; type: PdfType; source: 'upload' | 'link'; displayName?: string }
+interface PdfItem   { id: string; name: string; url: string; type: PdfType; source: 'upload' | 'link'; displayName?: string; storage?: 'supabase' | 'drive'; driveFileId?: string; driveLink?: string; formatLabel?: string }
 
 interface RecipeData {
   name: string
@@ -429,6 +429,18 @@ function guessType(filename: string): 'Oppskrift' | 'Mønster' | 'Annet' {
       lower.includes('us_letter') || lower.includes('letter') ||
       lower.includes('print')     || lower.includes('projector')) return 'Mønster'
   return 'Annet'
+}
+
+function guessFormatLabel(filename: string): string {
+  const lower = filename.toLowerCase()
+  if (lower.includes('a0')) return 'A0'
+  if (lower.includes('a1')) return 'A1'
+  if (lower.includes('a2')) return 'A2'
+  if (lower.includes('a3')) return 'A3'
+  if (lower.includes('a4')) return 'A4'
+  if (lower.includes('us_letter') || lower.includes('usletter') || lower.includes('letter')) return 'US Letter'
+  if (lower.includes('projector') || lower.includes('projektor') || lower.includes('projektør')) return 'Projektor'
+  return 'Last ned'
 }
 
 async function renderAndUploadCover(
@@ -1485,6 +1497,30 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
     if (!pdfFile) return
     setPdfUploading(true)
     try {
+      if (pdfType === 'Mønster') {
+        const statusRes = await fetch('/api/drive/status')
+        const status = await statusRes.json() as { connected: boolean }
+        if (status.connected) {
+          const fd = new FormData()
+          fd.append('file', pdfFile, pdfFile.name)
+          const res = await fetch('/api/drive/upload', { method: 'POST', body: fd })
+          const result = await res.json() as { fileId?: string; webViewLink?: string; error?: string }
+          if (!res.ok) throw new Error(result.error ?? 'Drive-opplasting feilet')
+          const { fileId, webViewLink } = result as { fileId: string; webViewLink: string }
+          upd({
+            pdfs: [...form.pdfs, {
+              id: uid(), name: pdfName.trim() || pdfFile.name,
+              url: webViewLink, type: pdfType, source: 'upload',
+              storage: 'drive' as const, driveFileId: fileId, driveLink: webViewLink,
+              formatLabel: guessFormatLabel(pdfFile.name),
+            }],
+          })
+          setPdfFile(null)
+          setPdfName('')
+          return
+        }
+        showToast('Tips: Koble til Google Drive i Innstillinger for å spare lagringsplass')
+      }
       const ext = pdfFile.name.split('.').pop() ?? 'pdf'
       const filename = `recipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`
       const { error: uploadErr } = await supabase.storage
@@ -1496,6 +1532,7 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
         pdfs: [...form.pdfs, {
           id: uid(), name: pdfName.trim() || pdfFile.name,
           url: data.publicUrl, type: pdfType, source: 'upload',
+          storage: 'supabase' as const,
         }],
       })
       setPdfFile(null)
@@ -1957,14 +1994,28 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
                           <Badge label={typeVal} cls={PDF_TYPE_STYLE[typeVal]} />
                         </div>
                         <div className="flex items-center gap-3 flex-wrap">
-                          <a href={pdf.url} target="_blank" rel="noopener noreferrer"
-                            className="text-xs text-sky-500 hover:underline">
-                            Åpne ↗
-                          </a>
-                          <button onClick={() => openPdfViewer(pdf)}
-                            className="text-xs text-stone-500 hover:text-stone-700 transition-colors">
-                            Åpne i leser
-                          </button>
+                          {pdf.storage === 'drive' ? (
+                            <a href={pdf.driveLink ?? pdf.url} target="_blank" rel="noopener noreferrer"
+                              className="text-xs text-sky-500 hover:underline">
+                              {pdf.formatLabel ? `Last ned ${pdf.formatLabel}` : 'Last ned'} ↗
+                            </a>
+                          ) : pdf.source === 'upload' ? (
+                            <>
+                              <a href={pdf.url} target="_blank" rel="noopener noreferrer"
+                                className="text-xs text-sky-500 hover:underline">
+                                Åpne ↗
+                              </a>
+                              <button onClick={() => openPdfViewer(pdf)}
+                                className="text-xs text-stone-500 hover:text-stone-700 transition-colors">
+                                Åpne i leser
+                              </button>
+                            </>
+                          ) : (
+                            <a href={pdf.url} target="_blank" rel="noopener noreferrer"
+                              className="text-xs text-sky-500 hover:underline">
+                              Åpne ↗
+                            </a>
+                          )}
                           <select value={typeVal}
                             onChange={e => updatePdfType(pdf.id, e.target.value as PdfType)}
                             className="text-xs text-stone-400 bg-transparent border-none outline-none cursor-pointer hover:text-stone-600 transition-colors">
