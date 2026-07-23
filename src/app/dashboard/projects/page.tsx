@@ -1080,14 +1080,15 @@ function PdfViewerModal({
         for (let i = 1; i <= doc.numPages; i++) {
           if (cancelled) return
           const page = await doc.getPage(i)
-          const viewport = page.getViewport({ scale: 1.5 })
+          const dpr = Math.min(window.devicePixelRatio || 1, 2)
+          const viewport = page.getViewport({ scale: 1.5 * dpr })
           const canvas = document.createElement('canvas')
           canvas.width  = viewport.width
           canvas.height = viewport.height
           const ctx = canvas.getContext('2d')!
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           await page.render({ canvas, canvasContext: ctx as any, viewport }).promise
-          imgs.push(canvas.toDataURL('image/jpeg', 0.85))
+          imgs.push(canvas.toDataURL('image/jpeg', 0.92))
           setLoadedCount(i)
           setPages([...imgs])
         }
