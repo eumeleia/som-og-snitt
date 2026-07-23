@@ -10,7 +10,7 @@ export async function GET() {
   const { data } = await supabaseAdmin
     .from('app_config')
     .select('value')
-    .eq('key', 'google_drive_token')
+    .eq('key', 'som_og_snitt_google_drive_token')
     .single()
 
   if (!data) return NextResponse.json({ connected: false })

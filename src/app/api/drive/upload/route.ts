@@ -12,7 +12,7 @@ async function getOAuth2Client() {
   const { data } = await supabaseAdmin
     .from('app_config')
     .select('value')
-    .eq('key', 'google_drive_token')
+    .eq('key', 'som_og_snitt_google_drive_token')
     .single()
   if (!data) throw new Error('Drive ikke tilkoblet')
   const { refresh_token } = data.value as { refresh_token: string }

@@ -7,7 +7,7 @@ const supabaseAdmin = createClient(
 )
 
 export async function POST() {
-  await supabaseAdmin.from('app_config').delete().eq('key', 'google_drive_token')
+  await supabaseAdmin.from('app_config').delete().eq('key', 'som_og_snitt_google_drive_token')
   await supabaseAdmin.from('app_config').delete().eq('key', 'google_drive_folder_id')
   return NextResponse.json({ ok: true })
 }

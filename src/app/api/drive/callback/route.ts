@@ -36,7 +36,7 @@ export async function GET(req: NextRequest) {
     const { data: userInfo } = await oauth2Api.userinfo.get()
 
     await supabaseAdmin.from('app_config').upsert(
-      { key: 'google_drive_token', value: { refresh_token: tokens.refresh_token, email: userInfo.email }, updated_at: new Date().toISOString() },
+      { key: 'som_og_snitt_google_drive_token', value: { refresh_token: tokens.refresh_token, email: userInfo.email }, updated_at: new Date().toISOString() },
       { onConflict: 'key' },
     )
 
