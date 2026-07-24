@@ -4,9 +4,6 @@ import { useState, useEffect, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 
 interface DriveStatus { connected: boolean }
-interface RestoreResult { gjenopprettet: number; hoppet_over: number; feilet: number; detaljer: string[] }
-interface MigrateAnnetResult { oppdatert: number; hoppet_over: number; feilet: number; detaljer: string[] }
-interface CleanupResult { deleted: number; freedBytes: number; failed?: number }
 
 function DriveIcon() {
   return (
@@ -25,15 +22,6 @@ function SettingsContent() {
   const searchParams = useSearchParams()
   const [drive, setDrive] = useState<DriveStatus | null>(null)
   const [disconnecting, setDisconnecting] = useState(false)
-  const [restoring, setRestoring] = useState(false)
-  const [restoreResult, setRestoreResult] = useState<RestoreResult | null>(null)
-  const [restoreError, setRestoreError] = useState<string | null>(null)
-  const [migratingAnnet, setMigratingAnnet] = useState(false)
-  const [migrateAnnetResult, setMigrateAnnetResult] = useState<MigrateAnnetResult | null>(null)
-  const [migrateAnnetError, setMigrateAnnetError] = useState<string | null>(null)
-  const [cleaningUp, setCleaningUp] = useState(false)
-  const [cleanupResult, setCleanupResult] = useState<CleanupResult | null>(null)
-  const [cleanupError, setCleanupError] = useState<string | null>(null)
 
   useEffect(() => {
     fetch('/api/drive/status').then(r => r.json()).then(setDrive)
@@ -44,70 +32,6 @@ function SettingsContent() {
     await fetch('/api/drive/disconnect', { method: 'POST' })
     setDrive({ connected: false })
     setDisconnecting(false)
-  }
-
-  async function cleanupOrphans() {
-    setCleaningUp(true)
-    setCleanupResult(null)
-    setCleanupError(null)
-    try {
-      const dryRes = await fetch('/api/storage/cleanup-orphans', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dryRun: true }),
-      })
-      const dry = await dryRes.json() as { orphanCount: number; totalBytes: number; error?: string }
-      if (!dryRes.ok || dry.error) { setCleanupError(dry.error ?? 'Ukjent feil'); return }
-
-      const mb = (dry.totalBytes / 1024 / 1024).toFixed(1)
-      const ok = window.confirm(
-        `Fant ${dry.orphanCount} foreldreløse PDF-filer (${mb} MB) som ikke lenger er i bruk. Slette dem?`
-      )
-      if (!ok) return
-
-      const delRes = await fetch('/api/storage/cleanup-orphans', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dryRun: false }),
-      })
-      const del = await delRes.json() as CleanupResult & { error?: string }
-      if (!delRes.ok || del.error) { setCleanupError(del.error ?? 'Ukjent feil'); return }
-      setCleanupResult(del)
-    } catch (err) {
-      setCleanupError(err instanceof Error ? err.message : 'Ukjent feil')
-    } finally {
-      setCleaningUp(false)
-    }
-  }
-
-  async function migrateAnnet() {
-    setMigratingAnnet(true)
-    setMigrateAnnetResult(null)
-    setMigrateAnnetError(null)
-    try {
-      const res = await fetch('/api/storage/migrate-annet-to-drive', { method: 'POST' })
-      const json = await res.json() as MigrateAnnetResult & { error?: string }
-      if (!res.ok || json.error) { setMigrateAnnetError(json.error ?? 'Ukjent feil'); return }
-      setMigrateAnnetResult(json)
-    } catch (err) {
-      setMigrateAnnetError(err instanceof Error ? err.message : 'Ukjent feil')
-    } finally {
-      setMigratingAnnet(false)
-    }
-  }
-
-  async function restoreInstructions() {
-    setRestoring(true)
-    setRestoreResult(null)
-    setRestoreError(null)
-    try {
-      const res = await fetch('/api/storage/restore-instructions', { method: 'POST' })
-      const json = await res.json() as RestoreResult & { error?: string }
-      if (!res.ok || json.error) { setRestoreError(json.error ?? 'Ukjent feil'); return }
-      setRestoreResult(json)
-    } catch (err) {
-      setRestoreError(err instanceof Error ? err.message : 'Ukjent feil')
-    } finally {
-      setRestoring(false)
-    }
   }
 
   const flash = searchParams.get('drive')
@@ -170,97 +94,6 @@ function SettingsContent() {
             >
               Koble til Google Drive
             </a>
-          </div>
-        )}
-      </section>
-
-      <section className="bg-white rounded-2xl border border-stone-100 p-5 shadow-sm space-y-3">
-        <div>
-          <h2 className="font-medium text-stone-800">Rydd opp: slett foreldreløse PDF-er</h2>
-          <p className="text-sm text-stone-500 mt-0.5">
-            Finner og sletter PDF-filer i Supabase Storage som ikke lenger er koblet til noen oppskrift eller prosjekt.
-          </p>
-        </div>
-        <button
-          onClick={cleanupOrphans}
-          disabled={cleaningUp}
-          className="px-4 py-2 text-sm rounded-xl bg-stone-800 text-white hover:bg-stone-700 transition-colors disabled:opacity-40"
-        >
-          {cleaningUp ? 'Skanner…' : 'Rydd opp'}
-        </button>
-        {cleanupError && (
-          <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">
-            {cleanupError}
-          </div>
-        )}
-        {cleanupResult && (
-          <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-sm text-green-700">
-            Slettet {cleanupResult.deleted} filer · Frigjort {(cleanupResult.freedBytes / 1024 / 1024).toFixed(1)} MB
-            {cleanupResult.failed ? ` · ${cleanupResult.failed} feilet` : ''}
-          </div>
-        )}
-      </section>
-
-      {/* Temporary: migrate existing 'Annet' PDFs to Drive-only storage */}
-      <section className="bg-white rounded-2xl border border-stone-100 p-5 shadow-sm space-y-3">
-        <div>
-          <h2 className="font-medium text-stone-800">Koble Annet-dokumenter til Drive</h2>
-          <p className="text-sm text-stone-500 mt-0.5">
-            Oppdaterer eksisterende PDF-er av type «Annet» til å peke på Drive i stedet for Supabase. Supabase-filene slettes ikke nå.
-          </p>
-        </div>
-        <button
-          onClick={migrateAnnet}
-          disabled={migratingAnnet}
-          className="px-4 py-2 text-sm rounded-xl bg-stone-800 text-white hover:bg-stone-700 transition-colors disabled:opacity-40"
-        >
-          {migratingAnnet ? 'Oppdaterer…' : 'Koble Annet-dokumenter til Drive'}
-        </button>
-        {migrateAnnetError && (
-          <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">
-            {migrateAnnetError}
-          </div>
-        )}
-        {migrateAnnetResult && (
-          <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-sm text-green-700 space-y-1">
-            <p>Oppdatert: {migrateAnnetResult.oppdatert} &nbsp;·&nbsp; Hoppet over: {migrateAnnetResult.hoppet_over} &nbsp;·&nbsp; Feilet: {migrateAnnetResult.feilet}</p>
-            {migrateAnnetResult.detaljer.length > 0 && (
-              <ul className="mt-2 space-y-0.5 text-xs text-green-800 max-h-48 overflow-y-auto">
-                {migrateAnnetResult.detaljer.map((d, i) => <li key={i}>{d}</li>)}
-              </ul>
-            )}
-          </div>
-        )}
-      </section>
-
-      {/* Temporary: restore instruction PDFs accidentally deleted from Supabase during cleanup */}
-      <section className="bg-white rounded-2xl border border-stone-100 p-5 shadow-sm space-y-3">
-        <div>
-          <h2 className="font-medium text-stone-800">Gjenopprett instruksjoner fra Drive</h2>
-          <p className="text-sm text-stone-500 mt-0.5">
-            Laster ned Oppskrift- og Annet-PDF-er fra Google Drive-arkivet og gjenoppretter Supabase-arbeidskopiene.
-          </p>
-        </div>
-        <button
-          onClick={restoreInstructions}
-          disabled={restoring}
-          className="px-4 py-2 text-sm rounded-xl bg-stone-800 text-white hover:bg-stone-700 transition-colors disabled:opacity-40"
-        >
-          {restoring ? 'Gjenoppretter…' : 'Gjenopprett instruksjoner'}
-        </button>
-        {restoreError && (
-          <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">
-            {restoreError}
-          </div>
-        )}
-        {restoreResult && (
-          <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-sm text-green-700 space-y-1">
-            <p>Gjenopprettet: {restoreResult.gjenopprettet} &nbsp;·&nbsp; Hoppet over: {restoreResult.hoppet_over} &nbsp;·&nbsp; Feilet: {restoreResult.feilet}</p>
-            {restoreResult.detaljer.length > 0 && (
-              <ul className="mt-2 space-y-0.5 text-xs text-green-800 max-h-48 overflow-y-auto">
-                {restoreResult.detaljer.map((d, i) => <li key={i}>{d}</li>)}
-              </ul>
-            )}
           </div>
         )}
       </section>
