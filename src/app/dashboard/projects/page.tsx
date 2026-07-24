@@ -1753,7 +1753,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
     if (!pdfFile) return
     setPdfUploading(true)
     try {
-      if (pdfType === 'Mønster') {
+      if (pdfType === 'Mønster' || pdfType === 'Annet') {
         const statusRes = await fetch('/api/drive/status')
         const status = await statusRes.json() as { connected: boolean }
         if (status.connected) {
@@ -1768,14 +1768,17 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
               id: uid(), name: pdfName.trim() || pdfFile.name,
               url: webViewLink, type: pdfType, source: 'upload',
               storage: 'drive' as const, driveFileId: fileId, driveLink: webViewLink,
-              formatLabel: guessFormatLabel(pdfFile.name),
+              ...(pdfType === 'Mønster' ? { formatLabel: guessFormatLabel(pdfFile.name) } : {}),
             }],
           })
           setPdfFile(null)
           setPdfName('')
           return
         }
-        showToast('Tips: Koble til Google Drive i Innstillinger for å spare lagringsplass')
+        showToast(pdfType === 'Mønster'
+          ? 'Tips: Koble til Google Drive i Innstillinger for å spare lagringsplass'
+          : 'Annet-dokumenter krever Google Drive — koble til i Innstillinger')
+        return
       }
       const ext = pdfFile.name.split('.').pop() ?? 'pdf'
       const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`
@@ -2721,10 +2724,17 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
                         </div>
                         <div className="flex items-center gap-3 flex-wrap">
                           {isDrive ? (
-                            <a href={pdf.driveLink ?? pdf.url} target="_blank" rel="noopener noreferrer"
-                              className="text-xs text-sky-500 hover:underline">
-                              {pdf.formatLabel ? `Last ned ${pdf.formatLabel}` : 'Last ned'} ↗
-                            </a>
+                            typeVal === 'Annet' ? (
+                              <a href={pdf.driveLink ?? pdf.url} target="_blank" rel="noopener noreferrer"
+                                className="text-xs text-sky-500 hover:underline">
+                                Åpne i Drive ↗
+                              </a>
+                            ) : (
+                              <a href={pdf.driveLink ?? pdf.url} target="_blank" rel="noopener noreferrer"
+                                className="text-xs text-sky-500 hover:underline">
+                                {pdf.formatLabel ? `Last ned ${pdf.formatLabel}` : 'Last ned'} ↗
+                              </a>
+                            )
                           ) : isViewable ? (
                             <>
                               <button

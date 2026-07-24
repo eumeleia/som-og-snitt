@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation'
 
 interface DriveStatus { connected: boolean }
 interface RestoreResult { gjenopprettet: number; hoppet_over: number; feilet: number; detaljer: string[] }
+interface MigrateAnnetResult { oppdatert: number; hoppet_over: number; feilet: number; detaljer: string[] }
 
 function DriveIcon() {
   return (
@@ -26,6 +27,9 @@ function SettingsContent() {
   const [restoring, setRestoring] = useState(false)
   const [restoreResult, setRestoreResult] = useState<RestoreResult | null>(null)
   const [restoreError, setRestoreError] = useState<string | null>(null)
+  const [migratingAnnet, setMigratingAnnet] = useState(false)
+  const [migrateAnnetResult, setMigrateAnnetResult] = useState<MigrateAnnetResult | null>(null)
+  const [migrateAnnetError, setMigrateAnnetError] = useState<string | null>(null)
 
   useEffect(() => {
     fetch('/api/drive/status').then(r => r.json()).then(setDrive)
@@ -36,6 +40,22 @@ function SettingsContent() {
     await fetch('/api/drive/disconnect', { method: 'POST' })
     setDrive({ connected: false })
     setDisconnecting(false)
+  }
+
+  async function migrateAnnet() {
+    setMigratingAnnet(true)
+    setMigrateAnnetResult(null)
+    setMigrateAnnetError(null)
+    try {
+      const res = await fetch('/api/storage/migrate-annet-to-drive', { method: 'POST' })
+      const json = await res.json() as MigrateAnnetResult & { error?: string }
+      if (!res.ok || json.error) { setMigrateAnnetError(json.error ?? 'Ukjent feil'); return }
+      setMigrateAnnetResult(json)
+    } catch (err) {
+      setMigrateAnnetError(err instanceof Error ? err.message : 'Ukjent feil')
+    } finally {
+      setMigratingAnnet(false)
+    }
   }
 
   async function restoreInstructions() {
@@ -114,6 +134,38 @@ function SettingsContent() {
             >
               Koble til Google Drive
             </a>
+          </div>
+        )}
+      </section>
+
+      {/* Temporary: migrate existing 'Annet' PDFs to Drive-only storage */}
+      <section className="bg-white rounded-2xl border border-stone-100 p-5 shadow-sm space-y-3">
+        <div>
+          <h2 className="font-medium text-stone-800">Koble Annet-dokumenter til Drive</h2>
+          <p className="text-sm text-stone-500 mt-0.5">
+            Oppdaterer eksisterende PDF-er av type «Annet» til å peke på Drive i stedet for Supabase. Supabase-filene slettes ikke nå.
+          </p>
+        </div>
+        <button
+          onClick={migrateAnnet}
+          disabled={migratingAnnet}
+          className="px-4 py-2 text-sm rounded-xl bg-stone-800 text-white hover:bg-stone-700 transition-colors disabled:opacity-40"
+        >
+          {migratingAnnet ? 'Oppdaterer…' : 'Koble Annet-dokumenter til Drive'}
+        </button>
+        {migrateAnnetError && (
+          <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">
+            {migrateAnnetError}
+          </div>
+        )}
+        {migrateAnnetResult && (
+          <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-sm text-green-700 space-y-1">
+            <p>Oppdatert: {migrateAnnetResult.oppdatert} &nbsp;·&nbsp; Hoppet over: {migrateAnnetResult.hoppet_over} &nbsp;·&nbsp; Feilet: {migrateAnnetResult.feilet}</p>
+            {migrateAnnetResult.detaljer.length > 0 && (
+              <ul className="mt-2 space-y-0.5 text-xs text-green-800 max-h-48 overflow-y-auto">
+                {migrateAnnetResult.detaljer.map((d, i) => <li key={i}>{d}</li>)}
+              </ul>
+            )}
           </div>
         )}
       </section>

@@ -705,7 +705,11 @@ function NewRecipeModal({ onCreate, onClose }: {
                 // Mønstre: Drive only
                 return { id: uid(), name: file.name, url: webViewLink, type, source: 'upload' as const, storage: 'drive' as const, driveFileId: fileId, driveLink: webViewLink, formatLabel: guessFormatLabel(file.name) }
               }
-              // Instruksjoner (Oppskrift/Annet): Drive arkiv + Supabase arbeidskopi
+              if (type === 'Annet') {
+                // Annet: Drive only (ingen Supabase-kopi)
+                return { id: uid(), name: file.name, url: webViewLink, type, source: 'upload' as const, storage: 'drive' as const, driveFileId: fileId, driveLink: webViewLink }
+              }
+              // Oppskrift: Drive arkiv + Supabase arbeidskopi
               const filename = `recipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.pdf`
               const { error: uploadErr } = await supabase.storage
                 .from('project-images')
@@ -715,10 +719,11 @@ function NewRecipeModal({ onCreate, onClose }: {
               return { id: uid(), name: file.name, url: urlData.publicUrl, type, source: 'upload' as const, storage: 'supabase' as const, driveFileId: fileId, driveLink: webViewLink }
             }
           }
-          // Mønstre skal KUN ligge i Drive — ikke fall back til Supabase
+          // Mønster og Annet skal KUN ligge i Drive — ikke fall back til Supabase
           if (type === 'Mønster') throw new Error(`Mønster «${file.name}» ble ikke lastet opp til Drive`)
+          if (type === 'Annet') throw new Error(`«${file.name}» ble ikke lastet opp til Drive`)
 
-          // Fallback for Oppskrift/Annet: Supabase (Drive ikke tilkoblet eller Drive-opplasting feilet)
+          // Fallback for Oppskrift: Supabase (Drive ikke tilkoblet eller Drive-opplasting feilet)
           const filename = `recipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.pdf`
           const { error: uploadErr } = await supabase.storage
             .from('project-images')
@@ -1583,7 +1588,7 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
     if (!pdfFile) return
     setPdfUploading(true)
     try {
-      if (pdfType === 'Mønster') {
+      if (pdfType === 'Mønster' || pdfType === 'Annet') {
         const statusRes = await fetch('/api/drive/status')
         const status = await statusRes.json() as { connected: boolean }
         if (status.connected) {
@@ -1598,15 +1603,16 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
               id: uid(), name: pdfName.trim() || pdfFile.name,
               url: webViewLink, type: pdfType, source: 'upload',
               storage: 'drive' as const, driveFileId: fileId, driveLink: webViewLink,
-              formatLabel: guessFormatLabel(pdfFile.name),
+              ...(pdfType === 'Mønster' ? { formatLabel: guessFormatLabel(pdfFile.name) } : {}),
             }],
           })
           setPdfFile(null)
           setPdfName('')
           return
         }
-        // Mønster uten Drive: ikke last opp til Supabase
-        showToast('Mønstre krever Google Drive — koble til i Innstillinger')
+        showToast(pdfType === 'Mønster'
+          ? 'Mønstre krever Google Drive — koble til i Innstillinger'
+          : 'Annet-dokumenter krever Google Drive — koble til i Innstillinger')
         return
       }
       const ext = pdfFile.name.split('.').pop() ?? 'pdf'
@@ -2083,20 +2089,27 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
                         </div>
                         <div className="flex items-center gap-3 flex-wrap">
                           {pdf.storage === 'drive' ? (
-                            <>
-                              <a
-                                href={pdf.driveFileId ? `https://drive.google.com/uc?export=download&id=${pdf.driveFileId}` : pdf.url}
-                                target="_blank" rel="noopener noreferrer"
+                            pdf.type === 'Annet' ? (
+                              <a href={pdf.driveLink ?? pdf.url} target="_blank" rel="noopener noreferrer"
                                 className="text-xs text-sky-500 hover:underline">
-                                {pdf.formatLabel ? `Last ned ${pdf.formatLabel}` : 'Last ned'} →
+                                Åpne i Drive ↗
                               </a>
-                              {pdf.driveLink && (
-                                <a href={pdf.driveLink} target="_blank" rel="noopener noreferrer"
-                                  className="text-xs text-stone-400 hover:text-stone-600 hover:underline">
-                                  Åpne i Drive ↗
+                            ) : (
+                              <>
+                                <a
+                                  href={pdf.driveFileId ? `https://drive.google.com/uc?export=download&id=${pdf.driveFileId}` : pdf.url}
+                                  target="_blank" rel="noopener noreferrer"
+                                  className="text-xs text-sky-500 hover:underline">
+                                  {pdf.formatLabel ? `Last ned ${pdf.formatLabel}` : 'Last ned'} →
                                 </a>
-                              )}
-                            </>
+                                {pdf.driveLink && (
+                                  <a href={pdf.driveLink} target="_blank" rel="noopener noreferrer"
+                                    className="text-xs text-stone-400 hover:text-stone-600 hover:underline">
+                                    Åpne i Drive ↗
+                                  </a>
+                                )}
+                              </>
+                            )
                           ) : pdf.source === 'upload' ? (
                             <>
                               <a href={pdf.url} target="_blank" rel="noopener noreferrer"
