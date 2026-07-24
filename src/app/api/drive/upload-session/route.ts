@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
     if (!accessToken) throw new Error('Kunne ikke hente access token')
 
     const initRes = await fetch(
-      'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,webViewLink',
+      'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable',
       {
         method: 'POST',
         headers: {

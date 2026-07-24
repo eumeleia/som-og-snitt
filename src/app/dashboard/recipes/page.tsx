@@ -657,7 +657,8 @@ function NewRecipeModal({ onCreate, onClose }: {
         } catch { /* fall through to Supabase-only */ }
       }
 
-      // Resumable upload: server creates session URL, browser PUTs bytes directly to Drive
+      // Resumable upload: server creates session URL, browser PUTs bytes directly to Drive.
+      // CORS blocks reading the PUT response, so we verify via a server-side file lookup.
       async function uploadToDrive(file: File): Promise<{ fileId: string; webViewLink: string } | null> {
         if (!driveFolderId) return null
         try {
@@ -669,20 +670,27 @@ function NewRecipeModal({ onCreate, onClose }: {
           if (!sessionRes.ok) return null
           const { uploadUrl } = await sessionRes.json() as { uploadUrl: string }
 
-          const putRes = await fetch(uploadUrl, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/pdf' },
-            body: file,
-          })
-          if (!putRes.ok) return null
+          // PUT bytes directly to Drive. CORS may block reading the response even on success —
+          // swallow that error and verify via the file-by-name lookup below.
+          try {
+            await fetch(uploadUrl, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/pdf' },
+              body: file,
+            })
+          } catch { /* CORS blocked response reading; upload likely succeeded */ }
 
-          const meta = await putRes.json() as { id?: string; webViewLink?: string }
-          console.log('[upload] PUT ferdig:', file.name)
-          if (!meta.id) return null
-          return {
-            fileId: meta.id,
-            webViewLink: meta.webViewLink ?? `https://drive.google.com/file/d/${meta.id}/view`,
-          }
+          // Verify upload and retrieve file metadata server-side
+          const lookupRes = await fetch('/api/drive/file-by-name', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fileName: file.name, folderId: driveFolderId }),
+          })
+          if (!lookupRes.ok) return null
+          const { fileId, webViewLink } = await lookupRes.json() as { fileId: string; webViewLink: string }
+          console.log('[upload] PUT ferdig, fant id:', fileId, '→', file.name)
+          if (!fileId) return null
+          return { fileId, webViewLink }
         } catch {
           return null
         }
