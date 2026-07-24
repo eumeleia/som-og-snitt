@@ -643,15 +643,42 @@ function NewRecipeModal({ onCreate, onClose }: {
         ? (sanitizeFolderName(recipeData.name) || `Oppskrift ${today}`)
         : ''
 
+      // Resumable upload: server creates session URL, browser PUTs bytes directly to Drive
+      async function uploadToDrive(file: File): Promise<{ fileId: string; webViewLink: string } | null> {
+        try {
+          const sessionRes = await fetch('/api/drive/upload-session', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fileName: file.name, mimeType: 'application/pdf', folderName }),
+          })
+          if (!sessionRes.ok) return null
+          const { uploadUrl } = await sessionRes.json() as { uploadUrl: string }
+
+          const putRes = await fetch(uploadUrl, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/pdf' },
+            body: file,
+          })
+          if (!putRes.ok) return null
+
+          const meta = await putRes.json() as { id?: string; webViewLink?: string }
+          console.log('[upload] PUT ferdig:', file.name)
+          if (!meta.id) return null
+          return {
+            fileId: meta.id,
+            webViewLink: meta.webViewLink ?? `https://drive.google.com/file/d/${meta.id}/view`,
+          }
+        } catch {
+          return null
+        }
+      }
+
       const uploadResults = await Promise.all(
         pdfs.map(async ({ file, type }) => {
           if (driveStatus.connected) {
-            const fd = new FormData()
-            fd.append('file', file, file.name)
-            fd.append('folderName', folderName)
-            const res = await fetch('/api/drive/upload', { method: 'POST', body: fd })
-            if (res.ok) {
-              const { fileId, webViewLink } = await res.json() as { fileId: string; webViewLink: string }
+            const driveResult = await uploadToDrive(file)
+            if (driveResult) {
+              const { fileId, webViewLink } = driveResult
               if (type === 'Mønster') {
                 // Mønstre: Drive only
                 return { id: uid(), name: file.name, url: webViewLink, type, source: 'upload' as const, storage: 'drive' as const, driveFileId: fileId, driveLink: webViewLink, formatLabel: guessFormatLabel(file.name) }
@@ -666,7 +693,7 @@ function NewRecipeModal({ onCreate, onClose }: {
               return { id: uid(), name: file.name, url: urlData.publicUrl, type, source: 'upload' as const, storage: 'supabase' as const, driveFileId: fileId, driveLink: webViewLink }
             }
           }
-          // Fallback: Supabase only
+          // Fallback: Supabase only (Drive ikke tilkoblet eller Drive-opplasting feilet)
           const filename = `recipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.pdf`
           const { error: uploadErr } = await supabase.storage
             .from('project-images')
