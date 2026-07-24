@@ -57,6 +57,10 @@ function SettingsContent() {
   const [migrationProgress, setMigrationProgress] = useState<MigrationProgress | null>(null)
   const [migrationResult, setMigrationResult]     = useState<MigrationResult | null>(null)
 
+  const [copying, setCopying]             = useState(false)
+  const [copyProgress, setCopyProgress]   = useState<MigrationProgress | null>(null)
+  const [copyResult, setCopyResult]       = useState<MigrationResult | null>(null)
+
   useEffect(() => {
     fetch('/api/drive/status').then(r => r.json()).then(setDrive)
   }, [])
@@ -231,6 +235,161 @@ function SettingsContent() {
     }
   }
 
+  async function runCopy() {
+    setCopying(true)
+    setCopyProgress(null)
+    setCopyResult(null)
+
+    try {
+      const [{ data: recipes }, { data: projects }] = await Promise.all([
+        supabase.from('recipes').select('*'),
+        supabase.from('projects').select('*'),
+      ])
+
+      // Find instruction PDFs (Oppskrift/Annet) with Supabase URL and no Drive archive yet
+      const items: MigrationItem[] = []
+      for (const row of (recipes ?? []) as DbRow[]) {
+        for (const pdf of row.data.pdfs ?? []) {
+          if (
+            (pdf.type === 'Oppskrift' || pdf.type === 'Annet') &&
+            !pdf.driveFileId &&
+            pdf.url && isSupabasePdfUrl(pdf.url)
+          ) {
+            items.push({ entity: 'recipe', id: row.id, entityName: row.data.name ?? 'Uten navn', pdf })
+          }
+        }
+      }
+      for (const row of (projects ?? []) as DbRow[]) {
+        for (const pdf of row.data.pdfs ?? []) {
+          if (
+            (pdf.type === 'Oppskrift' || pdf.type === 'Annet') &&
+            !pdf.driveFileId &&
+            pdf.url && isSupabasePdfUrl(pdf.url)
+          ) {
+            items.push({ entity: 'project', id: row.id, entityName: row.data.name ?? 'Uten navn', pdf })
+          }
+        }
+      }
+
+      console.log('[copy] Fant', items.length, 'instruksjons-PDF-er som skal kopieres til Drive')
+
+      if (items.length === 0) {
+        setCopyResult({ migrated: 0, skipped: 0, failed: 0, total: 0 })
+        setCopying(false)
+        return
+      }
+
+      let migrated = 0, skipped = 0, failed = 0
+
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i]
+        setCopyProgress({ current: i + 1, total: items.length, fileName: item.pdf.name })
+        console.log('[copy] Starter', i + 1, '/', items.length, '—', item.pdf.name)
+
+        try {
+          // a. Ensure Drive subfolder
+          const folderName = sanitizeFolderName(item.entityName) || 'Uten navn'
+          const ensureRes = await fetch('/api/drive/ensure-folder', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folderName }),
+          })
+          if (!ensureRes.ok) {
+            console.error('[copy] ensure-folder feilet for:', item.pdf.name)
+            failed++; continue
+          }
+          const { folderId } = await ensureRes.json() as { folderId: string }
+
+          // b. Download file bytes from Supabase
+          const fileRes = await fetch(item.pdf.url)
+          if (!fileRes.ok) {
+            console.error('[copy] Nedlasting feilet:', item.pdf.url)
+            failed++; continue
+          }
+          const blob = await fileRes.blob()
+          const file = new File([blob], item.pdf.name, { type: 'application/pdf' })
+
+          // c. Resumable upload → PUT → file-by-name
+          const sessionRes = await fetch('/api/drive/upload-session', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fileName: item.pdf.name, mimeType: 'application/pdf', folderId }),
+          })
+          if (!sessionRes.ok) {
+            console.error('[copy] upload-session feilet for:', item.pdf.name)
+            failed++; continue
+          }
+          const { uploadUrl } = await sessionRes.json() as { uploadUrl: string }
+
+          try {
+            await fetch(uploadUrl, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/pdf' },
+              body: file,
+            })
+          } catch { /* CORS blocks response reading — upload likely succeeded */ }
+
+          const lookupRes = await fetch('/api/drive/file-by-name', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fileName: item.pdf.name, folderId }),
+          })
+          if (!lookupRes.ok) {
+            console.error('[copy] file-by-name fant ikke fila etter opplasting:', item.pdf.name)
+            failed++; continue
+          }
+          const { fileId, webViewLink } = await lookupRes.json() as { fileId: string; webViewLink: string }
+
+          // d. Update PdfItem in DB — keep storage 'supabase' and url unchanged, only add Drive fields
+          const table = item.entity === 'recipe' ? 'recipes' : 'projects'
+          const { data: freshRow } = await supabase.from(table).select('*').eq('id', item.id).single() as { data: DbRow | null }
+          if (!freshRow) {
+            console.error('[copy] Rad ikke funnet i DB:', item.id)
+            failed++; continue
+          }
+
+          const freshPdfs = [...(freshRow.data.pdfs ?? [])]
+          const pdfIdx = freshPdfs.findIndex(p => p.id === item.pdf.id)
+          if (pdfIdx === -1) {
+            console.warn('[copy] PDF-id ikke funnet i fersk rad:', item.pdf.id)
+            skipped++; continue
+          }
+
+          // Preserve storage + url (Supabase working copy); only add Drive archive fields
+          freshPdfs[pdfIdx] = {
+            ...freshPdfs[pdfIdx],
+            driveFileId: fileId,
+            driveLink: webViewLink,
+          }
+
+          const { error: updateErr } = await supabase
+            .from(table)
+            .update({ data: { ...freshRow.data, pdfs: freshPdfs } })
+            .eq('id', item.id)
+          if (updateErr) {
+            console.error('[copy] DB-oppdatering feilet:', updateErr)
+            failed++; continue
+          }
+
+          // e. No Storage deletion — Supabase working copy is kept
+          console.log('[copy] Kopiert:', item.pdf.name, '→ Drive id:', fileId)
+          migrated++
+        } catch (err) {
+          console.error('[copy] Uventet feil for:', item.pdf.name, err)
+          failed++
+        }
+      }
+
+      setCopyResult({ migrated, skipped, failed, total: items.length })
+    } catch (err) {
+      console.error('[copy] Fatal feil:', err)
+      setCopyResult({ migrated: 0, skipped: 0, failed: 1, total: 1 })
+    } finally {
+      setCopying(false)
+      setCopyProgress(null)
+    }
+  }
+
   const flash = searchParams.get('drive')
 
   return (
@@ -339,10 +498,62 @@ function SettingsContent() {
 
           <button
             onClick={runMigration}
-            disabled={migrating}
+            disabled={migrating || copying}
             className="px-4 py-2 text-sm rounded-xl bg-stone-800 text-white hover:bg-stone-700 transition-colors disabled:opacity-40"
           >
             {migrating ? 'Migrerer…' : 'Flytt eksisterende mønstre til Drive'}
+          </button>
+        </section>
+      )}
+
+      {drive?.connected && (
+        <section className="bg-white rounded-2xl border border-stone-100 p-5 shadow-sm space-y-4">
+          <div>
+            <h2 className="font-medium text-stone-800">Kopier instruksjoner til Drive-arkiv</h2>
+            <p className="text-sm text-stone-500 mt-1">
+              Kopierer instruksjons-PDF-er (Oppskrift og Annet) til Drive-mappen per oppskrift, slik at alt innhold ligger samlet. Supabase-arbeidskopien beholdes uendret — kun Drive-arkivfelter legges til. Kan kjøres flere ganger uten duplikater.
+            </p>
+          </div>
+
+          {copyProgress && (
+            <div className="space-y-1.5">
+              <div className="flex justify-between text-xs text-stone-500">
+                <span>Kopierer {copyProgress.current} av {copyProgress.total}</span>
+              </div>
+              <div className="w-full bg-stone-100 rounded-full h-1.5">
+                <div
+                  className="bg-stone-800 h-1.5 rounded-full transition-all duration-300"
+                  style={{ width: `${(copyProgress.current / copyProgress.total) * 100}%` }}
+                />
+              </div>
+              <p className="text-xs text-stone-400 truncate">{copyProgress.fileName}</p>
+            </div>
+          )}
+
+          {copyResult && !copying && (
+            <div className={`rounded-xl px-4 py-3 text-sm ${
+              copyResult.failed > 0
+                ? 'bg-amber-50 border border-amber-200 text-amber-800'
+                : 'bg-green-50 border border-green-200 text-green-700'
+            }`}>
+              {copyResult.total === 0 ? (
+                'Ingen instruksjons-PDF-er å kopiere — alle har allerede Drive-arkivkopi.'
+              ) : (
+                <>
+                  Ferdig: <strong>{copyResult.migrated}</strong> kopiert
+                  {copyResult.skipped > 0 && <>, <strong>{copyResult.skipped}</strong> hoppet over</>}
+                  {copyResult.failed > 0 && <>, <strong>{copyResult.failed}</strong> feilet</>}.
+                </>
+              )}
+            </div>
+          )}
+
+          <button
+            onClick={runCopy}
+            disabled={copying || migrating}
+            className="px-4 py-2 text-sm rounded-xl bg-stone-800 text-white hover:bg-stone-700 transition-colors disabled:opacity-40"
+          >
+            {copying ? 'Kopierer…' : 'Kopier instruksjoner til Drive-arkiv'}
           </button>
         </section>
       )}
