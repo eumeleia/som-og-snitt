@@ -39,24 +39,29 @@ async function buildBucketSet(): Promise<Set<string>> {
     offset += PAGE
   }
   console.log(`[restore] bucket has ${set.size} objects`)
+  const sample = [...set].slice(0, 5)
+  console.log(`[restore] bucket-sett eksempel: [${sample.join(', ')}]`)
   return set
-}
-
-// Returns true if the instruction PDF's Supabase working copy is missing from the bucket.
-function needsRestore(pdf: PdfItem, bucketSet: Set<string>): boolean {
-  if (pdf.type !== 'Oppskrift' && pdf.type !== 'Annet') return false
-  if (!pdf.driveFileId) return false
-  const match = pdf.url.split('/project-images/')[1]?.split('?')[0]
-  // Restore if there is no /project-images/ path in the URL, OR the extracted path is not in the bucket
-  return !match || !bucketSet.has(match)
 }
 
 export async function POST() {
   try {
-    const [{ data: recipes }, { data: projects }] = await Promise.all([
+    const [{ data: recipes, error: recErr }, { data: projects, error: projErr }] = await Promise.all([
       supabaseAdmin.from('recipes').select('id,data'),
       supabaseAdmin.from('projects').select('id,data'),
     ])
+
+    if (recErr)  console.error('[restore] recipes fetch error:', recErr)
+    if (projErr) console.error('[restore] projects fetch error:', projErr)
+
+    const recipeList  = (recipes  ?? []) as DbRow[]
+    const projectList = (projects ?? []) as DbRow[]
+    console.log(`[restore] hentet ${recipeList.length} recipes, ${projectList.length} projects`)
+
+    // Count all PDFs and instruction PDFs
+    const allPdfs = [...recipeList, ...projectList].flatMap(r => r.data?.pdfs ?? [])
+    const instrPdfs = allPdfs.filter(p => p.type === 'Oppskrift' || p.type === 'Annet')
+    console.log(`[restore] ${allPdfs.length} pdfs totalt, ${instrPdfs.length} instruksjoner (Oppskrift/Annet)`)
 
     const bucketSet = await buildBucketSet()
     const auth = await getOAuth2Client()
@@ -70,30 +75,45 @@ export async function POST() {
     let feilet       = 0
     const detaljer: string[] = []
 
-    // Count how many need restore before starting
     const allRows = [
-      ...((recipes ?? []) as DbRow[]).map(r => ({ ...r, table: 'recipes' })),
-      ...((projects ?? []) as DbRow[]).map(r => ({ ...r, table: 'projects' })),
+      ...recipeList.map(r => ({ ...r, table: 'recipes' })),
+      ...projectList.map(r => ({ ...r, table: 'projects' })),
     ]
-    const toRestore = allRows.flatMap(row =>
-      (row.data?.pdfs ?? []).filter(pdf => needsRestore(pdf, bucketSet))
-        .map(pdf => ({ row, pdf }))
-    )
-    console.log(`[restore] ${toRestore.length} instruksjoner mangler i Supabase-bucketen`)
+
+    // Log decision for each instruction PDF (first 20 to keep logs manageable)
+    let loggedDecisions = 0
+    for (const row of allRows) {
+      for (const pdf of row.data?.pdfs ?? []) {
+        if (pdf.type !== 'Oppskrift' && pdf.type !== 'Annet') continue
+        const sti   = pdf.url.split('/project-images/')[1]?.split('?')[0] ?? null
+        const finnes = sti !== null && bucketSet.has(sti)
+        const restore = !sti || !finnes
+        if (loggedDecisions < 20) {
+          console.log(
+            `[restore] vurderer "${pdf.name}": driveFileId=${pdf.driveFileId ? 'ja' : 'NEI'}, ` +
+            `sti=${sti ?? '(ingen)'}, finnes_i_bucket=${finnes} → ${restore ? 'GJENOPPRETT' : 'hopp over'}`
+          )
+          loggedDecisions++
+        }
+      }
+    }
 
     for (const row of allRows) {
       const pdfs: PdfItem[] = row.data?.pdfs ?? []
-      let changed = false
 
       for (let i = 0; i < pdfs.length; i++) {
         const pdf = pdfs[i]
-        if (!needsRestore(pdf, bucketSet)) {
-          if (pdf.type === 'Oppskrift' || pdf.type === 'Annet') hoppet_over++
-          continue
-        }
+        if (pdf.type !== 'Oppskrift' && pdf.type !== 'Annet') continue
+
+        if (!pdf.driveFileId) { hoppet_over++; continue }
+
+        const sti    = pdf.url.split('/project-images/')[1]?.split('?')[0] ?? null
+        const finnes = sti !== null && bucketSet.has(sti)
+
+        if (finnes) { hoppet_over++; continue }
 
         try {
-          console.log(`[restore] laster ned fra Drive: ${pdf.name} (${pdf.driveFileId})`)
+          console.log(`[restore] laster ned fra Drive: "${pdf.name}" (${pdf.driveFileId})`)
           const driveRes = await drive.files.get(
             { fileId: pdf.driveFileId!, alt: 'media' },
             { responseType: 'arraybuffer' },
@@ -111,27 +131,31 @@ export async function POST() {
           const newUrl = `${bucketBase}${filename}`
           bucketSet.add(filename)
 
-          // Re-fetch the row to get the latest state before writing back
-          const { data: freshRow } = await supabaseAdmin
+          // Re-fetch the row before writing to avoid overwriting concurrent changes.
+          // select('data') returns { data: RowData }, so column value is at .data
+          const { data: freshRow, error: fetchErr } = await supabaseAdmin
             .from(row.table)
             .select('data')
             .eq('id', row.id)
-            .single()
+            .single() as { data: { data: RowData } | null; error: unknown }
 
-          const freshPdfs: PdfItem[] = (freshRow as RowData | null)?.pdfs ?? pdfs
+          if (fetchErr) console.error(`[restore] re-fetch feilet for ${row.id}:`, fetchErr)
+
+          const freshData = freshRow?.data ?? row.data
+          const freshPdfs: PdfItem[] = freshData?.pdfs ?? pdfs
           const freshIdx = freshPdfs.findIndex(p => p.id === pdf.id)
           if (freshIdx !== -1) {
             freshPdfs[freshIdx] = { ...freshPdfs[freshIdx], url: newUrl, storage: 'supabase' }
           }
 
-          await supabaseAdmin
+          const { error: updateErr } = await supabaseAdmin
             .from(row.table)
-            .update({ data: { ...(freshRow as RowData ?? row.data), pdfs: freshPdfs } })
+            .update({ data: { ...freshData, pdfs: freshPdfs } })
             .eq('id', row.id)
 
-          // Update local copy to stay consistent for remaining PDFs in this row
+          if (updateErr) throw new Error(updateErr.message)
+
           pdfs[i] = { ...pdf, url: newUrl, storage: 'supabase' }
-          changed = true
           gjenopprettet++
           const msg = `${row.table}/${row.id}: ${pdf.name} → ${filename}`
           console.log(`[restore] OK: ${msg}`)
@@ -139,12 +163,10 @@ export async function POST() {
         } catch (err) {
           feilet++
           const msg = `FEIL ${row.table}/${row.id}: ${pdf.name} — ${err instanceof Error ? err.message : String(err)}`
-          console.error(`[restore] ${msg}`)
+          console.error(`[restore] feil på "${pdf.name}":`, err)
           detaljer.push(msg)
         }
       }
-
-      void changed // local tracking only; writes happen per-pdf above
     }
 
     console.log(`[restore] ferdig — gjenopprettet: ${gjenopprettet}, hoppet over: ${hoppet_over}, feilet: ${feilet}`)
