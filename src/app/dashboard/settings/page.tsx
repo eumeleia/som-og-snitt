@@ -4,6 +4,7 @@ import { useState, useEffect, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 
 interface DriveStatus { connected: boolean }
+interface RestoreResult { gjenopprettet: number; hoppet_over: number; feilet: number; detaljer: string[] }
 
 function DriveIcon() {
   return (
@@ -22,6 +23,9 @@ function SettingsContent() {
   const searchParams = useSearchParams()
   const [drive, setDrive] = useState<DriveStatus | null>(null)
   const [disconnecting, setDisconnecting] = useState(false)
+  const [restoring, setRestoring] = useState(false)
+  const [restoreResult, setRestoreResult] = useState<RestoreResult | null>(null)
+  const [restoreError, setRestoreError] = useState<string | null>(null)
 
   useEffect(() => {
     fetch('/api/drive/status').then(r => r.json()).then(setDrive)
@@ -32,6 +36,22 @@ function SettingsContent() {
     await fetch('/api/drive/disconnect', { method: 'POST' })
     setDrive({ connected: false })
     setDisconnecting(false)
+  }
+
+  async function restoreInstructions() {
+    setRestoring(true)
+    setRestoreResult(null)
+    setRestoreError(null)
+    try {
+      const res = await fetch('/api/storage/restore-instructions', { method: 'POST' })
+      const json = await res.json() as RestoreResult & { error?: string }
+      if (!res.ok || json.error) { setRestoreError(json.error ?? 'Ukjent feil'); return }
+      setRestoreResult(json)
+    } catch (err) {
+      setRestoreError(err instanceof Error ? err.message : 'Ukjent feil')
+    } finally {
+      setRestoring(false)
+    }
   }
 
   const flash = searchParams.get('drive')
@@ -94,6 +114,38 @@ function SettingsContent() {
             >
               Koble til Google Drive
             </a>
+          </div>
+        )}
+      </section>
+
+      {/* Temporary: restore instruction PDFs accidentally deleted from Supabase during cleanup */}
+      <section className="bg-white rounded-2xl border border-stone-100 p-5 shadow-sm space-y-3">
+        <div>
+          <h2 className="font-medium text-stone-800">Gjenopprett instruksjoner fra Drive</h2>
+          <p className="text-sm text-stone-500 mt-0.5">
+            Laster ned Oppskrift- og Annet-PDF-er fra Google Drive-arkivet og gjenoppretter Supabase-arbeidskopiene.
+          </p>
+        </div>
+        <button
+          onClick={restoreInstructions}
+          disabled={restoring}
+          className="px-4 py-2 text-sm rounded-xl bg-stone-800 text-white hover:bg-stone-700 transition-colors disabled:opacity-40"
+        >
+          {restoring ? 'Gjenoppretter…' : 'Gjenopprett instruksjoner'}
+        </button>
+        {restoreError && (
+          <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">
+            {restoreError}
+          </div>
+        )}
+        {restoreResult && (
+          <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-sm text-green-700 space-y-1">
+            <p>Gjenopprettet: {restoreResult.gjenopprettet} &nbsp;·&nbsp; Hoppet over: {restoreResult.hoppet_over} &nbsp;·&nbsp; Feilet: {restoreResult.feilet}</p>
+            {restoreResult.detaljer.length > 0 && (
+              <ul className="mt-2 space-y-0.5 text-xs text-green-800 max-h-48 overflow-y-auto">
+                {restoreResult.detaljer.map((d, i) => <li key={i}>{d}</li>)}
+              </ul>
+            )}
           </div>
         )}
       </section>
