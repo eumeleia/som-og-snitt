@@ -36,8 +36,6 @@ export async function POST(req: NextRequest) {
     const uploadUrl = initRes.headers.get('Location')
     if (!uploadUrl) throw new Error('Drive returnerte ingen Location-header')
 
-    console.log('[upload] session opprettet for:', fileName)
-
     return NextResponse.json({ uploadUrl })
   } catch (err) {
     console.error('[upload] session-feil:', err)

@@ -114,8 +114,6 @@ function SettingsContent() {
         }
       }
 
-      console.log('[migrate] Fant', items.length, 'mønster-PDF-er som skal migreres')
-
       if (items.length === 0) {
         setMigrationResult({ migrated: 0, skipped: 0, failed: 0, total: 0 })
         setMigrating(false)
@@ -127,8 +125,6 @@ function SettingsContent() {
       for (let i = 0; i < items.length; i++) {
         const item = items[i]
         setMigrationProgress({ current: i + 1, total: items.length, fileName: item.pdf.name })
-        console.log('[migrate] Starter', i + 1, '/', items.length, '—', item.pdf.name)
-
         try {
           // Capture BEFORE any updates so the Supabase URL is still intact for deletion
           const originalSupabaseUrl = item.pdf.url
@@ -197,7 +193,6 @@ function SettingsContent() {
           const freshPdfs = [...(freshRow.data.pdfs ?? [])]
           const pdfIdx = freshPdfs.findIndex(p => p.id === item.pdf.id)
           if (pdfIdx === -1) {
-            console.warn('[migrate] PDF-id ikke funnet i fersk rad (allerede fjernet?):', item.pdf.id)
             skipped++; continue
           }
 
@@ -220,19 +215,11 @@ function SettingsContent() {
 
           // e. Delete from Supabase Storage — use original URL captured before DB update
           const supabasePath = extractSupabasePath(originalSupabaseUrl)
-          console.log('[migrate] Supabase-sti for sletting:', supabasePath, '(fra url:', originalSupabaseUrl, ')')
           if (supabasePath) {
             const { error: delErr } = await supabase.storage.from('project-images').remove([supabasePath])
-            if (delErr) {
-              console.error('[migrate] Sletting fra Storage feilet:', JSON.stringify(delErr))
-            } else {
-              console.log('[migrate] Slettet fra Storage:', supabasePath)
-            }
-          } else {
-            console.warn('[migrate] Klarte ikke utlede Supabase-sti — filen ble ikke slettet')
+            if (delErr) console.error('[migrate] Sletting fra Storage feilet:', JSON.stringify(delErr))
           }
 
-          console.log('[migrate] Ferdig:', item.pdf.name, '→ Drive id:', fileId)
           migrated++
         } catch (err) {
           console.error('[migrate] Uventet feil for:', item.pdf.name, err)
@@ -286,8 +273,6 @@ function SettingsContent() {
         }
       }
 
-      console.log('[copy] Fant', items.length, 'instruksjons-PDF-er som skal kopieres til Drive')
-
       if (items.length === 0) {
         setCopyResult({ migrated: 0, skipped: 0, failed: 0, total: 0 })
         setCopying(false)
@@ -299,8 +284,6 @@ function SettingsContent() {
       for (let i = 0; i < items.length; i++) {
         const item = items[i]
         setCopyProgress({ current: i + 1, total: items.length, fileName: item.pdf.name })
-        console.log('[copy] Starter', i + 1, '/', items.length, '—', item.pdf.name)
-
         try {
           // a. Ensure Drive subfolder
           const folderName = sanitizeFolderName(item.entityName) || 'Uten navn'
@@ -366,7 +349,6 @@ function SettingsContent() {
           const freshPdfs = [...(freshRow.data.pdfs ?? [])]
           const pdfIdx = freshPdfs.findIndex(p => p.id === item.pdf.id)
           if (pdfIdx === -1) {
-            console.warn('[copy] PDF-id ikke funnet i fersk rad:', item.pdf.id)
             skipped++; continue
           }
 
@@ -387,7 +369,6 @@ function SettingsContent() {
           }
 
           // e. No Storage deletion — Supabase working copy is kept
-          console.log('[copy] Kopiert:', item.pdf.name, '→ Drive id:', fileId)
           migrated++
         } catch (err) {
           console.error('[copy] Uventet feil for:', item.pdf.name, err)
@@ -425,10 +406,6 @@ function SettingsContent() {
         totalOrphanBytes: number
       }
 
-      console.log('[cleanup] Skannet:', scan.scanned.recipes, 'recipes,', scan.scanned.projects, 'projects')
-      console.log('[cleanup] I bruk:', scan.inUseCount, '| objekter i bucket:', scan.totalObjects, '| foreldreløse PDF-er:', scan.orphanCount)
-      console.log('[cleanup] Første 10 foreldreløse:', scan.orphanSample)
-
       if (scan.orphanCount === 0) {
         setCleanupResult({ found: 0, deleted: 0, failed: 0 })
         return
@@ -455,7 +432,6 @@ function SettingsContent() {
       }
       const result = await delRes.json() as { deleted: number; freedBytes: number; failed: number }
 
-      console.log('[cleanup] Ferdig: slettet', result.deleted, '| feilet', result.failed, '| frigjort', (result.freedBytes / 1024 / 1024).toFixed(1), 'MB')
       setCleanupResult({ found: scan.orphanCount, deleted: result.deleted, failed: result.failed })
     } catch (err) {
       console.error('[cleanup] Fatal feil:', err)

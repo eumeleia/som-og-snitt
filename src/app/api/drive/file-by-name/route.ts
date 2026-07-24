@@ -27,8 +27,6 @@ export async function POST(req: NextRequest) {
     const webViewLink = file.webViewLink ?? `https://drive.google.com/file/d/${fileId}/view`
     const downloadLink = `https://drive.google.com/uc?export=download&id=${fileId}`
 
-    console.log('[file-by-name] fant id:', fileId, 'for:', fileName)
-
     return NextResponse.json({ fileId, webViewLink, downloadLink })
   } catch (err) {
     console.error('[file-by-name]', err)

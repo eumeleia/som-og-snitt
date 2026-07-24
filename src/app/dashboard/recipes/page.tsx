@@ -688,7 +688,6 @@ function NewRecipeModal({ onCreate, onClose }: {
           })
           if (!lookupRes.ok) return null
           const { fileId, webViewLink } = await lookupRes.json() as { fileId: string; webViewLink: string }
-          console.log('[upload] PUT ferdig, fant id:', fileId, '→', file.name)
           if (!fileId) return null
           return { fileId, webViewLink }
         } catch {
@@ -726,7 +725,6 @@ function NewRecipeModal({ onCreate, onClose }: {
             .upload(filename, file, { contentType: 'application/pdf' })
           if (uploadErr) throw new Error(`Opplasting av «${file.name}» feilet`)
           const { data: urlData } = supabase.storage.from('project-images').getPublicUrl(filename)
-          console.log('[upload] Supabase-fallback:', file.name, '→', urlData.publicUrl)
           return { id: uid(), name: file.name, url: urlData.publicUrl, type, source: 'upload' as const }
         })
       )

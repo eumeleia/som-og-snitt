@@ -56,7 +56,6 @@ async function listAllObjects(): Promise<{ name: string; size: number }[]> {
       if (f.name) all.push({ name: f.name, size: f.metadata?.size ?? 0 })
     }
 
-    console.log('[cleanup] list() offset', offset, '→', data.length, 'objekter')
     if (data.length < PAGE) break
     offset += PAGE
   }
@@ -77,16 +76,9 @@ export async function POST(req: NextRequest) {
 async function scan(): Promise<NextResponse> {
   try {
     const { inUseSet, recipeCount, projectCount } = await buildInUseSet()
-    console.log('[cleanup] i-bruk-sett:', inUseSet.size, '| recipes:', recipeCount, '| projects:', projectCount)
-
     const allObjects = await listAllObjects()
-    console.log('[cleanup] totalt antall objekter i bucket:', allObjects.length)
-
     const orphans = allObjects.filter(o => o.name.toLowerCase().endsWith('.pdf') && !inUseSet.has(o.name))
     const totalOrphanBytes = orphans.reduce((sum, o) => sum + o.size, 0)
-
-    console.log('[cleanup] foreldreløse PDF-er:', orphans.length, '| bytes:', totalOrphanBytes)
-    console.log('[cleanup] første 10:', orphans.slice(0, 10).map(o => o.name))
 
     return NextResponse.json({
       scanned: { recipes: recipeCount, projects: projectCount },
@@ -124,14 +116,11 @@ async function deleteOrphans(): Promise<NextResponse> {
         console.error('[cleanup] batch-sletting feilet:', JSON.stringify(error), 'filer:', batch)
         failed += batch.length
       } else {
-        console.log('[cleanup] slettet batch', i / BATCH + 1, ':', batch.length, 'filer')
         deleted += batch.length
       }
     }
 
     const freedBytes = (deleted / orphans.length) * totalOrphanBytes
-    console.log('[cleanup] ferdig: slettet', deleted, '| feilet', failed, '| frigjort ~', Math.round(freedBytes / 1024 / 1024), 'MB')
-
     return NextResponse.json({ deleted, freedBytes: Math.round(freedBytes), failed })
   } catch (err) {
     console.error('[cleanup] delete feilet:', err)

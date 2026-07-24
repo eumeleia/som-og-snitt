@@ -18,8 +18,6 @@ export async function POST(req: NextRequest) {
       ? await getOrCreateSubfolder(drive, rootFolderId, folderName)
       : rootFolderId
 
-    console.log('[upload] laster opp:', file.name, '→', folderName || '(rot)')
-
     const buffer = Buffer.from(await file.arrayBuffer())
     const stream = Readable.from(buffer)
 
@@ -28,8 +26,6 @@ export async function POST(req: NextRequest) {
       media: { mimeType: 'application/pdf', body: stream },
       fields: 'id,webViewLink',
     })
-
-    console.log('[upload] ferdig:', file.name)
 
     return NextResponse.json({
       fileId: uploaded.data.id,
