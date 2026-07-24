@@ -444,7 +444,7 @@ function guessFormatLabel(filename: string): string {
   if (lower.includes('a4')) return 'A4'
   if (lower.includes('us_letter') || lower.includes('usletter') || lower.includes('letter')) return 'US Letter'
   if (lower.includes('projector') || lower.includes('projektor') || lower.includes('projektør')) return 'Projektor'
-  return 'Last ned'
+  return ''
 }
 
 async function renderAndUploadCover(
@@ -708,13 +708,17 @@ function NewRecipeModal({ onCreate, onClose }: {
               return { id: uid(), name: file.name, url: urlData.publicUrl, type, source: 'upload' as const, storage: 'supabase' as const, driveFileId: fileId, driveLink: webViewLink }
             }
           }
-          // Fallback: Supabase only (Drive ikke tilkoblet eller Drive-opplasting feilet)
+          // Mønstre skal KUN ligge i Drive — ikke fall back til Supabase
+          if (type === 'Mønster') throw new Error(`Mønster «${file.name}» ble ikke lastet opp til Drive`)
+
+          // Fallback for Oppskrift/Annet: Supabase (Drive ikke tilkoblet eller Drive-opplasting feilet)
           const filename = `recipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.pdf`
           const { error: uploadErr } = await supabase.storage
             .from('project-images')
             .upload(filename, file, { contentType: 'application/pdf' })
           if (uploadErr) throw new Error(`Opplasting av «${file.name}» feilet`)
           const { data: urlData } = supabase.storage.from('project-images').getPublicUrl(filename)
+          console.log('[upload] Supabase-fallback:', file.name, '→', urlData.publicUrl)
           return { id: uid(), name: file.name, url: urlData.publicUrl, type, source: 'upload' as const }
         })
       )
@@ -1595,7 +1599,9 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
           setPdfName('')
           return
         }
-        showToast('Tips: Koble til Google Drive i Innstillinger for å spare lagringsplass')
+        // Mønster uten Drive: ikke last opp til Supabase
+        showToast('Mønstre krever Google Drive — koble til i Innstillinger')
+        return
       }
       const ext = pdfFile.name.split('.').pop() ?? 'pdf'
       const filename = `recipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`
@@ -2071,10 +2077,20 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
                         </div>
                         <div className="flex items-center gap-3 flex-wrap">
                           {pdf.storage === 'drive' ? (
-                            <a href={pdf.driveLink ?? pdf.url} target="_blank" rel="noopener noreferrer"
-                              className="text-xs text-sky-500 hover:underline">
-                              {pdf.formatLabel ? `Last ned ${pdf.formatLabel}` : 'Last ned'} ↗
-                            </a>
+                            <>
+                              <a
+                                href={pdf.driveFileId ? `https://drive.google.com/uc?export=download&id=${pdf.driveFileId}` : pdf.url}
+                                target="_blank" rel="noopener noreferrer"
+                                className="text-xs text-sky-500 hover:underline">
+                                {pdf.formatLabel ? `Last ned ${pdf.formatLabel}` : 'Last ned'} →
+                              </a>
+                              {pdf.driveLink && (
+                                <a href={pdf.driveLink} target="_blank" rel="noopener noreferrer"
+                                  className="text-xs text-stone-400 hover:text-stone-600 hover:underline">
+                                  Åpne i Drive ↗
+                                </a>
+                              )}
+                            </>
                           ) : pdf.source === 'upload' ? (
                             <>
                               <a href={pdf.url} target="_blank" rel="noopener noreferrer"
