@@ -21,13 +21,15 @@ interface MigrationItem {
 
 interface MigrationProgress { current: number; total: number; fileName: string }
 interface MigrationResult  { migrated: number; skipped: number; failed: number; total: number }
+interface CleanupResult    { found: number; deleted: number; failed: number; cancelled?: boolean }
 
 function sanitizeFolderName(name: string): string {
   return name.replace(/[/\\:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim()
 }
 
 function extractSupabasePath(url: string): string | null {
-  const match = url.match(/\/project-images\/(.+)$/)
+  // Strip query params/fragments so we get just the storage object name
+  const match = url.match(/\/project-images\/([^?#]+)/)
   return match ? match[1] : null
 }
 
@@ -60,6 +62,9 @@ function SettingsContent() {
   const [copying, setCopying]             = useState(false)
   const [copyProgress, setCopyProgress]   = useState<MigrationProgress | null>(null)
   const [copyResult, setCopyResult]       = useState<MigrationResult | null>(null)
+
+  const [cleanupRunning, setCleanupRunning] = useState(false)
+  const [cleanupResult, setCleanupResult]   = useState<CleanupResult | null>(null)
 
   useEffect(() => {
     fetch('/api/drive/status').then(r => r.json()).then(setDrive)
@@ -125,6 +130,9 @@ function SettingsContent() {
         console.log('[migrate] Starter', i + 1, '/', items.length, '—', item.pdf.name)
 
         try {
+          // Capture BEFORE any updates so the Supabase URL is still intact for deletion
+          const originalSupabaseUrl = item.pdf.url
+
           // a. Ensure Drive subfolder for this recipe/project
           const folderName = sanitizeFolderName(item.entityName) || 'Uten navn'
           const ensureRes = await fetch('/api/drive/ensure-folder', {
@@ -210,11 +218,18 @@ function SettingsContent() {
             failed++; continue
           }
 
-          // e. Delete from Supabase Storage only after confirmed DB update
-          const supabasePath = extractSupabasePath(item.pdf.url)
+          // e. Delete from Supabase Storage — use original URL captured before DB update
+          const supabasePath = extractSupabasePath(originalSupabaseUrl)
+          console.log('[migrate] Supabase-sti for sletting:', supabasePath, '(fra url:', originalSupabaseUrl, ')')
           if (supabasePath) {
             const { error: delErr } = await supabase.storage.from('project-images').remove([supabasePath])
-            if (delErr) console.warn('[migrate] Sletting fra Storage feilet (ikke kritisk):', delErr)
+            if (delErr) {
+              console.error('[migrate] Sletting fra Storage feilet:', JSON.stringify(delErr))
+            } else {
+              console.log('[migrate] Slettet fra Storage:', supabasePath)
+            }
+          } else {
+            console.warn('[migrate] Klarte ikke utlede Supabase-sti — filen ble ikke slettet')
           }
 
           console.log('[migrate] Ferdig:', item.pdf.name, '→ Drive id:', fileId)
@@ -390,6 +405,92 @@ function SettingsContent() {
     }
   }
 
+  async function runCleanup() {
+    setCleanupRunning(true)
+    setCleanupResult(null)
+
+    try {
+      const [{ data: recipes }, { data: projects }] = await Promise.all([
+        supabase.from('recipes').select('*'),
+        supabase.from('projects').select('*'),
+      ])
+
+      // Build set of every Supabase Storage path still actively referenced
+      const activePaths = new Set<string>()
+      for (const row of (recipes ?? []) as DbRow[]) {
+        for (const pdf of row.data.pdfs ?? []) {
+          if (pdf.url && isSupabasePdfUrl(pdf.url)) {
+            const p = extractSupabasePath(pdf.url)
+            if (p) activePaths.add(p)
+          }
+        }
+      }
+      for (const row of (projects ?? []) as DbRow[]) {
+        for (const pdf of row.data.pdfs ?? []) {
+          if (pdf.url && isSupabasePdfUrl(pdf.url)) {
+            const p = extractSupabasePath(pdf.url)
+            if (p) activePaths.add(p)
+          }
+        }
+      }
+      console.log('[cleanup] Aktive Supabase-stier:', activePaths.size)
+
+      // List all files in bucket (paginated)
+      const allFiles: string[] = []
+      let offset = 0
+      const PAGE = 1000
+      while (true) {
+        const { data, error } = await supabase.storage.from('project-images').list('', { limit: PAGE, offset })
+        if (error) { console.error('[cleanup] list feilet:', error); break }
+        if (!data || data.length === 0) break
+        for (const f of data) { if (f.name) allFiles.push(f.name) }
+        if (data.length < PAGE) break
+        offset += PAGE
+      }
+      console.log('[cleanup] Totalt antall filer i bucket:', allFiles.length)
+
+      // Orphaned PDFs = .pdf files not referenced by any active Supabase url
+      const orphans = allFiles.filter(name =>
+        name.toLowerCase().endsWith('.pdf') && !activePaths.has(name)
+      )
+      console.log('[cleanup] Foreldreløse PDF-filer funnet:', orphans.length, orphans)
+
+      if (orphans.length === 0) {
+        setCleanupResult({ found: 0, deleted: 0, failed: 0 })
+        return
+      }
+
+      const ok = window.confirm(
+        `Fant ${orphans.length} foreldreløs${orphans.length === 1 ? '' : 'e'} PDF-fil${orphans.length === 1 ? '' : 'er'} i Supabase Storage som ikke lenger er i bruk.\n\nVil du slette ${orphans.length === 1 ? 'den' : 'dem'}?`
+      )
+      if (!ok) {
+        setCleanupResult({ found: orphans.length, deleted: 0, failed: 0, cancelled: true })
+        return
+      }
+
+      let deleted = 0, failed = 0
+      const BATCH = 20
+      for (let i = 0; i < orphans.length; i += BATCH) {
+        const batch = orphans.slice(i, i + BATCH)
+        const { error: delErr } = await supabase.storage.from('project-images').remove(batch)
+        if (delErr) {
+          console.error('[cleanup] Batch-sletting feilet:', JSON.stringify(delErr), 'filer:', batch)
+          failed += batch.length
+        } else {
+          console.log('[cleanup] Slettet batch:', batch)
+          deleted += batch.length
+        }
+      }
+
+      setCleanupResult({ found: orphans.length, deleted, failed })
+    } catch (err) {
+      console.error('[cleanup] Fatal feil:', err)
+      setCleanupResult({ found: 0, deleted: 0, failed: 1 })
+    } finally {
+      setCleanupRunning(false)
+    }
+  }
+
   const flash = searchParams.get('drive')
 
   return (
@@ -498,7 +599,7 @@ function SettingsContent() {
 
           <button
             onClick={runMigration}
-            disabled={migrating || copying}
+            disabled={migrating || copying || cleanupRunning}
             className="px-4 py-2 text-sm rounded-xl bg-stone-800 text-white hover:bg-stone-700 transition-colors disabled:opacity-40"
           >
             {migrating ? 'Migrerer…' : 'Flytt eksisterende mønstre til Drive'}
@@ -550,10 +651,47 @@ function SettingsContent() {
 
           <button
             onClick={runCopy}
-            disabled={copying || migrating}
+            disabled={copying || migrating || cleanupRunning}
             className="px-4 py-2 text-sm rounded-xl bg-stone-800 text-white hover:bg-stone-700 transition-colors disabled:opacity-40"
           >
             {copying ? 'Kopierer…' : 'Kopier instruksjoner til Drive-arkiv'}
+          </button>
+        </section>
+      )}
+      {drive?.connected && (
+        <section className="bg-white rounded-2xl border border-stone-100 p-5 shadow-sm space-y-4">
+          <div>
+            <h2 className="font-medium text-stone-800">Rydd opp: slett foreldreløse PDF-er</h2>
+            <p className="text-sm text-stone-500 mt-1">
+              Finner PDF-filer i Supabase Storage som ikke lenger er i aktiv bruk — typisk mønstre som allerede er flyttet til Drive. Bilder og andre filer røres ikke. Du får se antallet og bekrefte før noe slettes.
+            </p>
+          </div>
+
+          {cleanupResult && !cleanupRunning && (
+            <div className={`rounded-xl px-4 py-3 text-sm ${
+              cleanupResult.failed > 0
+                ? 'bg-amber-50 border border-amber-200 text-amber-800'
+                : 'bg-green-50 border border-green-200 text-green-700'
+            }`}>
+              {cleanupResult.cancelled ? (
+                `Avbrutt — ${cleanupResult.found} foreldreløs${cleanupResult.found === 1 ? '' : 'e'} fil${cleanupResult.found === 1 ? '' : 'er'} ble ikke slettet.`
+              ) : cleanupResult.found === 0 ? (
+                'Ingen foreldreløse PDF-filer funnet — Supabase Storage er ryddig.'
+              ) : (
+                <>
+                  Ferdig: <strong>{cleanupResult.deleted}</strong> slettet
+                  {cleanupResult.failed > 0 && <>, <strong>{cleanupResult.failed}</strong> feilet</>}.
+                </>
+              )}
+            </div>
+          )}
+
+          <button
+            onClick={runCleanup}
+            disabled={cleanupRunning || migrating || copying}
+            className="px-4 py-2 text-sm rounded-xl border border-red-200 text-red-700 hover:bg-red-50 transition-colors disabled:opacity-40"
+          >
+            {cleanupRunning ? 'Skanner…' : 'Rydd opp: slett foreldreløse PDF-er'}
           </button>
         </section>
       )}
