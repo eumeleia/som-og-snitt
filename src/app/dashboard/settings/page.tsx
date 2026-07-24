@@ -415,45 +415,62 @@ function SettingsContent() {
         supabase.from('projects').select('*'),
       ])
 
-      // Build set of every Supabase Storage path still actively referenced
+      const recipeCount  = (recipes  ?? []).length
+      const projectCount = (projects ?? []).length
+      console.log('[cleanup] Skannet:', recipeCount, 'recipes,', projectCount, 'projects')
+
+      // Build "in use" set: for every pdf.url containing '/project-images/',
+      // path = everything after '/project-images/', cut at '?' (matches SQL logic exactly)
       const activePaths = new Set<string>()
+
       for (const row of (recipes ?? []) as DbRow[]) {
         for (const pdf of row.data.pdfs ?? []) {
-          if (pdf.url && isSupabasePdfUrl(pdf.url)) {
-            const p = extractSupabasePath(pdf.url)
-            if (p) activePaths.add(p)
+          if (pdf.url?.includes('/project-images/')) {
+            const path = pdf.url.split('/project-images/')[1]?.split('?')[0]
+            if (path) activePaths.add(path)
           }
         }
       }
       for (const row of (projects ?? []) as DbRow[]) {
         for (const pdf of row.data.pdfs ?? []) {
-          if (pdf.url && isSupabasePdfUrl(pdf.url)) {
-            const p = extractSupabasePath(pdf.url)
-            if (p) activePaths.add(p)
+          if (pdf.url?.includes('/project-images/')) {
+            const path = pdf.url.split('/project-images/')[1]?.split('?')[0]
+            if (path) activePaths.add(path)
           }
         }
       }
-      console.log('[cleanup] Aktive Supabase-stier:', activePaths.size)
 
-      // List all files in bucket (paginated)
+      console.log('[cleanup] «I bruk»-sett størrelse:', activePaths.size)
+      console.log('[cleanup] Eksempel aktive stier (maks 5):', [...activePaths].slice(0, 5))
+
+      // List ALL objects in bucket — paginated, no path filter (undefined = root)
       const allFiles: string[] = []
       let offset = 0
       const PAGE = 1000
       while (true) {
-        const { data, error } = await supabase.storage.from('project-images').list('', { limit: PAGE, offset })
-        if (error) { console.error('[cleanup] list feilet:', error); break }
+        const { data, error } = await supabase.storage
+          .from('project-images')
+          .list(undefined as unknown as string, { limit: PAGE, offset })
+        if (error) {
+          console.error('[cleanup] list() feilet:', JSON.stringify(error))
+          break
+        }
         if (!data || data.length === 0) break
-        for (const f of data) { if (f.name) allFiles.push(f.name) }
+        const page = data.map(f => f.name).filter(Boolean) as string[]
+        allFiles.push(...page)
+        console.log('[cleanup] list() side offset', offset, '→', page.length, 'objekter')
         if (data.length < PAGE) break
         offset += PAGE
       }
-      console.log('[cleanup] Totalt antall filer i bucket:', allFiles.length)
 
-      // Orphaned PDFs = .pdf files not referenced by any active Supabase url
-      const orphans = allFiles.filter(name =>
-        name.toLowerCase().endsWith('.pdf') && !activePaths.has(name)
-      )
-      console.log('[cleanup] Foreldreløse PDF-filer funnet:', orphans.length, orphans)
+      console.log('[cleanup] Totalt antall objekter i bucket:', allFiles.length)
+      const pdfFiles = allFiles.filter(n => n.toLowerCase().endsWith('.pdf'))
+      console.log('[cleanup] Totalt antall .pdf-filer i bucket:', pdfFiles.length)
+
+      // Orphaned = pdf files not in the active set
+      const orphans = pdfFiles.filter(name => !activePaths.has(name))
+      console.log('[cleanup] Foreldreløse PDF-er funnet:', orphans.length)
+      console.log('[cleanup] Første 10 foreldreløse:', orphans.slice(0, 10))
 
       if (orphans.length === 0) {
         setCleanupResult({ found: 0, deleted: 0, failed: 0 })
@@ -482,6 +499,7 @@ function SettingsContent() {
         }
       }
 
+      console.log('[cleanup] Ferdig: slettet', deleted, 'feilet', failed)
       setCleanupResult({ found: orphans.length, deleted, failed })
     } catch (err) {
       console.error('[cleanup] Fatal feil:', err)
