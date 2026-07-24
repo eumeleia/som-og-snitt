@@ -410,97 +410,53 @@ function SettingsContent() {
     setCleanupResult(null)
 
     try {
-      const [{ data: recipes }, { data: projects }] = await Promise.all([
-        supabase.from('recipes').select('*'),
-        supabase.from('projects').select('*'),
-      ])
-
-      const recipeCount  = (recipes  ?? []).length
-      const projectCount = (projects ?? []).length
-      console.log('[cleanup] Skannet:', recipeCount, 'recipes,', projectCount, 'projects')
-
-      // Build "in use" set: for every pdf.url containing '/project-images/',
-      // path = everything after '/project-images/', cut at '?' (matches SQL logic exactly)
-      const activePaths = new Set<string>()
-
-      for (const row of (recipes ?? []) as DbRow[]) {
-        for (const pdf of row.data.pdfs ?? []) {
-          if (pdf.url?.includes('/project-images/')) {
-            const path = pdf.url.split('/project-images/')[1]?.split('?')[0]
-            if (path) activePaths.add(path)
-          }
-        }
+      // Dry-run: server scans with service_role key (anon key can't list bucket)
+      const scanRes = await fetch('/api/storage/cleanup-orphans', { method: 'GET' })
+      if (!scanRes.ok) {
+        const err = await scanRes.json() as { error?: string }
+        throw new Error(err.error ?? 'Skanning feilet')
       }
-      for (const row of (projects ?? []) as DbRow[]) {
-        for (const pdf of row.data.pdfs ?? []) {
-          if (pdf.url?.includes('/project-images/')) {
-            const path = pdf.url.split('/project-images/')[1]?.split('?')[0]
-            if (path) activePaths.add(path)
-          }
-        }
+      const scan = await scanRes.json() as {
+        scanned: { recipes: number; projects: number }
+        inUseCount: number
+        totalObjects: number
+        orphanCount: number
+        orphanSample: string[]
+        totalOrphanBytes: number
       }
 
-      console.log('[cleanup] «I bruk»-sett størrelse:', activePaths.size)
-      console.log('[cleanup] Eksempel aktive stier (maks 5):', [...activePaths].slice(0, 5))
+      console.log('[cleanup] Skannet:', scan.scanned.recipes, 'recipes,', scan.scanned.projects, 'projects')
+      console.log('[cleanup] I bruk:', scan.inUseCount, '| objekter i bucket:', scan.totalObjects, '| foreldreløse PDF-er:', scan.orphanCount)
+      console.log('[cleanup] Første 10 foreldreløse:', scan.orphanSample)
 
-      // List ALL objects in bucket — paginated, no path filter (undefined = root)
-      const allFiles: string[] = []
-      let offset = 0
-      const PAGE = 1000
-      while (true) {
-        const { data, error } = await supabase.storage
-          .from('project-images')
-          .list(undefined as unknown as string, { limit: PAGE, offset })
-        if (error) {
-          console.error('[cleanup] list() feilet:', JSON.stringify(error))
-          break
-        }
-        if (!data || data.length === 0) break
-        const page = data.map(f => f.name).filter(Boolean) as string[]
-        allFiles.push(...page)
-        console.log('[cleanup] list() side offset', offset, '→', page.length, 'objekter')
-        if (data.length < PAGE) break
-        offset += PAGE
-      }
-
-      console.log('[cleanup] Totalt antall objekter i bucket:', allFiles.length)
-      const pdfFiles = allFiles.filter(n => n.toLowerCase().endsWith('.pdf'))
-      console.log('[cleanup] Totalt antall .pdf-filer i bucket:', pdfFiles.length)
-
-      // Orphaned = pdf files not in the active set
-      const orphans = pdfFiles.filter(name => !activePaths.has(name))
-      console.log('[cleanup] Foreldreløse PDF-er funnet:', orphans.length)
-      console.log('[cleanup] Første 10 foreldreløse:', orphans.slice(0, 10))
-
-      if (orphans.length === 0) {
+      if (scan.orphanCount === 0) {
         setCleanupResult({ found: 0, deleted: 0, failed: 0 })
         return
       }
 
+      const mb = (scan.totalOrphanBytes / 1024 / 1024).toFixed(1)
       const ok = window.confirm(
-        `Fant ${orphans.length} foreldreløs${orphans.length === 1 ? '' : 'e'} PDF-fil${orphans.length === 1 ? '' : 'er'} i Supabase Storage som ikke lenger er i bruk.\n\nVil du slette ${orphans.length === 1 ? 'den' : 'dem'}?`
+        `Fant ${scan.orphanCount} foreldreløs${scan.orphanCount === 1 ? '' : 'e'} PDF-fil${scan.orphanCount === 1 ? '' : 'er'} i Supabase Storage (${mb} MB) som ikke lenger er i bruk.\n\nVil du slette ${scan.orphanCount === 1 ? 'den' : 'dem'}?`
       )
       if (!ok) {
-        setCleanupResult({ found: orphans.length, deleted: 0, failed: 0, cancelled: true })
+        setCleanupResult({ found: scan.orphanCount, deleted: 0, failed: 0, cancelled: true })
         return
       }
 
-      let deleted = 0, failed = 0
-      const BATCH = 20
-      for (let i = 0; i < orphans.length; i += BATCH) {
-        const batch = orphans.slice(i, i + BATCH)
-        const { error: delErr } = await supabase.storage.from('project-images').remove(batch)
-        if (delErr) {
-          console.error('[cleanup] Batch-sletting feilet:', JSON.stringify(delErr), 'filer:', batch)
-          failed += batch.length
-        } else {
-          console.log('[cleanup] Slettet batch:', batch)
-          deleted += batch.length
-        }
+      // Actual deletion via server route
+      const delRes = await fetch('/api/storage/cleanup-orphans', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dryRun: false }),
+      })
+      if (!delRes.ok) {
+        const err = await delRes.json() as { error?: string }
+        throw new Error(err.error ?? 'Sletting feilet')
       }
+      const result = await delRes.json() as { deleted: number; freedBytes: number; failed: number }
 
-      console.log('[cleanup] Ferdig: slettet', deleted, 'feilet', failed)
-      setCleanupResult({ found: orphans.length, deleted, failed })
+      console.log('[cleanup] Ferdig: slettet', result.deleted, '| feilet', result.failed, '| frigjort', (result.freedBytes / 1024 / 1024).toFixed(1), 'MB')
+      setCleanupResult({ found: scan.orphanCount, deleted: result.deleted, failed: result.failed })
     } catch (err) {
       console.error('[cleanup] Fatal feil:', err)
       setCleanupResult({ found: 0, deleted: 0, failed: 1 })
@@ -697,7 +653,7 @@ function SettingsContent() {
                 'Ingen foreldreløse PDF-filer funnet — Supabase Storage er ryddig.'
               ) : (
                 <>
-                  Ferdig: <strong>{cleanupResult.deleted}</strong> slettet
+                  Ferdig: <strong>{cleanupResult.deleted}</strong> av {cleanupResult.found} slettet
                   {cleanupResult.failed > 0 && <>, <strong>{cleanupResult.failed}</strong> feilet</>}.
                 </>
               )}
