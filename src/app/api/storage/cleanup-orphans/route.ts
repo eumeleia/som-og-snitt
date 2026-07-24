@@ -9,14 +9,14 @@ const supabaseAdmin = createClient(
 interface PdfItem { url?: string; [key: string]: unknown }
 interface DbRow  { data: { pdfs?: PdfItem[] } }
 
-async function buildInUseSet(): Promise<{ inUseSet: Set<string>; recipeCount: number; projectCount: number }> {
+async function buildInUseSet(): Promise<Set<string>> {
   const [{ data: recipes }, { data: projects }] = await Promise.all([
     supabaseAdmin.from('recipes').select('data'),
     supabaseAdmin.from('projects').select('data'),
   ])
 
   const inUseSet = new Set<string>()
-  for (const row of (recipes ?? []) as DbRow[]) {
+  for (const row of [...(recipes ?? []), ...(projects ?? [])] as DbRow[]) {
     for (const pdf of row.data?.pdfs ?? []) {
       if (pdf.url?.includes('/project-images/')) {
         const path = pdf.url.split('/project-images/')[1]?.split('?')[0]
@@ -24,19 +24,11 @@ async function buildInUseSet(): Promise<{ inUseSet: Set<string>; recipeCount: nu
       }
     }
   }
-  for (const row of (projects ?? []) as DbRow[]) {
-    for (const pdf of row.data?.pdfs ?? []) {
-      if (pdf.url?.includes('/project-images/')) {
-        const path = pdf.url.split('/project-images/')[1]?.split('?')[0]
-        if (path) inUseSet.add(path)
-      }
-    }
-  }
-
-  return { inUseSet, recipeCount: (recipes ?? []).length, projectCount: (projects ?? []).length }
+  console.log(`[cleanup] i bruk-sett: ${inUseSet.size} stier`)
+  return inUseSet
 }
 
-async function listAllObjects(): Promise<{ name: string; size: number }[]> {
+async function listAllPdfs(): Promise<{ name: string; size: number }[]> {
   const all: { name: string; size: number }[] = []
   let offset = 0
   const PAGE = 1000
@@ -46,84 +38,74 @@ async function listAllObjects(): Promise<{ name: string; size: number }[]> {
       .from('project-images')
       .list('', { limit: PAGE, offset })
 
-    if (error) {
-      console.error('[cleanup] storage.list feilet:', error)
-      break
-    }
+    if (error) { console.error('[cleanup] storage.list feilet:', error); break }
     if (!data || data.length === 0) break
 
     for (const f of data) {
-      if (f.name) all.push({ name: f.name, size: f.metadata?.size ?? 0 })
+      if (f.name?.toLowerCase().endsWith('.pdf')) {
+        all.push({ name: f.name, size: f.metadata?.size ?? 0 })
+      }
     }
 
     if (data.length < PAGE) break
     offset += PAGE
   }
 
+  console.log(`[cleanup] ${all.length} PDF-objekter listet i bucket`)
   return all
 }
 
-export async function GET() {
-  return scan()
-}
-
 export async function POST(req: NextRequest) {
-  const body = await req.json() as { dryRun?: boolean }
-  if (body.dryRun !== false) return scan()
-  return deleteOrphans()
-}
-
-async function scan(): Promise<NextResponse> {
   try {
-    const { inUseSet, recipeCount, projectCount } = await buildInUseSet()
-    const allObjects = await listAllObjects()
-    const orphans = allObjects.filter(o => o.name.toLowerCase().endsWith('.pdf') && !inUseSet.has(o.name))
-    const totalOrphanBytes = orphans.reduce((sum, o) => sum + o.size, 0)
+    const body = await req.json() as { dryRun?: boolean }
+    const dryRun = body.dryRun !== false
 
-    return NextResponse.json({
-      scanned: { recipes: recipeCount, projects: projectCount },
-      inUseCount: inUseSet.size,
-      totalObjects: allObjects.length,
-      orphanCount: orphans.length,
-      orphanSample: orphans.slice(0, 10).map(o => o.name),
-      totalOrphanBytes,
-    })
-  } catch (err) {
-    console.error('[cleanup] scan feilet:', err)
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Ukjent feil' }, { status: 500 })
-  }
-}
+    const inUseSet  = await buildInUseSet()
+    const allPdfs   = await listAllPdfs()
+    const orphans   = allPdfs.filter(o => !inUseSet.has(o.name))
+    const totalBytes = orphans.reduce((sum, o) => sum + o.size, 0)
 
-async function deleteOrphans(): Promise<NextResponse> {
-  try {
-    const { inUseSet } = await buildInUseSet()
-    const allObjects = await listAllObjects()
-    const orphans = allObjects.filter(o => o.name.toLowerCase().endsWith('.pdf') && !inUseSet.has(o.name))
-    const totalOrphanBytes = orphans.reduce((sum, o) => sum + o.size, 0)
+    console.log(`[cleanup] ${orphans.length} foreldreløse PDF-er (${totalBytes} bytes)`)
+
+    if (dryRun) {
+      return NextResponse.json({
+        orphanCount: orphans.length,
+        totalBytes,
+        sample: orphans.slice(0, 20).map(o => o.name),
+      })
+    }
 
     if (orphans.length === 0) {
-      return NextResponse.json({ deleted: 0, freedBytes: 0, failed: 0 })
+      return NextResponse.json({ deleted: 0, freedBytes: 0 })
     }
 
     const names = orphans.map(o => o.name)
-    let deleted = 0, failed = 0
+    let deleted = 0
+    let failed  = 0
     const BATCH = 50
 
     for (let i = 0; i < names.length; i += BATCH) {
       const batch = names.slice(i, i + BATCH)
       const { error } = await supabaseAdmin.storage.from('project-images').remove(batch)
       if (error) {
-        console.error('[cleanup] batch-sletting feilet:', JSON.stringify(error), 'filer:', batch)
+        console.error('[cleanup] batch-sletting feilet:', error, 'filer:', batch)
         failed += batch.length
       } else {
         deleted += batch.length
       }
     }
 
-    const freedBytes = (deleted / orphans.length) * totalOrphanBytes
-    return NextResponse.json({ deleted, freedBytes: Math.round(freedBytes), failed })
+    const freedBytes = orphans.length > 0
+      ? Math.round((deleted / orphans.length) * totalBytes)
+      : 0
+
+    console.log(`[cleanup] slettet: ${deleted}, feilet: ${failed}`)
+    return NextResponse.json({ deleted, freedBytes, failed })
   } catch (err) {
-    console.error('[cleanup] delete feilet:', err)
-    return NextResponse.json({ error: err instanceof Error ? err.message : 'Ukjent feil' }, { status: 500 })
+    console.error('[cleanup] kritisk feil:', err)
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : 'Ukjent feil' },
+      { status: 500 },
+    )
   }
 }

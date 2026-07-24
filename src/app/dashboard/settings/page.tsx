@@ -6,6 +6,7 @@ import { useSearchParams } from 'next/navigation'
 interface DriveStatus { connected: boolean }
 interface RestoreResult { gjenopprettet: number; hoppet_over: number; feilet: number; detaljer: string[] }
 interface MigrateAnnetResult { oppdatert: number; hoppet_over: number; feilet: number; detaljer: string[] }
+interface CleanupResult { deleted: number; freedBytes: number; failed?: number }
 
 function DriveIcon() {
   return (
@@ -30,6 +31,9 @@ function SettingsContent() {
   const [migratingAnnet, setMigratingAnnet] = useState(false)
   const [migrateAnnetResult, setMigrateAnnetResult] = useState<MigrateAnnetResult | null>(null)
   const [migrateAnnetError, setMigrateAnnetError] = useState<string | null>(null)
+  const [cleaningUp, setCleaningUp] = useState(false)
+  const [cleanupResult, setCleanupResult] = useState<CleanupResult | null>(null)
+  const [cleanupError, setCleanupError] = useState<string | null>(null)
 
   useEffect(() => {
     fetch('/api/drive/status').then(r => r.json()).then(setDrive)
@@ -40,6 +44,38 @@ function SettingsContent() {
     await fetch('/api/drive/disconnect', { method: 'POST' })
     setDrive({ connected: false })
     setDisconnecting(false)
+  }
+
+  async function cleanupOrphans() {
+    setCleaningUp(true)
+    setCleanupResult(null)
+    setCleanupError(null)
+    try {
+      const dryRes = await fetch('/api/storage/cleanup-orphans', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dryRun: true }),
+      })
+      const dry = await dryRes.json() as { orphanCount: number; totalBytes: number; error?: string }
+      if (!dryRes.ok || dry.error) { setCleanupError(dry.error ?? 'Ukjent feil'); return }
+
+      const mb = (dry.totalBytes / 1024 / 1024).toFixed(1)
+      const ok = window.confirm(
+        `Fant ${dry.orphanCount} foreldreløse PDF-filer (${mb} MB) som ikke lenger er i bruk. Slette dem?`
+      )
+      if (!ok) return
+
+      const delRes = await fetch('/api/storage/cleanup-orphans', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dryRun: false }),
+      })
+      const del = await delRes.json() as CleanupResult & { error?: string }
+      if (!delRes.ok || del.error) { setCleanupError(del.error ?? 'Ukjent feil'); return }
+      setCleanupResult(del)
+    } catch (err) {
+      setCleanupError(err instanceof Error ? err.message : 'Ukjent feil')
+    } finally {
+      setCleaningUp(false)
+    }
   }
 
   async function migrateAnnet() {
@@ -134,6 +170,33 @@ function SettingsContent() {
             >
               Koble til Google Drive
             </a>
+          </div>
+        )}
+      </section>
+
+      <section className="bg-white rounded-2xl border border-stone-100 p-5 shadow-sm space-y-3">
+        <div>
+          <h2 className="font-medium text-stone-800">Rydd opp: slett foreldreløse PDF-er</h2>
+          <p className="text-sm text-stone-500 mt-0.5">
+            Finner og sletter PDF-filer i Supabase Storage som ikke lenger er koblet til noen oppskrift eller prosjekt.
+          </p>
+        </div>
+        <button
+          onClick={cleanupOrphans}
+          disabled={cleaningUp}
+          className="px-4 py-2 text-sm rounded-xl bg-stone-800 text-white hover:bg-stone-700 transition-colors disabled:opacity-40"
+        >
+          {cleaningUp ? 'Skanner…' : 'Rydd opp'}
+        </button>
+        {cleanupError && (
+          <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700">
+            {cleanupError}
+          </div>
+        )}
+        {cleanupResult && (
+          <div className="bg-green-50 border border-green-200 rounded-xl px-4 py-3 text-sm text-green-700">
+            Slettet {cleanupResult.deleted} filer · Frigjort {(cleanupResult.freedBytes / 1024 / 1024).toFixed(1)} MB
+            {cleanupResult.failed ? ` · ${cleanupResult.failed} feilet` : ''}
           </div>
         )}
       </section>
