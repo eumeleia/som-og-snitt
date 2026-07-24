@@ -2,8 +2,38 @@
 
 import { useState, useEffect, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
+import { supabase } from '@/lib/supabase'
 
 interface DriveStatus { connected: boolean }
+
+interface PdfItem {
+  id: string; name: string; url: string; type: string; source: string
+  storage?: string; driveFileId?: string; driveLink?: string; formatLabel?: string
+}
+interface DbRow { id: string; data: { name?: string; pdfs?: PdfItem[]; [key: string]: unknown } }
+
+interface MigrationItem {
+  entity: 'recipe' | 'project'
+  id: string
+  entityName: string
+  pdf: PdfItem
+}
+
+interface MigrationProgress { current: number; total: number; fileName: string }
+interface MigrationResult  { migrated: number; skipped: number; failed: number; total: number }
+
+function sanitizeFolderName(name: string): string {
+  return name.replace(/[/\\:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim()
+}
+
+function extractSupabasePath(url: string): string | null {
+  const match = url.match(/\/project-images\/(.+)$/)
+  return match ? match[1] : null
+}
+
+function isSupabasePdfUrl(url: string): boolean {
+  return url.includes('.supabase.co/storage/v1/object/public/project-images/')
+}
 
 function DriveIcon() {
   return (
@@ -23,6 +53,10 @@ function SettingsContent() {
   const [drive, setDrive] = useState<DriveStatus | null>(null)
   const [disconnecting, setDisconnecting] = useState(false)
 
+  const [migrating, setMigrating]           = useState(false)
+  const [migrationProgress, setMigrationProgress] = useState<MigrationProgress | null>(null)
+  const [migrationResult, setMigrationResult]     = useState<MigrationResult | null>(null)
+
   useEffect(() => {
     fetch('/api/drive/status').then(r => r.json()).then(setDrive)
   }, [])
@@ -32,6 +66,169 @@ function SettingsContent() {
     await fetch('/api/drive/disconnect', { method: 'POST' })
     setDrive({ connected: false })
     setDisconnecting(false)
+  }
+
+  async function runMigration() {
+    setMigrating(true)
+    setMigrationProgress(null)
+    setMigrationResult(null)
+
+    try {
+      // Load all recipes and projects
+      const [{ data: recipes }, { data: projects }] = await Promise.all([
+        supabase.from('recipes').select('*'),
+        supabase.from('projects').select('*'),
+      ])
+
+      // Find all Mønster PDFs still in Supabase
+      const items: MigrationItem[] = []
+      for (const row of (recipes ?? []) as DbRow[]) {
+        for (const pdf of row.data.pdfs ?? []) {
+          if (
+            pdf.type === 'Mønster' &&
+            (pdf.storage === 'supabase' || !pdf.storage) &&
+            pdf.url && isSupabasePdfUrl(pdf.url)
+          ) {
+            items.push({ entity: 'recipe', id: row.id, entityName: row.data.name ?? 'Uten navn', pdf })
+          }
+        }
+      }
+      for (const row of (projects ?? []) as DbRow[]) {
+        for (const pdf of row.data.pdfs ?? []) {
+          if (
+            pdf.type === 'Mønster' &&
+            (pdf.storage === 'supabase' || !pdf.storage) &&
+            pdf.url && isSupabasePdfUrl(pdf.url)
+          ) {
+            items.push({ entity: 'project', id: row.id, entityName: row.data.name ?? 'Uten navn', pdf })
+          }
+        }
+      }
+
+      console.log('[migrate] Fant', items.length, 'mønster-PDF-er som skal migreres')
+
+      if (items.length === 0) {
+        setMigrationResult({ migrated: 0, skipped: 0, failed: 0, total: 0 })
+        setMigrating(false)
+        return
+      }
+
+      let migrated = 0, skipped = 0, failed = 0
+
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i]
+        setMigrationProgress({ current: i + 1, total: items.length, fileName: item.pdf.name })
+        console.log('[migrate] Starter', i + 1, '/', items.length, '—', item.pdf.name)
+
+        try {
+          // a. Ensure Drive subfolder for this recipe/project
+          const folderName = sanitizeFolderName(item.entityName) || 'Uten navn'
+          const ensureRes = await fetch('/api/drive/ensure-folder', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folderName }),
+          })
+          if (!ensureRes.ok) {
+            console.error('[migrate] ensure-folder feilet for:', item.pdf.name)
+            failed++; continue
+          }
+          const { folderId } = await ensureRes.json() as { folderId: string }
+
+          // b. Download file bytes from Supabase
+          const fileRes = await fetch(item.pdf.url)
+          if (!fileRes.ok) {
+            console.error('[migrate] Nedlasting feilet:', item.pdf.url)
+            failed++; continue
+          }
+          const blob = await fileRes.blob()
+          const file = new File([blob], item.pdf.name, { type: 'application/pdf' })
+
+          // c. Resumable upload to Drive via upload-session → PUT → file-by-name
+          const sessionRes = await fetch('/api/drive/upload-session', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fileName: item.pdf.name, mimeType: 'application/pdf', folderId }),
+          })
+          if (!sessionRes.ok) {
+            console.error('[migrate] upload-session feilet for:', item.pdf.name)
+            failed++; continue
+          }
+          const { uploadUrl } = await sessionRes.json() as { uploadUrl: string }
+
+          try {
+            await fetch(uploadUrl, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/pdf' },
+              body: file,
+            })
+          } catch { /* CORS blocks response reading — upload likely succeeded */ }
+
+          const lookupRes = await fetch('/api/drive/file-by-name', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fileName: item.pdf.name, folderId }),
+          })
+          if (!lookupRes.ok) {
+            console.error('[migrate] file-by-name fant ikke fila etter opplasting:', item.pdf.name)
+            failed++; continue
+          }
+          const { fileId, webViewLink } = await lookupRes.json() as { fileId: string; webViewLink: string }
+
+          // d. Update PdfItem in DB — re-fetch row to avoid overwriting concurrent changes
+          const table = item.entity === 'recipe' ? 'recipes' : 'projects'
+          const { data: freshRow } = await supabase.from(table).select('*').eq('id', item.id).single() as { data: DbRow | null }
+          if (!freshRow) {
+            console.error('[migrate] Rad ikke funnet i DB:', item.id)
+            failed++; continue
+          }
+
+          const freshPdfs = [...(freshRow.data.pdfs ?? [])]
+          const pdfIdx = freshPdfs.findIndex(p => p.id === item.pdf.id)
+          if (pdfIdx === -1) {
+            console.warn('[migrate] PDF-id ikke funnet i fersk rad (allerede fjernet?):', item.pdf.id)
+            skipped++; continue
+          }
+
+          freshPdfs[pdfIdx] = {
+            ...freshPdfs[pdfIdx],
+            url: webViewLink,
+            storage: 'drive',
+            driveFileId: fileId,
+            driveLink: webViewLink,
+          }
+
+          const { error: updateErr } = await supabase
+            .from(table)
+            .update({ data: { ...freshRow.data, pdfs: freshPdfs } })
+            .eq('id', item.id)
+          if (updateErr) {
+            console.error('[migrate] DB-oppdatering feilet:', updateErr)
+            failed++; continue
+          }
+
+          // e. Delete from Supabase Storage only after confirmed DB update
+          const supabasePath = extractSupabasePath(item.pdf.url)
+          if (supabasePath) {
+            const { error: delErr } = await supabase.storage.from('project-images').remove([supabasePath])
+            if (delErr) console.warn('[migrate] Sletting fra Storage feilet (ikke kritisk):', delErr)
+          }
+
+          console.log('[migrate] Ferdig:', item.pdf.name, '→ Drive id:', fileId)
+          migrated++
+        } catch (err) {
+          console.error('[migrate] Uventet feil for:', item.pdf.name, err)
+          failed++
+        }
+      }
+
+      setMigrationResult({ migrated, skipped, failed, total: items.length })
+    } catch (err) {
+      console.error('[migrate] Fatal feil:', err)
+      setMigrationResult({ migrated: 0, skipped: 0, failed: 1, total: 1 })
+    } finally {
+      setMigrating(false)
+      setMigrationProgress(null)
+    }
   }
 
   const flash = searchParams.get('drive')
@@ -97,6 +294,58 @@ function SettingsContent() {
           </div>
         )}
       </section>
+
+      {drive?.connected && (
+        <section className="bg-white rounded-2xl border border-stone-100 p-5 shadow-sm space-y-4">
+          <div>
+            <h2 className="font-medium text-stone-800">Flytt eksisterende mønstre til Drive</h2>
+            <p className="text-sm text-stone-500 mt-1">
+              Kopierer mønster-PDF-er som fortsatt ligger i Supabase Storage til Drive-mappen din og oppdaterer databasen. Instruksjoner og oppskrifter røres ikke. Kan kjøres flere ganger uten å duplisere allerede migrerte filer.
+            </p>
+          </div>
+
+          {migrationProgress && (
+            <div className="space-y-1.5">
+              <div className="flex justify-between text-xs text-stone-500">
+                <span>Flytter {migrationProgress.current} av {migrationProgress.total}</span>
+              </div>
+              <div className="w-full bg-stone-100 rounded-full h-1.5">
+                <div
+                  className="bg-stone-800 h-1.5 rounded-full transition-all duration-300"
+                  style={{ width: `${(migrationProgress.current / migrationProgress.total) * 100}%` }}
+                />
+              </div>
+              <p className="text-xs text-stone-400 truncate">{migrationProgress.fileName}</p>
+            </div>
+          )}
+
+          {migrationResult && !migrating && (
+            <div className={`rounded-xl px-4 py-3 text-sm ${
+              migrationResult.failed > 0
+                ? 'bg-amber-50 border border-amber-200 text-amber-800'
+                : 'bg-green-50 border border-green-200 text-green-700'
+            }`}>
+              {migrationResult.total === 0 ? (
+                'Ingen mønster-PDF-er å flytte — alt er allerede i Drive.'
+              ) : (
+                <>
+                  Ferdig: <strong>{migrationResult.migrated}</strong> flyttet
+                  {migrationResult.skipped > 0 && <>, <strong>{migrationResult.skipped}</strong> hoppet over</>}
+                  {migrationResult.failed > 0 && <>, <strong>{migrationResult.failed}</strong> feilet</>}.
+                </>
+              )}
+            </div>
+          )}
+
+          <button
+            onClick={runMigration}
+            disabled={migrating}
+            className="px-4 py-2 text-sm rounded-xl bg-stone-800 text-white hover:bg-stone-700 transition-colors disabled:opacity-40"
+          >
+            {migrating ? 'Migrerer…' : 'Flytt eksisterende mønstre til Drive'}
+          </button>
+        </section>
+      )}
     </main>
   )
 }
