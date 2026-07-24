@@ -639,17 +639,32 @@ function NewRecipeModal({ onCreate, onClose }: {
       // 2. Upload all PDFs — Drive subfolder named after recipe, all files go there
       setProgress('Laster opp PDF-er...')
       const today = new Date().toISOString().slice(0, 10)
-      const folderName = driveStatus.connected
-        ? (sanitizeFolderName(recipeData.name) || `Oppskrift ${today}`)
-        : ''
+
+      // Ensure root + subfolder exist ONCE before parallel uploads (prevents race condition)
+      let driveFolderId: string | null = null
+      if (driveStatus.connected) {
+        const folderName = sanitizeFolderName(recipeData.name) || `Oppskrift ${today}`
+        try {
+          const ensureRes = await fetch('/api/drive/ensure-folder', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ folderName }),
+          })
+          if (ensureRes.ok) {
+            const { folderId } = await ensureRes.json() as { folderId: string }
+            driveFolderId = folderId
+          }
+        } catch { /* fall through to Supabase-only */ }
+      }
 
       // Resumable upload: server creates session URL, browser PUTs bytes directly to Drive
       async function uploadToDrive(file: File): Promise<{ fileId: string; webViewLink: string } | null> {
+        if (!driveFolderId) return null
         try {
           const sessionRes = await fetch('/api/drive/upload-session', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ fileName: file.name, mimeType: 'application/pdf', folderName }),
+            body: JSON.stringify({ fileName: file.name, mimeType: 'application/pdf', folderId: driveFolderId }),
           })
           if (!sessionRes.ok) return null
           const { uploadUrl } = await sessionRes.json() as { uploadUrl: string }
@@ -675,7 +690,7 @@ function NewRecipeModal({ onCreate, onClose }: {
 
       const uploadResults = await Promise.all(
         pdfs.map(async ({ file, type }) => {
-          if (driveStatus.connected) {
+          if (driveFolderId) {
             const driveResult = await uploadToDrive(file)
             if (driveResult) {
               const { fileId, webViewLink } = driveResult
