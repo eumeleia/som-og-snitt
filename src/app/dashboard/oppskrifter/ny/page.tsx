@@ -206,6 +206,11 @@ export default function NyOppskriftPage() {
   const [diagramOpen, setDiagramOpen] = useState(false)
   const [diagramSide, setDiagramSide] = useState<'barn' | 'voksen'>('barn')
 
+  // Drive upload
+  const [driveStatus, setDriveStatus] = useState<'idle' | 'uploading' | 'done' | 'error'>('idle')
+  const [driveLink, setDriveLink] = useState<string | null>(null)
+  const [driveError, setDriveError] = useState<string | null>(null)
+
   // ── Computed ──────────────────────────────────────────────────────────────
 
   const selectedProfil = useMemo(
@@ -325,13 +330,14 @@ export default function NyOppskriftPage() {
   // Reset block + SVG when step 1 changes
   useEffect(() => {
     setSelectedBlokkId(null); setSvgContent(null); setValiderFeil([]); setInlineMaal({})
-    setHodeAdvarsel(null)
+    setHodeAdvarsel(null); setDriveStatus('idle'); setDriveLink(null); setDriveError(null)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProfilId, topMode, stdRad])
 
   // Reset SVG when generation inputs change
   useEffect(() => {
     setSvgContent(null); setValiderFeil([]); setHodeAdvarsel(null)
+    setDriveStatus('idle'); setDriveLink(null); setDriveError(null)
   }, [selectedBlokkId, passform, babyStoff, babyVariant, babyVidHals, tVariant, kroppBlokktype, kroppJersey, kroppTilHofte, sommonnCm, maalKilde])
 
   // Sync diagram side with effective type
@@ -343,7 +349,7 @@ export default function NyOppskriftPage() {
 
   function resetBlock() {
     setSelectedBlokkId(null); setSvgContent(null); setValiderFeil([]); setInlineMaal({})
-    setHodeAdvarsel(null)
+    setHodeAdvarsel(null); setDriveStatus('idle'); setDriveLink(null); setDriveError(null)
   }
 
   const handleNyProfilSave = useCallback(async () => {
@@ -482,6 +488,7 @@ export default function NyOppskriftPage() {
 
       setValiderFeil([])
       setHodeAdvarsel(hodeMsg)
+      setDriveStatus('idle'); setDriveLink(null); setDriveError(null)
 
     } catch (e) {
       setValiderFeil([e instanceof Error ? e.message : String(e)])
@@ -493,16 +500,46 @@ export default function NyOppskriftPage() {
     tVariant, tFerdigLengde, kroppBlokktype, kroppJersey, kroppTilHofte, sommonnCm,
   ])
 
-  const handleLastNed = useCallback(() => {
-    if (!svgContent || !selectedBlokk) return
+  const svgFilnavn = useCallback(() => {
+    if (!selectedBlokk) return 'monster.svg'
     const dato = new Date().toISOString().slice(0, 10)
     const plagNavn = selectedBlokk.id.replace(/^(barn|dame|baby)-/, '').replace(/-\d+$/, '')
     const navnStr = topMode === 'profil'
       ? (selectedProfil?.navn ?? 'profil').toLowerCase().normalize('NFD')
           .replace(/[̀-ͯ]/g, '').replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '')
       : `str${stdRad?.nokkel ?? ''}`
-    lastNed(svgContent, `${plagNavn}-${navnStr}-${dato}.svg`)
-  }, [svgContent, selectedBlokk, topMode, selectedProfil, stdRad])
+    return `${plagNavn}-${navnStr}-${dato}.svg`
+  }, [selectedBlokk, topMode, selectedProfil, stdRad])
+
+  const handleLastNed = useCallback(() => {
+    if (!svgContent || !selectedBlokk) return
+    lastNed(svgContent, svgFilnavn())
+  }, [svgContent, selectedBlokk, svgFilnavn])
+
+  const handleLagreDrive = useCallback(async () => {
+    if (!svgContent || !selectedBlokk) return
+    const filnavn = svgFilnavn()
+    setDriveStatus('uploading'); setDriveLink(null); setDriveError(null)
+    try {
+      const blob = new Blob([svgContent], { type: 'image/svg+xml' })
+      const fil = new File([blob], filnavn, { type: 'image/svg+xml' })
+      const fd = new FormData()
+      fd.append('file', fil, filnavn)
+      fd.append('folderName', 'Egne oppskrifter')
+      const res = await fetch('/api/drive/upload', { method: 'POST', body: fd })
+      const json = await res.json() as { fileId?: string; webViewLink?: string; error?: string }
+      if (!res.ok || json.error) {
+        setDriveStatus('error')
+        setDriveError(json.error ?? 'Opplasting mislyktes')
+      } else {
+        setDriveStatus('done')
+        setDriveLink(json.webViewLink ?? null)
+      }
+    } catch (e) {
+      setDriveStatus('error')
+      setDriveError(e instanceof Error ? e.message : 'Nettverksfeil')
+    }
+  }, [svgContent, selectedBlokk, svgFilnavn])
 
   const nyProfilMaalDefs = useMemo(() => maalFiltrert(nyDraft.type), [nyDraft.type])
 
@@ -1130,15 +1167,60 @@ export default function NyOppskriftPage() {
                   <div className="border border-stone-200 rounded-xl overflow-auto bg-white p-4 max-h-[70vh]"
                     dangerouslySetInnerHTML={{ __html: svgContent }} />
                   <div className="mt-4">
-                    <button onClick={handleLastNed}
-                      className="flex items-center gap-2 px-5 py-2.5 bg-[#C9A57A] text-white rounded-lg text-sm font-medium hover:bg-[#b8925f] transition-colors">
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                      </svg>
-                      Last ned SVG
-                    </button>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button onClick={handleLastNed}
+                        className="flex items-center gap-2 px-5 py-2.5 bg-[#C9A57A] text-white rounded-lg text-sm font-medium hover:bg-[#b8925f] transition-colors">
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                        </svg>
+                        Last ned
+                      </button>
+                      <button
+                        onClick={handleLagreDrive}
+                        disabled={driveStatus === 'uploading'}
+                        className="flex items-center gap-2 px-5 py-2.5 bg-white border border-stone-200 text-stone-700 rounded-lg text-sm font-medium hover:border-stone-300 hover:bg-stone-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                        {driveStatus === 'uploading' ? (
+                          <><Spinner />Laster opp…</>
+                        ) : (
+                          <>
+                            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+                              <path d="M6.28 3l5.72 9.9L17.72 3H6.28zM2 17.5L5.14 12h13.72L22 17.5H2zm4.06 0L8 21h8l1.94-3.5H6.06z"/>
+                            </svg>
+                            Lagre til Drive
+                          </>
+                        )}
+                      </button>
+                    </div>
+
+                    {driveStatus === 'done' && driveLink && (
+                      <div className="flex items-center gap-2 mt-3 text-sm text-emerald-700">
+                        <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
+                        Lagret til Drive —{' '}
+                        <a href={driveLink} target="_blank" rel="noopener noreferrer"
+                          className="underline underline-offset-2 hover:text-emerald-900 transition-colors">
+                          Åpne fila
+                        </a>
+                      </div>
+                    )}
+                    {driveStatus === 'done' && !driveLink && (
+                      <p className="mt-3 text-sm text-emerald-700 flex items-center gap-2">
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
+                        Lagret til Drive (Søm og Snitt / Egne oppskrifter)
+                      </p>
+                    )}
+                    {driveStatus === 'error' && (
+                      <div className="mt-3 bg-red-50 border border-red-200 rounded-lg px-4 py-3">
+                        <p className="text-xs font-semibold text-red-700 mb-0.5">Drive-opplasting mislyktes</p>
+                        <p className="text-xs text-red-600">{driveError}</p>
+                        <p className="text-xs text-stone-400 mt-1">Du kan fortsatt laste ned fila lokalt.</p>
+                      </div>
+                    )}
                     <p className="text-xs text-stone-400 mt-2">
-                      Filen lastes ned til nedlastingsmappen. Kalibreringsruten i mønsteret skal måle 5 cm ved projisering.
+                      Kalibreringsruten i mønsteret skal måle 5 cm ved projisering.
                     </p>
                   </div>
                 </div>

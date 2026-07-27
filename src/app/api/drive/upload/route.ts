@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
 
     const uploaded = await drive.files.create({
       requestBody: { name: file.name, parents: [targetFolderId] },
-      media: { mimeType: 'application/pdf', body: stream },
+      media: { mimeType: file.type || 'application/octet-stream', body: stream },
       fields: 'id,webViewLink',
     })
 
