@@ -29,9 +29,9 @@ export interface Blokk {
 export const BLOKKER: Blokk[] = [
   // ══════════ BABY, 56–92 cm ══════════
   { id: 'baby-kropp', navn: 'Flat kroppsblokk, baby', malgruppe: 'baby', stoff: 'jersey',
-    stroelse: '56–92', bok: 'barn', side: 24, status: 'katalogisert',
+    stroelse: '56–92', bok: 'barn', side: 24, status: 'verifisert',
     maal: ['bryst','ryggbredde','halsvidde','skulder','aermegabDybde','nakkeTilMidje','ermelengde','haandledd'],
-    merknad: 'Hovedtall gir jerseyblokk, parentes gir romsligere form.' },
+    merknad: 'Jersey og vevd. To varianter. Vid hals med skulderklaff (bok s.38) for plagg uten åpning.' },
   { id: 'baby-yttertoy', navn: 'Flat yttertøysblokk, baby', malgruppe: 'baby', stoff: 'vevd',
     stroelse: '56–92', bok: 'barn', side: 26, status: 'katalogisert',
     maal: ['bryst','ryggbredde','halsvidde','skulder','aermegabDybde','nakkeTilMidje','ermelengde'] },
@@ -44,16 +44,16 @@ export const BLOKKER: Blokk[] = [
 
   // ══════════ BARN, 80–170 cm — FLAT KONSTRUKSJON ══════════
   { id: 'barn-kropp', navn: 'Flat kroppsblokk og skjorteblokk', malgruppe: 'barn', stoff: 'begge',
-    stroelse: '80–170', bok: 'barn', side: 40, status: 'katalogisert',
+    stroelse: '80–170', bok: 'barn', side: 40, status: 'verifisert',
     maal: ['bryst','ryggbredde','halsvidde','skulder','aermegabDybde','nakkeTilMidje','midjeTilHofte','ermelengde'],
-    merknad: 'Hovedtall = kroppsblokk. Parentes = skjorteblokk.' },
+    merknad: 'Kroppsblokk eller skjorteblokk. Jersey forkorter ermet 3 cm. Til hofte eller til midje.' },
   { id: 'barn-kropp-ermelos', navn: 'Flat ermeløs kroppsblokk', malgruppe: 'barn', stoff: 'begge',
     stroelse: '80–170', bok: 'barn', side: 42, status: 'katalogisert',
     maal: ['bryst','ryggbredde','halsvidde','skulder','aermegabDybde','nakkeTilMidje'] },
   { id: 'barn-tskjorte', navn: 'T-skjorteblokk', malgruppe: 'barn', stoff: 'jersey',
-    stroelse: '80–170', bok: 'barn', side: 48, status: 'katalogisert',
+    stroelse: '98–170', bok: 'barn', side: 48, status: 'verifisert',
     maal: ['bryst','ryggbredde','halsvidde','aermegabDybde','nakkeTilMidje','ermelengde','haandledd'],
-    merknad: 'Tre varianter: tettsittende ribb, basis, romslig. Ermelengden kortes fordi jersey strekker seg.' },
+    merknad: 'Tre varianter: ribbet, basis, romslig. Ikke brukbar under 98 cm uten halsåpning — bruk baby-kropp.' },
   { id: 'barn-bukse-1', navn: 'Flat bukseblokk i ett stykke', malgruppe: 'barn', stoff: 'begge',
     stroelse: '80–170', bok: 'barn', side: 50, status: 'verifisert',
     maal: ['hofte','bodyRise','innsideBen'],
