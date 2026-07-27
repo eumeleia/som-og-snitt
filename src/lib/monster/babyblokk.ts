@@ -16,7 +16,7 @@
  * Forskjellen mellom stofftypene er strukturell, ikke bare tall:
  * jerseyblokken deler form mellom for- og bakstykke, mens den vevde
  * har eget forstykke med egen skulderlinje (punkt 17) og eget
- * ærmegab (gjennom 16).
+ * ermegap (gjennom 16).
  */
 
 import type { Punkt, Del } from './generator'
@@ -31,7 +31,7 @@ export interface BabyMaal {
   ryggbredde: number
   halsvidde: number
   skulder: number
-  aermegabDybde: number
+  ermegapDybde: number
   nakkeTilMidje: number
   ermelengde: number
   haandledd: number
@@ -48,7 +48,16 @@ const V: Record<BabyVariant, BVar> = {
   romslig: { p03: 3, p06: 0.7, p38: 3, p312: 5, p015: 1.0, p02erm: 2, p24: 3, kule9: 1.5 },
 }
 
-/** Vid hals med skulderklaff, bokside 38. Nødvendig for plagg uten åpning. */
+/** Vid hals, bokside 38. Nødvendig for plagg uten åpning. */
+// TODO skulderklaff — ikke implementert.
+// Senk for- og bakhals ca 1 cm, utvid ca 2 cm, tegn nye halskurver.
+// A = nytt halspunkt, B = skulderpunkt.
+// Kvadrer ut fra A; kvadrer opp fra B til C.
+// D = halve B–C. E på ermegapet, ca 2,5 cm fra B.
+// D–F = D–E (F speiles om D). F–G = 0,5 cm.
+// Tegn klaffen A–G og B–G. Både for- og bakstykke får klaffen.
+// Ferdig resultat: kryssende klaffer over begge skuldre («envelope neck»),
+// som lar halsåpningen sprette opp over hodet og legge seg flat igjen.
 export interface VidHals { utvid: number; senk: number }
 export const VID_HALS: VidHals = { utvid: 2, senk: 1 }
 
@@ -77,9 +86,9 @@ export function konstruer(
   P[0] = { x: 0, y: 0 }
   P[1] = { x: 0, y: m.nakkeTilMidje }
   P[2] = { x: 0, y: m.ferdigLengde }
-  P[3] = { x: 0, y: m.aermegabDybde + v.p03 }
+  P[3] = { x: 0, y: m.ermegapDybde + v.p03 }
   P[4] = { x: 0, y: P[3].y / 2 }
-  P[5] = { x: 0, y: m.aermegabDybde / 4 - 1.75 }
+  P[5] = { x: 0, y: m.ermegapDybde / 4 - 1.75 }
 
   const halsB = m.halsvidde / 5 + v.p06 + h.utvid
   P[6] = { x: halsB, y: 0 }
@@ -96,7 +105,7 @@ export function konstruer(
   P[15] = { x: 0, y: m.halsvidde / 5 - v.p015 + h.senk }
 
   if (stoff === 'vevd') {
-    // 9–16 = 0,5 cm innover. Forstykkets ærmegab er smalere.
+    // 9–16 = 0,5 cm innover. Forstykkets ermegap er smalere.
     P[16] = { x: P[9].x - 0.5, y: P[9].y }
     // 7–17 = lengden 7–11, men endepunktet ligger 0,4 cm under
     // linjen som er kvadrert ut fra punkt 5.
@@ -140,8 +149,8 @@ export function fremreHals(k: BabyKonstruksjon): Punkt[] {
   return [P[15], ...q(P[15], { x: P[6].x * 0.15, y: P[15].y * 0.15 }, P[6], 16)]
 }
 
-/** Ærmegab. Bak går 11 → 9 → 12. Vevd forstykke går 17 → 16 → 12. */
-function aermegab(k: BabyKonstruksjon, side: Side): Punkt[] {
+/** Ermegap. Bak går 11 → 9 → 12. Vevd forstykke går 17 → 16 → 12. */
+function ermegap(k: BabyKonstruksjon, side: Side): Punkt[] {
   const { P } = k
   const vevdFront = k.stoff === 'vevd' && side === 'front'
   const topp = vevdFront ? P[17] : P[11]
@@ -164,7 +173,7 @@ export function del(k: BabyKonstruksjon, side: Side): Del {
   const pts: Punkt[] = [
     ...hals,
     skulderPunkt(k, side),
-    ...aermegab(k, side),
+    ...ermegap(k, side),
     P[14], P[2], start,
   ]
   return {
@@ -183,8 +192,8 @@ export function halsaapning(k: BabyKonstruksjon): number {
   return 2 * (lengde(bakHals(k)) + lengde(fremreHals(k)))
 }
 
-export function aermegabLengde(k: BabyKonstruksjon): number {
-  return lengde(aermegab(k, 'bak')) + lengde(aermegab(k, 'front'))
+export function ermegapLengde(k: BabyKonstruksjon): number {
+  return lengde(ermegap(k, 'bak')) + lengde(ermegap(k, 'front'))
 }
 
 /**
@@ -221,9 +230,9 @@ function kuleOffset(t: number, hev9: number): number {
 
 export function ermDel(k: BabyKonstruksjon): Del {
   const { erm } = k
-  const A = aermegabLengde(k) / 2      // ermet matcher halve ærmegabet per side
+  const A = ermegapLengde(k) / 2      // ermet matcher halve ermegapet per side
   const dy = erm[1].y
-  if (A <= dy) throw new Error('Ærmegabet er kortere enn ermkulehøyden')
+  if (A <= dy) throw new Error('Ermegapet er kortere enn ermkulehøyden')
   const P3: Punkt = { x: Math.sqrt(A * A - dy * dy), y: dy }
   const vx = -P3.x, vy = -P3.y
   const L = Math.hypot(vx, vy), nx = -vy / L, ny = vx / L
@@ -246,13 +255,13 @@ export function valider(k: BabyKonstruksjon): string[] {
   const feil: string[] = []
   const { P } = k
   if (P[12].x <= P[8].x) feil.push('Brystlinjen er ikke bredere enn ryggbredden')
-  if (P[2].y <= P[3].y) feil.push('Ferdig lengde er kortere enn ærmegabdybden')
+  if (P[2].y <= P[3].y) feil.push('Ferdig lengde er kortere enn ermegapdybden')
   if (P[5].y >= P[4].y) feil.push('Skulderlinjen ligger under brystlinjen')
   if (P[15].y <= 0) feil.push('Fremre halsdybde er null eller negativ')
   if (k.stoff === 'vevd' && !P[17]) feil.push('Vevd blokk mangler fremre skulderpunkt')
   // sømlengdene som skal møtes
-  const bak = lengde(aermegab(k, 'bak')), fram = lengde(aermegab(k, 'front'))
+  const bak = lengde(ermegap(k, 'bak')), fram = lengde(ermegap(k, 'front'))
   if (Math.abs(bak - fram) > bak * 0.15)
-    feil.push(`Ærmegabene avviker mye: bak ${bak.toFixed(1)} cm, foran ${fram.toFixed(1)} cm`)
+    feil.push(`Ermegapene avviker mye: bak ${bak.toFixed(1)} cm, foran ${fram.toFixed(1)} cm`)
   return feil
 }

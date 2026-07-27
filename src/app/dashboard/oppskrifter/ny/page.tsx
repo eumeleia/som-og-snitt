@@ -211,6 +211,13 @@ export default function NyOppskriftPage() {
   const [driveLink, setDriveLink] = useState<string | null>(null)
   const [driveError, setDriveError] = useState<string | null>(null)
 
+  // Size-filter message (shown when selected block becomes invalid after size change)
+  const [stoerrelseMsg, setStoerrelseMsg] = useState<string | null>(null)
+
+  // Reference image overlay
+  const [refOpen, setRefOpen] = useState(false)
+  const [refImages, setRefImages] = useState<string[]>([])
+
   // ── Computed ──────────────────────────────────────────────────────────────
 
   const selectedProfil = useMemo(
@@ -235,6 +242,11 @@ export default function NyOppskriftPage() {
 
   const dameStdOptions = useMemo(() => damestoerrelser(), [])
 
+  const effectiveHoeyde = useMemo(() => {
+    if (stdRad) return Number(stdRad.nokkel)
+    return selectedProfil?.hoyde_cm ?? 0
+  }, [stdRad, selectedProfil])
+
   const filteredBlokker = useMemo(() => {
     if (topMode === 'standard' && !stdRad) return []
     if (topMode === 'profil' && !selectedProfil) return []
@@ -246,9 +258,12 @@ export default function NyOppskriftPage() {
       if (type === 'voksen') return b.malgruppe === 'dame'
       if (b.malgruppe === 'dame') return false
       if (b.malgruppe === 'ungjente' && kjonn !== 'jente') return false
+      if (b.minStr !== null && b.maksStr !== null && effectiveHoeyde > 0) {
+        if (effectiveHoeyde < b.minStr || effectiveHoeyde > b.maksStr) return false
+      }
       return true
     })
-  }, [topMode, stdRad, selectedProfil, effectiveType, effectiveKjonn])
+  }, [topMode, stdRad, selectedProfil, effectiveType, effectiveKjonn, effectiveHoeyde])
 
   const selectedBlokk = useMemo(
     () => BLOKKER.find(b => b.id === selectedBlokkId) ?? null,
@@ -288,12 +303,19 @@ export default function NyOppskriftPage() {
     if (topMode === 'standard' && stdRad) return Number(stdRad.nokkel)
     if (maalKilde === 'standard' && stdRad) return Number(stdRad.nokkel)
     if (selectedProfil?.hoyde_cm) return selectedProfil.hoyde_cm
-    const h = resolvedMaal['hoyde']; return h ?? 104
+    const h = resolvedMaal['hoeyde']; return h ?? 104
   }, [topMode, stdRad, maalKilde, selectedProfil, resolvedMaal])
 
   const needsFerdigLengde = selectedBlokk?.id === 'baby-kropp' || selectedBlokk?.id === 'barn-tskjorte'
   const ferdigLengdeVal = selectedBlokk?.id === 'baby-kropp' ? babyFerdigLengde : tFerdigLengde
-  const ferdigLengdeOk = !needsFerdigLengde || (parseFloat(ferdigLengdeVal) > 0)
+  // Empty field uses the formula default — no longer blocks generation
+  const ferdigLengdeOk = true
+
+  const suggestedFerdigLengde = useMemo(() => {
+    if (!selectedBlokk?.plaggmaal?.ferdigLengde) return null
+    const fl = selectedBlokk.plaggmaal.ferdigLengde(resolvedMaal as Record<string, number>)
+    return isNaN(fl) || fl <= 0 ? null : fl
+  }, [selectedBlokk, resolvedMaal])
 
   const isSteg1Complete = topMode === 'standard' ? stdRad !== null : selectedProfil !== null
 
@@ -345,6 +367,33 @@ export default function NyOppskriftPage() {
     if (effectiveType) setDiagramSide(effectiveType)
   }, [effectiveType])
 
+  // Auto-reset block when it's no longer valid for the selected size
+  useEffect(() => {
+    if (!selectedBlokkId) { setStoerrelseMsg(null); return }
+    if (!filteredBlokker.find(b => b.id === selectedBlokkId)) {
+      const prevBlokk = BLOKKER.find(b => b.id === selectedBlokkId)
+      if (prevBlokk) setStoerrelseMsg(`«${prevBlokk.navn}» (${prevBlokk.stroelse}) er ikke tilgjengelig for valgt størrelse.`)
+      resetBlock()
+    } else {
+      setStoerrelseMsg(null)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filteredBlokker])
+
+  // Pre-fill ferdigLengde from plaggmaal formula
+  useEffect(() => {
+    if (!selectedBlokk?.plaggmaal?.ferdigLengde) return
+    const fl = selectedBlokk.plaggmaal.ferdigLengde(resolvedMaal as Record<string, number>)
+    if (!isNaN(fl) && fl > 0) {
+      if (selectedBlokk.id === 'baby-kropp' || selectedBlokk.id === 'baby-yttertoy') {
+        setBabyFerdigLengde(prev => prev || fl.toFixed(1))
+      } else if (selectedBlokk.id === 'barn-tskjorte') {
+        setTFerdigLengde(prev => prev || fl.toFixed(1))
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedBlokkId, stdRad])
+
   // ── Handlers ──────────────────────────────────────────────────────────────
 
   function resetBlock() {
@@ -395,9 +444,6 @@ export default function NyOppskriftPage() {
 
   const handleGenerer = useCallback(() => {
     if (!selectedBlokk) return
-    if (!ferdigLengdeOk) {
-      setValiderFeil(['Ferdig lengde må fylles inn']); setSvgContent(null); return
-    }
 
     const m = resolvedMaal
     const navnStr = topMode === 'profil' ? (selectedProfil?.navn ?? '') : `str. ${stdRad?.nokkel ?? ''}`
@@ -405,10 +451,17 @@ export default function NyOppskriftPage() {
     const undertekst = `${selectedBlokk.navn} · ${navnStr} · ${dato}`
     let hodeMsg: string | null = null
 
+    // Resolve ferdig lengde: use field value if provided, else formula default
+    const resolvedFl = (feltVal: string, blokk: typeof selectedBlokk) => {
+      const v = parseFloat(feltVal)
+      if (!isNaN(v) && v > 0) return v
+      return blokk.plaggmaal?.ferdigLengde?.(m as Record<string, number>) ?? 0
+    }
+
     try {
       if (selectedBlokk.id === 'barn-bukse-1') {
         const k = konstruerBukse(
-          { hoydeCm, hofte: m['hofte']!, bodyRise: m['bodyRise']!, innsideBen: m['innsideBen']! },
+          { hoydeCm, hofte: m['hofte']!, skrittdybde: m['skrittdybde']!, innsideBen: m['innsideBen']! },
           passform,
         )
         const feil = validerBukse(k)
@@ -417,11 +470,11 @@ export default function NyOppskriftPage() {
         setSvgContent(svg)
 
       } else if (selectedBlokk.id === 'baby-kropp') {
-        const fl = parseFloat(babyFerdigLengde)
+        const fl = resolvedFl(babyFerdigLengde, selectedBlokk)
         const k = konstruerBaby(
           {
             bryst: m['bryst']!, ryggbredde: m['ryggbredde']!, halsvidde: m['halsvidde']!,
-            skulder: m['skulder']!, aermegabDybde: m['aermegabDybde']!,
+            skulder: m['skulder']!, ermegapDybde: m['ermegapDybde']!,
             nakkeTilMidje: m['nakkeTilMidje']!, ermelengde: m['ermelengde']!,
             haandledd: m['haandledd']!, ferdigLengde: fl,
           },
@@ -440,11 +493,17 @@ export default function NyOppskriftPage() {
         setSvgContent(tilSvg(deler, { sommonnCm, undertekst }))
 
       } else if (selectedBlokk.id === 'barn-tskjorte') {
-        const fl = parseFloat(tFerdigLengde)
+        const fl = resolvedFl(tFerdigLengde, selectedBlokk)
+        // Bok s.48: P[1] = nakkeTilMidje + 3 — advar om lengden er kortere
+        const minLengde = (m['nakkeTilMidje'] ?? 0) + 3
+        if (fl < minLengde) {
+          setValiderFeil([`Ferdig lengde (${fl} cm) er kortere enn bokas nedre grense (${minLengde.toFixed(1)} cm = nakke til midje + 3).`])
+          setSvgContent(null); return
+        }
         const k = konstruerT(
           {
             hoydeCm, bryst: m['bryst']!, ryggbredde: m['ryggbredde']!, halsvidde: m['halsvidde']!,
-            aermegabDybde: m['aermegabDybde']!, nakkeTilMidje: m['nakkeTilMidje']!,
+            ermegapDybde: m['ermegapDybde']!, nakkeTilMidje: m['nakkeTilMidje']!,
             ermelengde: m['ermelengde']!, haandledd: m['haandledd']!, ferdigLengde: fl,
           },
           tVariant,
@@ -465,7 +524,7 @@ export default function NyOppskriftPage() {
         const k = konstruerKropp(
           {
             hoydeCm, bryst: m['bryst']!, ryggbredde: m['ryggbredde']!, halsvidde: m['halsvidde']!,
-            skulder: m['skulder']!, aermegabDybde: m['aermegabDybde']!,
+            skulder: m['skulder']!, ermegapDybde: m['ermegapDybde']!,
             nakkeTilMidje: m['nakkeTilMidje']!, midjeTilHofte: m['midjeTilHofte']!,
             ermelengde: m['ermelengde']!, jersey: kroppJersey,
           },
@@ -923,10 +982,17 @@ export default function NyOppskriftPage() {
                 </select>
               </div>
 
+              {stoerrelseMsg && (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-xs text-amber-700">
+                  {stoerrelseMsg}
+                </div>
+              )}
+
               {selectedBlokk && (
                 <>
                   {/* Blokkinfo */}
                   <div className="text-xs text-stone-400 space-y-1 bg-stone-50 rounded-lg p-3">
+                    <p className="text-stone-500 font-medium">{selectedBlokk.undertittel}</p>
                     <p><span className="font-medium text-stone-500">Stoff:</span>{' '}
                       {selectedBlokk.stoff === 'jersey' ? 'Jersey' : selectedBlokk.stoff === 'vevd' ? 'Vevd' : 'Jersey eller vevd'}
                     </p>
@@ -1024,18 +1090,28 @@ export default function NyOppskriftPage() {
                           <input type="checkbox" checked={babyVidHals}
                             onChange={e => setBabyVidHals(e.target.checked)}
                             className="w-4 h-4 accent-[#C9A57A]" />
-                          <span className="text-sm text-stone-700">Vid hals med skulderklaff (bok s.38)</span>
+                          <span className="text-sm text-stone-700">
+                            <button
+                              type="button"
+                              onClick={() => { setRefImages(['/pattern/skulderklaff.jpg']); setRefOpen(true) }}
+                              className="underline underline-offset-2 text-[#8B6340] hover:text-[#6d4d2c] transition-colors"
+                            >
+                              Vid hals (bok s.38)
+                            </button>
+                          </span>
                         </label>
                       </div>
                       <div>
                         <label className={labelCls}>Ferdig lengde (cm)</label>
                         <div className="flex items-center gap-2">
                           <input type="number" step="0.5" min="0"
-                            value={babyFerdigLengde} placeholder="cm"
+                            value={babyFerdigLengde}
+                            placeholder={suggestedFerdigLengde ? `${suggestedFerdigLengde.toFixed(1)} (forslag)` : 'cm'}
                             onChange={e => setBabyFerdigLengde(e.target.value)}
-                            className="w-28 px-3 py-1.5 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300 transition" />
+                            className="w-36 px-3 py-1.5 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300 transition" />
                           <span className="text-xs text-stone-400">cm fra nakke til fald</span>
                         </div>
+                        <p className="text-xs text-stone-400 mt-1">Aldrich oppgir ingen standardlengde — fallet er et designvalg. Forslaget er utledet fra størrelsen.</p>
                       </div>
                     </div>
                   )}
@@ -1057,11 +1133,13 @@ export default function NyOppskriftPage() {
                         <label className={labelCls}>Ferdig lengde (cm)</label>
                         <div className="flex items-center gap-2">
                           <input type="number" step="0.5" min="0"
-                            value={tFerdigLengde} placeholder="cm"
+                            value={tFerdigLengde}
+                            placeholder={suggestedFerdigLengde ? `${suggestedFerdigLengde.toFixed(1)} (forslag)` : 'cm'}
                             onChange={e => setTFerdigLengde(e.target.value)}
-                            className="w-28 px-3 py-1.5 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300 transition" />
+                            className="w-36 px-3 py-1.5 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300 transition" />
                           <span className="text-xs text-stone-400">cm fra nakke til fald</span>
                         </div>
+                        <p className="text-xs text-stone-400 mt-1">Aldrich oppgir ingen standardlengde — fallet er et designvalg. Forslaget er utledet fra størrelsen.</p>
                       </div>
                     </div>
                   )}
@@ -1121,7 +1199,7 @@ export default function NyOppskriftPage() {
             <div className="space-y-5">
               <button
                 onClick={handleGenerer}
-                disabled={!ferdigLengdeOk || missingMaal.some(id =>
+                disabled={missingMaal.some(id =>
                   !stdRad?.maal[id] && !(inlineMaal[id] && parseFloat(inlineMaal[id]) > 0)
                 )}
                 className="flex items-center gap-2 px-5 py-2.5 bg-stone-700 text-white rounded-lg text-sm font-medium hover:bg-stone-800 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
@@ -1270,6 +1348,33 @@ export default function NyOppskriftPage() {
               width={800} height={600}
               className="w-full h-auto rounded-lg"
             />
+          </div>
+        </div>
+      )}
+
+      {/* ── Referansebilde-overlegg ──────────────────────────────────────────── */}
+      {refOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ backgroundColor: 'rgba(0,0,0,0.7)' }}
+          onClick={() => setRefOpen(false)}>
+          <div className="relative max-w-2xl w-full max-h-[90vh] overflow-auto bg-white rounded-2xl p-5 shadow-2xl"
+            onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-serif text-lg text-stone-700">Vid hals — referansefoto</h3>
+              <button onClick={() => setRefOpen(false)} aria-label="Lukk"
+                className="text-stone-400 hover:text-stone-600 transition-colors">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="space-y-4">
+              {refImages.map((src, i) => (
+                <Image key={i} src={src} alt={`Referansebilde ${i + 1}`}
+                  width={800} height={600} className="w-full h-auto rounded-lg" />
+              ))}
+            </div>
+            <p className="text-xs text-stone-400 mt-3">Kilde: Aldrich, barneboka s.38. Skulderklaff er ikke implementert i generatoren ennå.</p>
           </div>
         </div>
       )}
