@@ -3,6 +3,7 @@
 export const dynamic = 'force-dynamic'
 
 import { useState, useEffect, useCallback, useRef, type ReactNode, type ChangeEvent } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import {
@@ -2581,6 +2582,17 @@ export default function RecipesPage() {
           onCancel={() => setDeleteId(null)}
         />
       )}
+
+      {/* Lag ny oppskrift — mønstergenerator */}
+      <Link
+        href="/dashboard/oppskrifter/ny"
+        className="fixed bottom-6 right-24 flex items-center gap-2 px-4 h-14 bg-stone-700 text-white rounded-full shadow-lg hover:bg-stone-800 transition-all text-sm font-medium z-30 whitespace-nowrap"
+      >
+        <svg className="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+        </svg>
+        <span className="hidden sm:inline">Lag ny oppskrift</span>
+      </Link>
 
       {/* FAB */}
       <button
