@@ -184,6 +184,9 @@ export default function NyOppskriftPage() {
   // Block
   const [selectedBlokkId, setSelectedBlokkId] = useState<string | null>(null)
   const [sommonnCm, setSommonnCm] = useState<number>(1)
+  // Av som standard — dette er et verktøy for å måle mønsteret mot boka med
+  // målebånd via projektor, ikke noe som skal med på et klippeklart ark.
+  const [visPunkter, setVisPunkter] = useState(false)
   const [inlineMaal, setInlineMaal] = useState<Record<string, string>>({})
   const [savingInline, setSavingInline] = useState(false)
 
@@ -360,7 +363,7 @@ export default function NyOppskriftPage() {
   useEffect(() => {
     setSvgContent(null); setValiderFeil([]); setHodeAdvarsel(null)
     setDriveStatus('idle'); setDriveLink(null); setDriveError(null)
-  }, [selectedBlokkId, passform, babyStoff, babyVariant, babyVidHals, tVariant, kroppBlokktype, kroppJersey, kroppTilHofte, sommonnCm, maalKilde])
+  }, [selectedBlokkId, passform, babyStoff, babyVariant, babyVidHals, tVariant, kroppBlokktype, kroppJersey, kroppTilHofte, sommonnCm, visPunkter, maalKilde])
 
   // Sync diagram side with effective type
   useEffect(() => {
@@ -466,7 +469,7 @@ export default function NyOppskriftPage() {
         )
         const feil = validerBukse(k)
         if (feil.length) { setValiderFeil(feil); setSvgContent(null); return }
-        const svg = tilSvg([tilDelBukse(k)], { sommonnCm, undertekst })
+        const svg = tilSvg([tilDelBukse(k)], { sommonnCm, undertekst, visPunkter })
         setSvgContent(svg)
 
       } else if (selectedBlokk.id === 'baby-kropp') {
@@ -490,7 +493,7 @@ export default function NyOppskriftPage() {
         }
 
         const deler = plasser([delBaby(k, 'bak'), delBaby(k, 'front'), ermDelBaby(k)])
-        setSvgContent(tilSvg(deler, { sommonnCm, undertekst }))
+        setSvgContent(tilSvg(deler, { sommonnCm, undertekst, visPunkter }))
 
       } else if (selectedBlokk.id === 'barn-tskjorte') {
         const fl = resolvedFl(tFerdigLengde, selectedBlokk)
@@ -518,7 +521,7 @@ export default function NyOppskriftPage() {
         }
 
         const deler = plasser([kroppsDel(k), ermDelT(k)])
-        setSvgContent(tilSvg(deler, { sommonnCm, undertekst }))
+        setSvgContent(tilSvg(deler, { sommonnCm, undertekst, visPunkter }))
 
       } else if (selectedBlokk.id === 'barn-kropp') {
         const k = konstruerKropp(
@@ -538,7 +541,7 @@ export default function NyOppskriftPage() {
           delKropp(k, 'front', kroppTilHofte),
           ermDelKropp(k),
         ])
-        setSvgContent(tilSvg(deler, { sommonnCm, undertekst }))
+        setSvgContent(tilSvg(deler, { sommonnCm, undertekst, visPunkter }))
 
       } else {
         setValiderFeil([`Blokken «${selectedBlokk.id}» er ikke implementert ennå.`])
@@ -556,7 +559,7 @@ export default function NyOppskriftPage() {
   }, [
     selectedBlokk, resolvedMaal, ferdigLengdeOk, topMode, selectedProfil, stdRad,
     hoydeCm, passform, babyVariant, babyStoff, babyVidHals, babyFerdigLengde,
-    tVariant, tFerdigLengde, kroppBlokktype, kroppJersey, kroppTilHofte, sommonnCm,
+    tVariant, tFerdigLengde, kroppBlokktype, kroppJersey, kroppTilHofte, sommonnCm, visPunkter,
   ])
 
   const svgFilnavn = useCallback(() => {
@@ -1180,6 +1183,19 @@ export default function NyOppskriftPage() {
                         className="w-24 px-3 py-2 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300 transition" />
                       <span className="text-sm text-stone-500">cm (0 = ingen sømmonn)</span>
                     </div>
+                  </div>
+
+                  {/* Verifiseringspunkter */}
+                  <div className="flex items-center gap-3">
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input type="checkbox" checked={visPunkter}
+                        onChange={e => setVisPunkter(e.target.checked)}
+                        className="w-4 h-4 accent-[#C9A57A]" />
+                      <span className="text-sm text-stone-700">Vis konstruksjonspunkter (verifisering)</span>
+                    </label>
+                    <span className="text-xs text-stone-400">
+                      Aldrichs egne punktnumre, til måling mot boka via projektor — ikke for et klippeklart ark
+                    </span>
                   </div>
                 </>
               )}

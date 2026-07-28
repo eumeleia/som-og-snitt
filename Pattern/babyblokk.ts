@@ -16,7 +16,7 @@
  * Forskjellen mellom stofftypene er strukturell, ikke bare tall:
  * jerseyblokken deler form mellom for- og bakstykke, mens den vevde
  * har eget forstykke med egen skulderlinje (punkt 17) og eget
- * ermegap (gjennom 16).
+ * ærmegab (gjennom 16).
  */
 
 import type { Punkt, Del } from './generator'
@@ -31,7 +31,7 @@ export interface BabyMaal {
   ryggbredde: number
   halsvidde: number
   skulder: number
-  ermegapDybde: number
+  aermegabDybde: number
   nakkeTilMidje: number
   ermelengde: number
   haandledd: number
@@ -83,9 +83,9 @@ export function konstruer(
   P[0] = { x: 0, y: 0 }
   P[1] = { x: 0, y: m.nakkeTilMidje }
   P[2] = { x: 0, y: m.ferdigLengde }
-  P[3] = { x: 0, y: m.ermegapDybde + v.p03 }
+  P[3] = { x: 0, y: m.aermegabDybde + v.p03 }
   P[4] = { x: 0, y: P[3].y / 2 }
-  P[5] = { x: 0, y: m.ermegapDybde / 4 - 1.75 }
+  P[5] = { x: 0, y: m.aermegabDybde / 4 - 1.75 }
 
   const halsB = m.halsvidde / 5 + v.p06 + h.utvid
   P[6] = { x: halsB, y: 0 }
@@ -102,7 +102,7 @@ export function konstruer(
   P[15] = { x: 0, y: m.halsvidde / 5 - v.p015 + h.senk }
 
   if (stoff === 'vevd') {
-    // 9–16 = 0,5 cm innover. Forstykkets ermegap er smalere.
+    // 9–16 = 0,5 cm innover. Forstykkets ærmegab er smalere.
     P[16] = { x: P[9].x - 0.5, y: P[9].y }
     // 7–17 = lengden 7–11, men endepunktet ligger 0,4 cm under
     // linjen som er kvadrert ut fra punkt 5.
@@ -146,8 +146,8 @@ export function fremreHals(k: BabyKonstruksjon): Punkt[] {
   return [P[15], ...q(P[15], { x: P[6].x * 0.15, y: P[15].y * 0.15 }, P[6], 16)]
 }
 
-/** Ermegap. Bak går 11 → 9 → 12. Vevd forstykke går 17 → 16 → 12. */
-function ermegap(k: BabyKonstruksjon, side: Side): Punkt[] {
+/** Ærmegab. Bak går 11 → 9 → 12. Vevd forstykke går 17 → 16 → 12. */
+function aermegab(k: BabyKonstruksjon, side: Side): Punkt[] {
   const { P } = k
   const vevdFront = k.stoff === 'vevd' && side === 'front'
   const topp = vevdFront ? P[17] : P[11]
@@ -185,7 +185,7 @@ function skulderklaffPunkter(k: BabyKonstruksjon, side: Side) {
   const C: Punkt = { x: B.x, y: A.y }
   const D: Punkt = { x: B.x, y: (A.y + B.y) / 2 }
 
-  const kjede = [B, ...ermegap(k, side)]
+  const kjede = [B, ...aermegab(k, side)]
   let akk = 0
   let E = kjede[kjede.length - 1]
   for (let i = 1; i < kjede.length; i++) {
@@ -210,8 +210,9 @@ function skulderklaffPunkter(k: BabyKonstruksjon, side: Side) {
 /**
  * Aldrichs egne konstruksjonspunkter, til verifisering mot boka. Viser alle
  * punktene i `P` (også de som ikke ligger på selve klippelinja, som 6, 8, 9,
- * 10), så avstanden mellom to hvilke som helst punkter kan måles på det
- * projiserte bildet og sammenlignes direkte med boka.
+ * 10), pluss `vidHals`-punktene når de er i bruk — så avstanden mellom to
+ * hvilke som helst punkter kan måles på det projiserte bildet og
+ * sammenlignes direkte med boka.
  */
 function konstruksjonspunkter(k: BabyKonstruksjon): { navn: string; punkt: Punkt }[] {
   return Object.entries(k.P).map(([navn, punkt]) => ({ navn, punkt }))
@@ -226,7 +227,7 @@ export function del(k: BabyKonstruksjon, side: Side): Del {
     ...hals,
     ...(klaff ? [klaff.G] : []),
     skulderPunkt(k, side),
-    ...ermegap(k, side),
+    ...aermegab(k, side),
     P[14], P[2], start,
   ]
   return {
@@ -249,8 +250,8 @@ export function halsaapning(k: BabyKonstruksjon): number {
   return 2 * (lengde(bakHals(k)) + lengde(fremreHals(k)))
 }
 
-export function ermegapLengde(k: BabyKonstruksjon): number {
-  return lengde(ermegap(k, 'bak')) + lengde(ermegap(k, 'front'))
+export function aermegabLengde(k: BabyKonstruksjon): number {
+  return lengde(aermegab(k, 'bak')) + lengde(aermegab(k, 'front'))
 }
 
 /**
@@ -287,9 +288,9 @@ function kuleOffset(t: number, hev9: number): number {
 
 export function ermDel(k: BabyKonstruksjon): Del {
   const { erm } = k
-  const A = ermegapLengde(k) / 2      // ermet matcher halve ermegapet per side
+  const A = aermegabLengde(k) / 2      // ermet matcher halve ærmegabet per side
   const dy = erm[1].y
-  if (A <= dy) throw new Error('Ermegapet er kortere enn ermkulehøyden')
+  if (A <= dy) throw new Error('Ærmegabet er kortere enn ermkulehøyden')
   const P3: Punkt = { x: Math.sqrt(A * A - dy * dy), y: dy }
   const vx = -P3.x, vy = -P3.y
   const L = Math.hypot(vx, vy), nx = -vy / L, ny = vx / L
@@ -316,13 +317,13 @@ export function valider(k: BabyKonstruksjon): string[] {
   const feil: string[] = []
   const { P } = k
   if (P[12].x <= P[8].x) feil.push('Brystlinjen er ikke bredere enn ryggbredden')
-  if (P[2].y <= P[3].y) feil.push('Ferdig lengde er kortere enn ermegapdybden')
+  if (P[2].y <= P[3].y) feil.push('Ferdig lengde er kortere enn ærmegabdybden')
   if (P[5].y >= P[4].y) feil.push('Skulderlinjen ligger under brystlinjen')
   if (P[15].y <= 0) feil.push('Fremre halsdybde er null eller negativ')
   if (k.stoff === 'vevd' && !P[17]) feil.push('Vevd blokk mangler fremre skulderpunkt')
   // sømlengdene som skal møtes
-  const bak = lengde(ermegap(k, 'bak')), fram = lengde(ermegap(k, 'front'))
+  const bak = lengde(aermegab(k, 'bak')), fram = lengde(aermegab(k, 'front'))
   if (Math.abs(bak - fram) > bak * 0.15)
-    feil.push(`Ermegapene avviker mye: bak ${bak.toFixed(1)} cm, foran ${fram.toFixed(1)} cm`)
+    feil.push(`Ærmegabene avviker mye: bak ${bak.toFixed(1)} cm, foran ${fram.toFixed(1)} cm`)
   return feil
 }

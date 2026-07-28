@@ -9,7 +9,7 @@
  *   punktrekkefølgen nedover midtlinjen er 0, 5, 14, 4, 3, 1, 2
  *   «1–2 finished length» er lengden målt fra 0, ikke fra 1
  *   bakre halsringning går 0 → 7, fremre går 14 → 6
- *   ermegapet går 11 → 9 → 12, hult øverst, utsvingt mot 12
+ *   ærmegabet går 11 → 9 → 12, hult øverst, utsvingt mot 12
  *
  * Tre varianter. Boka: hovedtall = tettsittende ribbet t-skjorte,
  * første parentes = basis t-skjorte, andre parentes = romslig.
@@ -34,7 +34,7 @@ export interface TskjorteMaal {
   bryst: number
   ryggbredde: number
   halsvidde: number
-  ermegapDybde: number
+  aermegabDybde: number
   nakkeTilMidje: number
   ermelengde: number
   haandledd: number
@@ -53,7 +53,7 @@ function gruppe(h: number): Gruppe {
 type PerGruppe = [number, number, number]
 
 interface TVar {
-  /** 0–3: ermegapdybde, justering per høydegruppe */
+  /** 0–3: ærmegabdybde, justering per høydegruppe */
   p03: [PerGruppe, PerGruppe, PerGruppe]
   /** 0–6: ⅕ halsvidde − 0,5, med varianttillegg */
   p06: number
@@ -110,7 +110,7 @@ export function konstruer(m: TskjorteMaal, variant: TVariant = 'basis'): TKonstr
   // på str. 104, mens 1→2 bare er ca. 12 cm.
   P[2] = { x: 0, y: m.ferdigLengde }
 
-  P[3] = { x: 0, y: m.ermegapDybde + JUST.p03[g][v.i] }       // ermegapdybdelinje
+  P[3] = { x: 0, y: m.aermegabDybde + JUST.p03[g][v.i] }       // ærmegabdybdelinje
   P[4] = { x: 0, y: P[3].y / 2 }                                // ½ av 0–3
   P[5] = { x: 0, y: P[4].y / 4 }                                // ¼ av 0–4
 
@@ -132,7 +132,7 @@ export function konstruer(m: TskjorteMaal, variant: TVariant = 'basis'): TKonstr
   erm[0] = { x: 0, y: 0 }
   erm[1] = { x: 0, y: P[3].y / 2 + 1 - v.erm01 }                // ½ av 0–3, +1, minus variant
   erm[2] = { x: 0, y: m.ermelengde - v.p02 }
-  // erm[3] settes av kalleren: lengden av ermegapkurven 11→12.
+  // erm[3] settes av kalleren: lengden av ærmegabkurven 11→12.
   erm[4] = { x: m.haandledd / 2 - 1.5 + v.p24, y: erm[2].y }
 
   return { P, erm, variant, maal: m }
@@ -172,7 +172,7 @@ export function kroppsDel(k: TKonstruksjon): Del {
   }
   // skulderlinje 7 → 11
   pts.push(P[11])
-  // ermegap 11 → 9 → 12
+  // ærmegab 11 → 9 → 12
   for (const [a, c, b] of [
     [P[11], { x: P[11].x, y: P[9].y * 0.78 }, P[9]],
     [P[9], { x: P[8].x - 0.15, y: P[3].y * 0.84 }, P[12]],
@@ -210,10 +210,10 @@ export function fremreHals(k: TKonstruksjon): Punkt[] {
   return ut
 }
 
-/** Ermegapkurvens lengde. Ermets punkt 3 avhenger av den. */
-export function ermegapLengde(k: TKonstruksjon): number {
+/** Ærmegabkurvens lengde. Ermets punkt 3 avhenger av den. */
+export function aermegabLengde(k: TKonstruksjon): number {
   const d = kroppsDel(k).kontur
-  // ermegapet er segmentet fra P[11] til P[12] i konturen
+  // ærmegabet er segmentet fra P[11] til P[12] i konturen
   const i0 = d.findIndex(p => Math.abs(p.x - k.P[11].x) < 1e-6 && Math.abs(p.y - k.P[11].y) < 1e-6)
   const i1 = d.findIndex(p => Math.abs(p.x - k.P[12].x) < 1e-6 && Math.abs(p.y - k.P[12].y) < 1e-6)
   if (i0 < 0 || i1 < 0) return NaN
@@ -226,12 +226,12 @@ export function ermegapLengde(k: TKonstruksjon): number {
 export function ermDel(k: TKonstruksjon, langt = true): Del {
   const { erm, maal } = k
   const g = gruppe(maal.hoydeCm)
-  const A = ermegapLengde(k)
-  if (!Number.isFinite(A)) throw new Error('Kunne ikke måle ermegapet')
+  const A = aermegabLengde(k)
+  if (!Number.isFinite(A)) throw new Error('Kunne ikke måle ærmegabet')
 
   // punkt 3: på linjen gjennom erm[1], slik at rett avstand 0→3 er A
   const dy = erm[1].y
-  if (A <= dy) throw new Error('Ermegapet er kortere enn ermkulehøyden')
+  if (A <= dy) throw new Error('Ærmegabet er kortere enn ermkulehøyden')
   const P3: Punkt = { x: Math.sqrt(A * A - dy * dy), y: dy }
 
   const hev = JUST.hev[g]
@@ -298,26 +298,11 @@ export function valider(k: TKonstruksjon): string[] {
   const feil: string[] = []
   const { P } = k
   if (P[12].x <= P[8].x) feil.push('Brystlinjen er ikke bredere enn ryggbredden')
-  if (P[2].y <= P[3].y) feil.push('Ferdig lengde er kortere enn ermegapdybden')
+  if (P[2].y <= P[3].y) feil.push('Ferdig lengde er kortere enn ærmegabdybden')
   if (P[6].x <= 0) feil.push('Halsbredden er null eller negativ')
   if (P[5].y >= P[4].y) feil.push('Skulderlinjen ligger under brystlinjen')
-  if (!Number.isFinite(ermegapLengde(k))) feil.push('Ermegapet kunne ikke måles')
+  if (!Number.isFinite(aermegabLengde(k))) feil.push('Ærmegabet kunne ikke måles')
   return feil
 }
 
-/** Felles grensesnitt med babyblokk.sjekkHode. */
-export function sjekkHode(
-  k: TKonstruksjon,
-  hodeomkrets: number,
-  strekk = 1.35,
-): { ok: boolean; aapning: number; strukket: number; melding: string } {
-  const bak = kroppsDel(k).kontur.slice(0, 13)
-  const aapning = 2 * (lengde(bak) + lengde(fremreHals(k)))
-  const strukket = aapning * strekk
-  const ok = strukket > hodeomkrets
-  const melding =
-    sjekkHodeaapning(k, hodeomkrets, strekk) ??
-    `Halsåpning ${aapning.toFixed(1)} cm, strukket ca. ${strukket.toFixed(1)} cm mot hode ${hodeomkrets} cm.`
-  return { ok, aapning, strukket, melding }
-}
 

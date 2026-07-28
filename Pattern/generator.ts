@@ -266,30 +266,6 @@ ${deltegn}
 </svg>`
 }
 
-/**
- * Forskyver deler langs x-aksen slik at de ligger ved siden av hverandre
- * uten overlapp. Flytter kontur, brettelinje, tradretning og hakk samlet.
- */
-export function plasser(deler: Del[], mellomrom = 4): Del[] {
-  let offset = 0
-  return deler.map(d => {
-    const xs = d.kontur.map(p => p.x)
-    const minX = Math.min(...xs)
-    const maxX = Math.max(...xs)
-    const dx = offset - minX
-    const skift = (p: Punkt): Punkt => ({ x: p.x + dx, y: p.y })
-    offset += maxX - minX + mellomrom
-    return {
-      ...d,
-      kontur: d.kontur.map(skift),
-      hakk: d.hakk?.map(h => ({ ...h, punkt: skift(h.punkt) })),
-      tradretning: d.tradretning ? { ...d.tradretning, x: d.tradretning.x + dx } : undefined,
-      brettelinje: d.brettelinje ? { ...d.brettelinje, x: d.brettelinje.x + dx } : undefined,
-      punkter: d.punkter?.map(p => ({ ...p, punkt: skift(p.punkt) })),
-    }
-  })
-}
-
 /** Last ned i nettleseren. */
 export function lastNed(svg: string, filnavn: string): void {
   const blob = new Blob([svg], { type: 'image/svg+xml' })

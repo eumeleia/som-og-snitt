@@ -24,7 +24,7 @@ export type Passform = 'leggings' | 'basis' | 'romslig'
 export interface BukseMaal {
   hoydeCm: number      // styrer hvilken breddekonstant som gjelder
   hofte: number        // hofte/setevidde, omkrets
-  skrittdybde: number     // midje til skrittnivå, sittende
+  bodyRise: number     // midje til skrittnivå, sittende
   innsideBen: number   // skritt til ankel
 }
 
@@ -85,7 +85,7 @@ export function konstruer(m: BukseMaal, passform: Passform = 'basis'): Konstruks
 
   // ── FORSTYKKE ──
   P[0] = { x: 0, y: 0 }
-  P[1] = { x: 0, y: m.skrittdybde + 1 + v.rise }                // skrittlinje
+  P[1] = { x: 0, y: m.bodyRise + 1 + v.rise }                // skrittlinje
   P[2] = { x: 0, y: P[1].y + (m.innsideBen - 1 + v.leg) }    // ankel
   P[3] = { x: 0, y: P[1].y + (P[2].y - P[1].y) / 2 }         // knelinje, ½ av 1–2
   P[4] = { x: b, y: P[1].y }
