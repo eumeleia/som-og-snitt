@@ -263,14 +263,21 @@ export function sjekkHode(k: BabyKonstruksjon, hodeomkrets: number, strekk?: num
   const s = strekk ?? (k.stoff === 'vevd' ? 1.0 : 1.35)
   const a = halsaapning(k)
   const maks = a * s
+  // Denne sjekken måler bare halsåpningens egen strekk — den vet ikke at en
+  // skulderklaff (bok s.38) løser samme problem på en annen måte, ved å åpne
+  // et gap ved skulderen i stedet for at halskurven selv strekker seg. Uten
+  // dette unntaket ville meldingen foreslå å legge inn en klaff som allerede
+  // er lagt inn (k.skulderklaff), i alle stoff-varianter.
+  const rad = k.skulderklaff
+    ? 'Skulderklaffen (bok s.38) er allerede lagt inn — den åpner et gap ved skulderen når plagget dras over hodet, uavhengig av halsåpningens egen strekk. Sjekk at gapet (E–F–G-punktene) faktisk er stort nok.'
+    : k.stoff === 'vevd'
+      ? 'Vevd stoff gir ikke etter. Plagget må ha knapper, splitt eller skulderklaff (bok s.38).'
+      : 'Bruk vid hals (bok s.38) eller legg inn skulderklaff.'
   return {
     ok: maks > hodeomkrets, aapning: a, strukket: maks,
     melding: maks > hodeomkrets
       ? `Halsåpning ${a.toFixed(1)} cm, strukket ca. ${maks.toFixed(1)} cm mot hode ${hodeomkrets} cm.`
-      : `Halsåpning ${a.toFixed(1)} cm, strukket ca. ${maks.toFixed(1)} cm — mindre enn hodet på ${hodeomkrets} cm. ` +
-        (k.stoff === 'vevd'
-          ? 'Vevd stoff gir ikke etter. Plagget må ha knapper, splitt eller skulderklaff.'
-          : 'Bruk vid hals (bok s.38) eller legg inn skulderklaff.'),
+      : `Halsåpning ${a.toFixed(1)} cm, strukket ca. ${maks.toFixed(1)} cm — mindre enn hodet på ${hodeomkrets} cm. ${rad}`,
   }
 }
 

@@ -195,6 +195,7 @@ export default function NyOppskriftPage() {
   const [babyStoff, setBabyStoff] = useState<BabyStoff>('jersey')
   const [babyVariant, setBabyVariant] = useState<BabyVariant>('basis')
   const [babyVidHals, setBabyVidHals] = useState(false)
+  const [babySkulderklaff, setBabySkulderklaff] = useState(false)
   const [babyFerdigLengde, setBabyFerdigLengde] = useState('')
   const [tVariant, setTVariant] = useState<TVariant>('basis')
   const [tFerdigLengde, setTFerdigLengde] = useState('')
@@ -363,7 +364,7 @@ export default function NyOppskriftPage() {
   useEffect(() => {
     setSvgContent(null); setValiderFeil([]); setHodeAdvarsel(null)
     setDriveStatus('idle'); setDriveLink(null); setDriveError(null)
-  }, [selectedBlokkId, passform, babyStoff, babyVariant, babyVidHals, tVariant, kroppBlokktype, kroppJersey, kroppTilHofte, sommonnCm, visPunkter, maalKilde])
+  }, [selectedBlokkId, passform, babyStoff, babyVariant, babyVidHals, babySkulderklaff, tVariant, kroppBlokktype, kroppJersey, kroppTilHofte, sommonnCm, visPunkter, maalKilde])
 
   // Sync diagram side with effective type
   useEffect(() => {
@@ -481,7 +482,7 @@ export default function NyOppskriftPage() {
             nakkeTilMidje: m['nakkeTilMidje']!, ermelengde: m['ermelengde']!,
             haandledd: m['haandledd']!, ferdigLengde: fl,
           },
-          babyVariant, babyStoff, babyVidHals ? VID_HALS : null,
+          babyVariant, babyStoff, babyVidHals ? VID_HALS : null, babySkulderklaff,
         )
         const feil = validerBaby(k)
         if (feil.length) { setValiderFeil(feil); setSvgContent(null); return }
@@ -558,7 +559,7 @@ export default function NyOppskriftPage() {
     }
   }, [
     selectedBlokk, resolvedMaal, ferdigLengdeOk, topMode, selectedProfil, stdRad,
-    hoydeCm, passform, babyVariant, babyStoff, babyVidHals, babyFerdigLengde,
+    hoydeCm, passform, babyVariant, babyStoff, babyVidHals, babySkulderklaff, babyFerdigLengde,
     tVariant, tFerdigLengde, kroppBlokktype, kroppJersey, kroppTilHofte, sommonnCm, visPunkter,
   ])
 
@@ -1100,6 +1101,22 @@ export default function NyOppskriftPage() {
                               className="underline underline-offset-2 text-[#8B6340] hover:text-[#6d4d2c] transition-colors"
                             >
                               Vid hals (bok s.38)
+                            </button>
+                          </span>
+                        </label>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <label className="flex items-center gap-2 cursor-pointer select-none">
+                          <input type="checkbox" checked={babySkulderklaff}
+                            onChange={e => setBabySkulderklaff(e.target.checked)}
+                            className="w-4 h-4 accent-[#C9A57A]" />
+                          <span className="text-sm text-stone-700">
+                            <button
+                              type="button"
+                              onClick={() => { setRefImages(['/pattern/skulderklaff.jpg']); setRefOpen(true) }}
+                              className="underline underline-offset-2 text-[#8B6340] hover:text-[#6d4d2c] transition-colors"
+                            >
+                              Skulderklaff ved skulder (bok s.38)
                             </button>
                           </span>
                         </label>
