@@ -43,3 +43,4 @@ next-env.d.ts
 # Pattern-referansefiler (lokale oppslagsverk og testutdata)
 Pattern/*.pdf
 Pattern/*.svg
+.claude/
