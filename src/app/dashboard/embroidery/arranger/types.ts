@@ -12,11 +12,19 @@ export interface EmbroiderySize {
 
 export interface EmbroideryData {
   navn: string
+  kategori?: string
+  kategorier?: string[]
   coverImage: string
   bmpPreview: string
   customImage: string
   useCustomImage: boolean
   sizes: EmbroiderySize[]
+}
+
+export function getKats(data: { kategori?: string; kategorier?: string[] }): string[] {
+  if (data.kategorier && data.kategorier.length > 0) return data.kategorier
+  if (data.kategori) return [data.kategori]
+  return []
 }
 
 export interface Embroidery {
