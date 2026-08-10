@@ -3190,6 +3190,18 @@ export default function EmbroideryPage() {
             </svg>
             Bilde til broderi
           </a>
+
+          {/* Arranger motiver — lenke til verktøyet for å sette sammen flere motiver */}
+          <a
+            href="/dashboard/embroidery/arranger"
+            className="h-9 px-3 flex items-center gap-1.5 rounded-xl border text-sm transition-colors bg-white text-stone-500 border-stone-200 hover:border-[#C9A57A] hover:text-[#8B6340] whitespace-nowrap"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                d="M4 4h6v6H4V4zm10 0h6v6h-6V4zM4 14h6v6H4v-6zm10 3h6M17 14v6" />
+            </svg>
+            Arranger motiver
+          </a>
         </div>
       </div>
 
