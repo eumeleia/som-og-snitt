@@ -2,6 +2,7 @@
 
 export const dynamic = 'force-dynamic'
 
+import '@/lib/readable-stream-async-iterator-polyfill'
 import { useState, useEffect, useCallback, useRef, type ReactNode, type ChangeEvent } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -9,6 +10,7 @@ import { supabase } from '@/lib/supabase'
 import { deepClone } from '@/lib/deep-clone'
 import { describeError, type ErrorDetails } from '@/lib/error-details'
 import { ErrorDetailsView } from '@/components/ErrorDetailsView'
+import { hentTekstFraSide } from '@/lib/pdf-text'
 import {
   DndContext, closestCenter, PointerSensor, TouchSensor,
   useSensor, useSensors, type DragEndEvent,
@@ -200,6 +202,7 @@ async function extractPdfText(
   data: Uint8Array,
   onProgress?: (page: number, total: number) => void
 ): Promise<string> {
+  await import('@/lib/readable-stream-async-iterator-polyfill')
   const pdfjs = await import('pdfjs-dist')
   pdfjs.GlobalWorkerOptions.workerSrc = new URL(
     'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -211,7 +214,7 @@ async function extractPdfText(
   for (let i = 1; i <= total; i++) {
     onProgress?.(i, total)
     const page = await pdf.getPage(i)
-    const content = await page.getTextContent()
+    const content = await hentTekstFraSide(page)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     parts.push(content.items.map((item: any) => (typeof item.str === 'string' ? item.str : '')).join(' '))
   }
@@ -459,6 +462,7 @@ async function renderAndUploadCover(
 ): Promise<{ id: string; url: string } | null> {
   try {
     const ab    = await file.arrayBuffer()
+    await import('@/lib/readable-stream-async-iterator-polyfill')
     const pdfjs = await import('pdfjs-dist')
     pdfjs.GlobalWorkerOptions.workerSrc = new URL(
       'pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url
@@ -546,6 +550,7 @@ function NewRecipeModal({ onCreate, onClose }: {
         setProgress('Leser tekst...')
         const arrayBuffer = await file.arrayBuffer()
         const uint8 = new Uint8Array(arrayBuffer)
+        await import('@/lib/readable-stream-async-iterator-polyfill')
         const pdfjs = await import('pdfjs-dist')
         pdfjs.GlobalWorkerOptions.workerSrc = new URL(
           'pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url
@@ -555,7 +560,7 @@ function NewRecipeModal({ onCreate, onClose }: {
         const parts: string[] = []
         for (let i = 1; i <= numPages; i++) {
           const pg      = await pdfDoc.getPage(i)
-          const content = await pg.getTextContent()
+          const content = await hentTekstFraSide(pg)
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           parts.push(content.items.map((item: any) => (typeof item.str === 'string' ? item.str : '')).join(' '))
         }
@@ -1301,6 +1306,7 @@ function RecipePdfViewerModal({
         const res = await fetch(pdf.url)
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const data = new Uint8Array(await res.arrayBuffer())
+        await import('@/lib/readable-stream-async-iterator-polyfill')
         const pdfjs = await import('pdfjs-dist')
         pdfjs.GlobalWorkerOptions.workerSrc = new URL(
           'pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url

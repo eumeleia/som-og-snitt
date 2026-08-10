@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
 import { Cormorant_Garamond, Lato } from 'next/font/google'
+import { Polyfills } from '@/components/Polyfills'
 import './globals.css'
 
 const cormorant = Cormorant_Garamond({
@@ -27,7 +28,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <link rel="apple-touch-icon" href="/icon-180.png" />
         <meta name="theme-color" content="#FAF7F4" />
       </head>
-      <body className="min-h-full antialiased">{children}</body>
+      <body className="min-h-full antialiased">
+        <Polyfills />
+        {children}
+      </body>
     </html>
   )
 }
