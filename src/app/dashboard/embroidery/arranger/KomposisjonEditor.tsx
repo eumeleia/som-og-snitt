@@ -9,10 +9,12 @@ import { synkroniserSekvens } from './sekvens'
 import { SekvensPanel } from './SekvensPanel'
 import { EksportPanel } from './EksportPanel'
 import {
-  type Embroidery, type EmbroiderySize, type BroderiMotivData, type BroderiBbox,
+  type Embroidery, type EmbroiderySize, type EmbroideryData, type BroderiMotivData, type BroderiBbox,
   type BroderiKomposisjon, type PlassertMotiv, type SekvensElement, type EmbroideryBundle,
-  getCoverImage, getKatsMedArv,
+  type VirtuelMotiv, type VirtuelStorrelse,
+  getCoverImage, getBundleCoverImage, getKatsMedArv,
 } from './types'
+import { utledTomme, trekktUtKarakter } from './tomme'
 import { KATEGORIER } from '../page'
 
 const RAMME_MM = 100
@@ -126,14 +128,14 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
     setSekvens(s => synkroniserSekvens(s, { motiver, resolved }))
   }, [motiver, resolved])
 
-  function leggTilMotiv(motiv: Embroidery, size: EmbroiderySize) {
+  function leggTilMotiv(embroideryId: string, sizeId: string, navn: string) {
     const nyId = uid()
     const kaskade = motiver.length * 50 // 5 mm forskyvning per nytt motiv, så de ikke stables eksakt
     const ny: PlassertMotiv = {
       id: nyId,
-      embroideryId: motiv.id,
-      sizeId: size.id,
-      navn: `${motiv.data.navn} – ${size.sizeLabel}`,
+      embroideryId,
+      sizeId,
+      navn,
       posisjonXTiendedelMm: kaskade,
       posisjonYTiendedelMm: kaskade,
       rotasjonGrader: 0,
@@ -141,7 +143,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
     setMotiver(m => [...m, ny])
     setValgtId(nyId)
     setShowPicker(false)
-    sikreMotivData(motiv.id, size.id)
+    sikreMotivData(embroideryId, sizeId)
   }
 
   function oppdaterValgt(patch: Partial<PlassertMotiv>) {
@@ -516,46 +518,56 @@ function PlassertMotivGruppe({ pm, data, bbox, valgt, utenforRamme, onPointerDow
   )
 }
 
-// ── Velg motiv, deretter størrelse ──────────────────────────────────────────────
+// ── Motiv-velger ─────────────────────────────────────────────────────────────
 
 const RAMME_GRENSE_MM = 98
 
 type BboxMm = { widthMm: number; heightMm: number }
 type ParseFremgang = { done: number; total: number; errors: number }
 
-interface MotivRad {
-  motiv: Embroidery
-  bundleNavn: string | null
-  kats: string[]
-  katArvet: boolean
-  antallStorrelser: number
-  antallPasser: number
-  antallIkkeMålt: number
+type PickerView =
+  | { type: 'liste' }
+  | { type: 'bundle-innhold'; bundleId: string }
+  | { type: 'tegn'; bundleId: string }
+  | { type: 'storrelse'; vm: VirtuelMotiv; prevView: PickerView }
+
+function vmSizeLabel(s: VirtuelStorrelse): string {
+  return s.tommeLabel ? `${s.tommeLabel}"` : s.sizeLabel
 }
 
-function sorterNavn(a: MotivRad, b: MotivRad): number {
-  return (a.motiv.data.navn || '').localeCompare(b.motiv.data.navn || '', 'nb')
+function vmStatus(vm: VirtuelMotiv, bboxCache: Map<string, BboxMm | null>): 'passer' | 'passerIkke' | 'ikkeMalt' {
+  let noenMalt = false
+  for (const s of vm.sizes) {
+    const key = `${s.embroideryId}:${s.sizeId}`
+    if (!bboxCache.has(key)) continue
+    const b = bboxCache.get(key)
+    if (b == null) continue
+    noenMalt = true
+    if (b.widthMm < RAMME_GRENSE_MM && b.heightMm < RAMME_GRENSE_MM) return 'passer'
+  }
+  const noenUforsøkt = vm.sizes.some(s => !bboxCache.has(`${s.embroideryId}:${s.sizeId}`))
+  if (!noenMalt || noenUforsøkt) return 'ikkeMalt'
+  return 'passerIkke'
 }
+
 
 function MotivPicker({ biblioteket, onVelg, onClose }: {
   biblioteket: Embroidery[]
-  onVelg: (motiv: Embroidery, size: EmbroiderySize) => void
+  onVelg: (embroideryId: string, sizeId: string, navn: string) => void
   onClose: () => void
 }) {
+  const [view, setView] = useState<PickerView>({ type: 'liste' })
   const [search, setSearch] = useState('')
   const [filterPaaRamme, setFilterPaaRamme] = useState(true)
   const [bboxCache, setBboxCache] = useState<Map<string, BboxMm | null>>(new Map())
   const [cacheLastet, setCacheLastet] = useState(false)
-  const [bundler, setBundler] = useState<Map<string, EmbroideryBundle>>(new Map())
+  const [bundlerMap, setBundlerMap] = useState<Map<string, EmbroideryBundle>>(new Map())
   const [kategoriOverstyringer, setKategoriOverstyringer] = useState<Map<string, string>>(new Map())
   const [parserAlle, setParserAlle] = useState(false)
   const [parseFremgang, setParseFremgang] = useState<ParseFremgang | null>(null)
-  const [valgtMotiv, setValgtMotiv] = useState<Embroidery | null>(null)
   const avbrytRef = useRef(false)
 
-  useEffect(() => {
-    return () => { avbrytRef.current = true }
-  }, [])
+  useEffect(() => { return () => { avbrytRef.current = true } }, [])
 
   useEffect(() => {
     supabase.from('broderi_motiv').select('embroidery_id, size_id, data').then(({ data }) => {
@@ -576,93 +588,180 @@ function MotivPicker({ biblioteket, onVelg, onClose }: {
     supabase.from('embroidery_bundles').select('*').then(({ data }) => {
       const map = new Map<string, EmbroideryBundle>()
       for (const row of ((data ?? []) as EmbroideryBundle[])) map.set(row.id, row)
-      setBundler(map)
+      setBundlerMap(map)
     })
   }, [])
 
-  const alleStoerr = useMemo(() =>
-    biblioteket.flatMap(m => (m.data.sizes ?? []).map(s => ({ m, s, key: `${m.id}:${s.id}` }))),
-    [biblioteket],
-  )
+  // Virtuelle motiver: tomme-regelen brukt på biblioteket + bundle-kart.
+  const virtuelleMotiver = useMemo((): VirtuelMotiv[] => {
+    const res: VirtuelMotiv[] = []
+    const bundleGroups = new Map<string, Embroidery[]>()
+    const standalone: Embroidery[] = []
 
-  // Tre globale tall, uavhengig av søk/filter — et helsetall for hele biblioteket, ikke bare
-  // det som vises nå. En størrelse telles "ikke målt" både når parsing aldri er forsøkt OG når
-  // den er forsøkt og feilet (f.eks. den ødelagte Vintage Rose-nøkkelen) — begge betyr at vi
-  // ikke vet om den passer, som er nettopp det "ikke målt" skal formidle. Aldri "?" — det leses
-  // for lett som et mål.
-  const { antallPasserGlobalt, antallPasserIkkeGlobalt, antallIkkeMåltGlobalt } = useMemo(() => {
-    let passer = 0, passerIkke = 0, ikkeMålt = 0
-    for (const { key } of alleStoerr) {
-      const b = bboxCache.get(key)
-      if (b === undefined || b === null) ikkeMålt++
-      else if (b.widthMm < RAMME_GRENSE_MM && b.heightMm < RAMME_GRENSE_MM) passer++
-      else passerIkke++
+    for (const m of biblioteket) {
+      const bid = m.data.bundleId
+      if (bid && bundlerMap.has(bid)) {
+        const g = bundleGroups.get(bid) ?? []
+        g.push(m)
+        bundleGroups.set(bid, g)
+      } else {
+        standalone.push(m)
+      }
     }
-    return { antallPasserGlobalt: passer, antallPasserIkkeGlobalt: passerIkke, antallIkkeMåltGlobalt: ikkeMålt }
-  }, [alleStoerr, bboxCache])
 
-  // Bare de som ALDRI er forsøkt — en permanent feilet parsing (som en backslash-ødelagt
-  // storage-nøkkel) skal ikke kø-es opp igjen for hver gang "Parse"-knappen trykkes. Siden
-  // bboxCache kommer fra broderi_motiv-tabellen (persistert), er dette naturlig gjenopptakbart
-  // på nytt besøk også — bare det som faktisk mangler blir liggende i køen.
-  const ikkeForsokt = useMemo(() => alleStoerr.filter(({ key }) => !bboxCache.has(key)), [alleStoerr, bboxCache])
+    for (const [bundleId, motiver] of bundleGroups) {
+      const bundle = bundlerMap.get(bundleId)!
+      const identitetGrupper = new Map<string, Array<{ m: Embroidery; s: EmbroiderySize; tomme: string | null }>>()
 
-  function settKategoriOverstyring(motiv: Embroidery, ny: string) {
-    setKategoriOverstyringer(prev => new Map(prev).set(motiv.id, ny))
-    supabase.from('embroidery')
-      .update({ data: { ...motiv.data, kategori: ny, kategorier: ny ? [ny] : [] } })
-      .eq('id', motiv.id)
-      .then(({ error }) => {
-        if (error) console.error('[MotivPicker] Klarte ikke lagre kategori', error)
+      for (const m of motiver) {
+        for (const s of m.data.sizes ?? []) {
+          const res2 = utledTomme(s.pesFilename)
+          const identitet = res2?.identitet
+            ?? s.pesFilename.replace(/\.pes$/i, '').split(/[\\/]/).pop()
+            ?? s.pesFilename
+          const g = identitetGrupper.get(identitet) ?? []
+          g.push({ m, s, tomme: res2?.tomme ?? null })
+          identitetGrupper.set(identitet, g)
+        }
+      }
+
+      for (const [identitet, items] of identitetGrupper) {
+        const firstM = items[0].m
+        const overstyring = kategoriOverstyringer.get(firstM.id)
+        const motivData = overstyring !== undefined
+          ? { ...firstM.data, kategori: overstyring, kategorier: overstyring ? [overstyring] : [] }
+          : firstM.data
+        const { kats, arvet } = getKatsMedArv(motivData, bundle.data)
+        const karakter = trekktUtKarakter(identitet)
+        res.push({
+          key: `${bundleId}:${identitet}`,
+          bundleId,
+          identitet,
+          navn: karakter ? karakter.tegn : (firstM.data.navn || identitet),
+          coverImage: getCoverImage(firstM.data),
+          kats, katArvet: arvet,
+          karakter: karakter ?? undefined,
+          sizes: items.map(({ m, s, tomme }) => ({
+            embroideryId: m.id,
+            sizeId: s.id,
+            tommeLabel: tomme,
+            sizeLabel: s.sizeLabel,
+          })),
+        })
+      }
+    }
+
+    for (const m of standalone) {
+      const overstyring = kategoriOverstyringer.get(m.id)
+      const motivData = overstyring !== undefined
+        ? { ...m.data, kategori: overstyring, kategorier: overstyring ? [overstyring] : [] }
+        : m.data
+      const { kats, arvet } = getKatsMedArv(motivData)
+      res.push({
+        key: m.id,
+        bundleId: null,
+        identitet: m.id,
+        navn: m.data.navn || 'Uten navn',
+        coverImage: getCoverImage(m.data),
+        kats, katArvet: arvet,
+        sizes: (m.data.sizes ?? []).map(s => ({
+          embroideryId: m.id,
+          sizeId: s.id,
+          tommeLabel: null,
+          sizeLabel: s.sizeLabel,
+        })),
       })
+    }
+
+    return res
+  }, [biblioteket, bundlerMap, kategoriOverstyringer])
+
+  const alfabetBundles = useMemo(() => {
+    const bundleVMsLocal = new Map<string, VirtuelMotiv[]>()
+    for (const vm of virtuelleMotiver) {
+      if (!vm.bundleId) continue
+      const g = bundleVMsLocal.get(vm.bundleId) ?? []
+      g.push(vm)
+      bundleVMsLocal.set(vm.bundleId, g)
+    }
+    const result = new Set<string>()
+    for (const [bid, vms] of bundleVMsLocal) {
+      const medTegn = vms.filter(vm => vm.karakter).length
+      if (vms.length > 0 && medTegn / vms.length >= 0.5) result.add(bid)
+    }
+    return result
+  }, [virtuelleMotiver])
+
+  const bundleVMs = useMemo(() => {
+    const map = new Map<string, VirtuelMotiv[]>()
+    for (const vm of virtuelleMotiver) {
+      if (!vm.bundleId) continue
+      const g = map.get(vm.bundleId) ?? []
+      g.push(vm)
+      map.set(vm.bundleId, g)
+    }
+    return map
+  }, [virtuelleMotiver])
+
+  const standaloneVMs = useMemo(() =>
+    virtuelleMotiver.filter(vm => !vm.bundleId),
+    [virtuelleMotiver])
+
+  const alleStoerr = useMemo(() =>
+    biblioteket.flatMap(m => (m.data.sizes ?? []).map(s => ({
+      embroideryId: m.id, sizeId: s.id,
+      key: `${m.id}:${s.id}`,
+    }))),
+    [biblioteket])
+
+  const ikkeForsokt = useMemo(() =>
+    alleStoerr.filter(({ key }) => !bboxCache.has(key)),
+    [alleStoerr, bboxCache])
+
+  const { antallPasserGlobalt, antallPasserIkkeGlobalt, antallIkkeMåltGlobalt } = useMemo(() => {
+    let passer = 0, passerIkke = 0, ikkeMalt = 0
+    for (const vm of virtuelleMotiver) {
+      const s = vmStatus(vm, bboxCache)
+      if (s === 'passer') passer++
+      else if (s === 'passerIkke') passerIkke++
+      else ikkeMalt++
+    }
+    return { antallPasserGlobalt: passer, antallPasserIkkeGlobalt: passerIkke, antallIkkeMåltGlobalt: ikkeMalt }
+  }, [virtuelleMotiver, bboxCache])
+
+  const alleBundleIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const m of biblioteket) {
+      if (m.data.bundleId && bundlerMap.has(m.data.bundleId)) ids.add(m.data.bundleId)
+    }
+    return Array.from(ids)
+  }, [biblioteket, bundlerMap])
+
+  function settKategoriOverstyring(embroideryId: string, motivData: EmbroideryData, ny: string) {
+    setKategoriOverstyringer(prev => new Map(prev).set(embroideryId, ny))
+    supabase.from('embroidery')
+      .update({ data: { ...motivData, kategori: ny, kategorier: ny ? [ny] : [] } })
+      .eq('id', embroideryId)
+      .then(({ error }) => { if (error) console.error('[MotivPicker] Klarte ikke lagre kategori', error) })
   }
 
-  const motivRader: MotivRad[] = useMemo(() => biblioteket.map(motiv => {
-    const sizes = motiv.data.sizes ?? []
-    let antallPasser = 0
-    let antallIkkeMålt = 0
-    for (const s of sizes) {
-      const b = bboxCache.get(`${motiv.id}:${s.id}`)
-      if (b === undefined || b === null) antallIkkeMålt++
-      else if (b.widthMm < RAMME_GRENSE_MM && b.heightMm < RAMME_GRENSE_MM) antallPasser++
-    }
-    const bundle = motiv.data.bundleId ? bundler.get(motiv.data.bundleId) : undefined
-    const overstyring = kategoriOverstyringer.get(motiv.id)
-    const egetData = overstyring !== undefined
-      ? { ...motiv.data, kategori: overstyring, kategorier: overstyring ? [overstyring] : [] }
-      : motiv.data
-    const { kats, arvet } = getKatsMedArv(egetData, bundle?.data)
-    return {
-      motiv, bundleNavn: bundle?.data.navn ?? null, kats, katArvet: arvet,
-      antallStorrelser: sizes.length, antallPasser, antallIkkeMålt,
-    }
-  }), [biblioteket, bboxCache, bundler, kategoriOverstyringer])
+  function velgStorrelse(vm: VirtuelMotiv, s: VirtuelStorrelse) {
+    const displaySize = vmSizeLabel(s)
+    const bundleNavn = vm.bundleId ? bundlerMap.get(vm.bundleId)?.data.navn : null
+    const navn = vm.karakter
+      ? `${vm.karakter.tegn}${bundleNavn ? ' (' + bundleNavn + ')' : ''} – ${displaySize}`
+      : `${vm.navn} – ${displaySize}`
+    onVelg(s.embroideryId, s.sizeId, navn)
+  }
 
-  const searchQ = search.toLowerCase().trim()
-  const synlige = useMemo(() => motivRader.filter(r => {
-    if (!searchQ) return true
-    return !!r.motiv.data.navn?.toLowerCase().includes(searchQ) || !!r.bundleNavn?.toLowerCase().includes(searchQ)
-  }), [motivRader, searchQ])
-
-  // Med filteret på: motiver med minst én bekreftet passende størrelse først, deretter — i en
-  // TYDELIG atskilt bolk — motiver der ingen er bekreftet men noen fortsatt er ikke målt (kan
-  // fortsatt passe). Motiver der ALLE størrelser er bekreftet for store skjules helt.
-  const { passerListe, ikkeMåltListe, antallSkjultHelt } = useMemo(() => {
-    if (!filterPaaRamme) {
-      return { passerListe: [...synlige].sort(sorterNavn), ikkeMåltListe: [] as MotivRad[], antallSkjultHelt: 0 }
-    }
-    const passer: MotivRad[] = []
-    const ikkeMålt: MotivRad[] = []
-    let skjult = 0
-    for (const r of synlige) {
-      if (r.antallPasser > 0) passer.push(r)
-      else if (r.antallIkkeMålt > 0) ikkeMålt.push(r)
-      else skjult++
-    }
-    passer.sort(sorterNavn)
-    ikkeMålt.sort(sorterNavn)
-    return { passerListe: passer, ikkeMåltListe: ikkeMålt, antallSkjultHelt: skjult }
-  }, [synlige, filterPaaRamme])
+  function velgVM(vm: VirtuelMotiv, prevView: PickerView) {
+    const passende = vm.sizes.filter(s => {
+      const b = bboxCache.get(`${s.embroideryId}:${s.sizeId}`)
+      return b !== undefined && b !== null && b.widthMm < RAMME_GRENSE_MM && b.heightMm < RAMME_GRENSE_MM
+    })
+    if (passende.length === 1) { velgStorrelse(vm, passende[0]); return }
+    setView({ type: 'storrelse', vm, prevView })
+  }
 
   async function parseAlle() {
     if (!ikkeForsokt.length) return
@@ -671,16 +770,16 @@ function MotivPicker({ biblioteket, onVelg, onClose }: {
     setParseFremgang({ done: 0, total: ikkeForsokt.length, errors: 0 })
     for (let i = 0; i < ikkeForsokt.length; i += 3) {
       if (avbrytRef.current) break
-      await Promise.all(ikkeForsokt.slice(i, i + 3).map(async ({ m, s, key }) => {
+      await Promise.all(ikkeForsokt.slice(i, i + 3).map(async ({ embroideryId, sizeId, key }) => {
         let ok = false
         try {
           const res = await fetch('/api/broderi-motiv/parse', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ embroideryId: m.id, sizeId: s.id }),
+            body: JSON.stringify({ embroideryId, sizeId }),
           })
           const body = await res.json()
           if (res.ok && body.data?.bbox) {
-            const bbox = body.data.bbox
+            const bbox = body.data.bbox as BroderiBbox
             setBboxCache(prev => new Map(prev).set(key, {
               widthMm: (bbox.max_x - bbox.min_x) / 10,
               heightMm: (bbox.max_y - bbox.min_y) / 10,
@@ -692,32 +791,414 @@ function MotivPicker({ biblioteket, onVelg, onClose }: {
         } catch {
           setBboxCache(prev => new Map(prev).set(key, null))
         }
-        if (!avbrytRef.current) {
+        if (!avbrytRef.current)
           setParseFremgang(p => p ? { done: p.done + 1, total: p.total, errors: p.errors + (ok ? 0 : 1) } : null)
-        }
       }))
     }
     setParserAlle(false)
   }
 
-  function avbrytParsing() {
-    avbrytRef.current = true
-    setParserAlle(false)
+  const searchQ = search.toLowerCase().trim()
+
+  function bundleMatcherSok(bid: string): boolean {
+    if (!searchQ) return true
+    if (bundlerMap.get(bid)?.data.navn.toLowerCase().includes(searchQ)) return true
+    return (bundleVMs.get(bid) ?? []).some(vm => vm.navn.toLowerCase().includes(searchQ))
   }
+
+  function bundleStat(bid: string): 'passer' | 'passerIkke' | 'ikkeMalt' {
+    const vms = bundleVMs.get(bid) ?? []
+    let noenIkkeMalt = false
+    for (const vm of vms) {
+      const s = vmStatus(vm, bboxCache)
+      if (s === 'passer') return 'passer'
+      if (s === 'ikkeMalt') noenIkkeMalt = true
+    }
+    return noenIkkeMalt ? 'ikkeMalt' : 'passerIkke'
+  }
+
+  const synligeBundles = useMemo(() => {
+    const filtered = alleBundleIds.filter(bundleMatcherSok)
+    if (!filterPaaRamme) return { passerListe: filtered, ikkeMåltListe: [] as string[], antallSkjult: 0 }
+    const passer: string[] = [], ikkeMalt: string[] = []
+    let skjult = 0
+    for (const bid of filtered) {
+      const s = bundleStat(bid)
+      if (s === 'passer') passer.push(bid)
+      else if (s === 'ikkeMalt') ikkeMalt.push(bid)
+      else skjult++
+    }
+    return { passerListe: passer, ikkeMåltListe: ikkeMalt, antallSkjult: skjult }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [alleBundleIds, bboxCache, filterPaaRamme, searchQ, virtuelleMotiver])
+
+  const synligeStandalone = useMemo(() => {
+    const filtered = standaloneVMs.filter(vm => !searchQ || vm.navn.toLowerCase().includes(searchQ))
+    if (!filterPaaRamme) return { passerListe: filtered, ikkeMåltListe: [] as VirtuelMotiv[], antallSkjult: 0 }
+    const passer: VirtuelMotiv[] = [], ikkeMalt: VirtuelMotiv[] = []
+    let skjult = 0
+    for (const vm of filtered) {
+      const s = vmStatus(vm, bboxCache)
+      if (s === 'passer') passer.push(vm)
+      else if (s === 'ikkeMalt') ikkeMalt.push(vm)
+      else skjult++
+    }
+    return { passerListe: passer, ikkeMåltListe: ikkeMalt, antallSkjult: skjult }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [standaloneVMs, bboxCache, filterPaaRamme, searchQ])
+
+  const antallSkjultTotalt = synligeBundles.antallSkjult + synligeStandalone.antallSkjult
+
+  // ── UI-deler ──────────────────────────────────────────────────────────────
+
+  function Topptekst({ tittel, onTilbake }: { tittel: string; onTilbake?: () => void }) {
+    return (
+      <div className="px-5 py-4 border-b border-stone-100 flex-shrink-0 flex items-center gap-3">
+        {onTilbake && (
+          <button onClick={onTilbake} className="p-1 -ml-1 rounded-lg hover:bg-stone-100 text-stone-500 transition-colors flex-shrink-0">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
+        )}
+        <h3 className="font-serif text-xl text-stone-800 truncate">{tittel}</h3>
+      </div>
+    )
+  }
+
+  function ParseBunnlinje() {
+    return (
+      <div className="px-5 py-3 border-t border-stone-100 flex-shrink-0">
+        {parseFremgang && (
+          <div className="mb-2">
+            <div className="flex justify-between text-xs text-stone-400 mb-1">
+              <span>Parser størrelser…</span>
+              <span>
+                {parseFremgang.done}/{parseFremgang.total}
+                {parseFremgang.errors > 0 && <span className="text-red-400"> · {parseFremgang.errors} feil</span>}
+              </span>
+            </div>
+            <div className="h-1.5 bg-stone-100 rounded-full overflow-hidden">
+              <div className="h-full bg-[#C9A57A] transition-all duration-300"
+                style={{ width: `${(parseFremgang.done / parseFremgang.total) * 100}%` }} />
+            </div>
+          </div>
+        )}
+        <div className="flex gap-2">
+          {parserAlle ? (
+            <button onClick={() => { avbrytRef.current = true; setParserAlle(false) }}
+              className="flex-1 py-2 text-xs text-red-500 border border-red-200 rounded-lg hover:border-red-400 transition-colors">
+              Avbryt parsing
+            </button>
+          ) : ikkeForsokt.length > 0 ? (
+            <button onClick={parseAlle}
+              className="flex-1 py-2 text-xs text-stone-500 border border-stone-200 rounded-lg hover:border-stone-400 transition-colors">
+              {`Parse ${ikkeForsokt.length} ${ikkeForsokt.length === 1 ? 'størrelse' : 'størrelser'}`}
+            </button>
+          ) : null}
+          <button onClick={onClose} className="flex-1 py-2 text-sm text-stone-400 hover:text-stone-600 transition-colors">
+            Avbryt
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  function KategoriBrikke({ kats, arvet, onEndret }: {
+    kats: string[]
+    arvet: boolean
+    onEndret: (ny: string) => void
+  }) {
+    const [redigerer, setRedigerer] = useState(false)
+    if (redigerer) {
+      return (
+        <select autoFocus defaultValue={kats[0] ?? ''}
+          onClick={e => e.stopPropagation()}
+          onChange={e => { onEndret(e.target.value); setRedigerer(false) }}
+          onBlur={() => setRedigerer(false)}
+          className="text-xs border border-stone-300 rounded-lg px-1.5 py-1 bg-white flex-shrink-0">
+          <option value="">Uten kategori</option>
+          {KATEGORIER.map(k => <option key={k} value={k}>{k}</option>)}
+        </select>
+      )
+    }
+    return (
+      <button
+        onClick={e => { e.stopPropagation(); setRedigerer(true) }}
+        title={kats.length === 0 ? 'Sett kategori' : arvet ? 'Arvet fra bundle' : 'Klikk for å endre'}
+        className={`text-xs px-2 py-1 rounded-lg border flex-shrink-0 whitespace-nowrap transition-colors ${
+          kats.length === 0 ? 'text-stone-300 border-stone-200 hover:border-stone-400'
+          : arvet ? 'text-stone-500 border-dashed border-stone-300 hover:border-stone-400'
+          : 'text-stone-600 border-stone-200 hover:border-stone-400'
+        }`}>
+        {kats[0] ?? 'Uten kategori'}{arvet && kats.length > 0 ? ' (arvet)' : ''}
+      </button>
+    )
+  }
+
+  function StatusBadge({ vm }: { vm: VirtuelMotiv }) {
+    const s = vmStatus(vm, bboxCache)
+    const antallPasser = vm.sizes.filter(sz => {
+      const b = bboxCache.get(`${sz.embroideryId}:${sz.sizeId}`)
+      return b !== undefined && b !== null && b.widthMm < RAMME_GRENSE_MM && b.heightMm < RAMME_GRENSE_MM
+    }).length
+    if (s === 'passer') return <span className="text-xs text-stone-500 flex-shrink-0">{antallPasser}/{vm.sizes.length} passer</span>
+    if (s === 'passerIkke') return <span className="text-xs text-red-400 flex-shrink-0">For stor</span>
+    return <span className="text-xs text-amber-600 flex-shrink-0">Ikke målt</span>
+  }
+
+  function BundleRad({ bundleId }: { bundleId: string }) {
+    const bundle = bundlerMap.get(bundleId)!
+    const cover = getBundleCoverImage(bundle.data)
+    const vms = bundleVMs.get(bundleId) ?? []
+    const erAlf = alfabetBundles.has(bundleId)
+    const { kats, arvet } = getKatsMedArv({ kategori: undefined }, bundle.data)
+    const antallPasser = vms.filter(vm => vmStatus(vm, bboxCache) === 'passer').length
+    const stat = bundleStat(bundleId)
+    return (
+      <li>
+        <div className="w-full flex items-center gap-3 px-5 py-2.5 hover:bg-stone-50 transition-colors">
+          <button
+            onClick={() => setView(erAlf ? { type: 'tegn', bundleId } : { type: 'bundle-innhold', bundleId })}
+            className="flex items-center gap-3 flex-1 min-w-0 text-left">
+            <div className="w-10 h-10 rounded-lg overflow-hidden bg-stone-100 flex-shrink-0">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              {cover && <img src={cover} alt={bundle.data.navn} className="w-full h-full object-cover" />}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm text-stone-800 truncate">{bundle.data.navn}</p>
+              <p className="text-xs text-stone-400 truncate">
+                {erAlf ? `${vms.length} tegn` : `${vms.length} motiver`}
+                {' · '}
+                {stat === 'passer'
+                  ? <span className="text-stone-500">{antallPasser}/{vms.length} passer</span>
+                  : stat === 'ikkeMalt'
+                    ? <span className="text-amber-600">Ikke målt</span>
+                    : <span className="text-red-400">For stor</span>}
+              </p>
+            </div>
+          </button>
+          <KategoriBrikke kats={kats} arvet={arvet} onEndret={() => {}} />
+        </div>
+      </li>
+    )
+  }
+
+  function VirtuelMotivRad({ vm, onClick }: { vm: VirtuelMotiv; onClick: () => void }) {
+    const firstM = biblioteket.find(m => m.id === vm.sizes[0]?.embroideryId)
+    return (
+      <li>
+        <div className="w-full flex items-center gap-3 px-5 py-2.5 hover:bg-stone-50 transition-colors">
+          <button onClick={onClick} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+            <div className="w-10 h-10 rounded-lg overflow-hidden bg-stone-100 flex-shrink-0">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              {vm.coverImage && <img src={vm.coverImage} alt={vm.navn} className="w-full h-full object-cover" />}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm text-stone-800 truncate">{vm.navn}</p>
+              <p className="text-xs text-stone-400 truncate">
+                {vm.sizes.length} {vm.sizes.length === 1 ? 'størrelse' : 'størrelser'}
+              </p>
+            </div>
+          </button>
+          <StatusBadge vm={vm} />
+          {!vm.bundleId && firstM && (
+            <KategoriBrikke kats={vm.kats} arvet={vm.katArvet}
+              onEndret={ny => settKategoriOverstyring(vm.sizes[0].embroideryId, firstM.data, ny)} />
+          )}
+        </div>
+      </li>
+    )
+  }
+
+  function ListeSeksjon({ tittel, bundleIds, vms }: {
+    tittel?: string
+    bundleIds: string[]
+    vms: VirtuelMotiv[]
+  }) {
+    if (bundleIds.length === 0 && vms.length === 0) return null
+    return (
+      <>
+        {tittel && (
+          <div className="px-5 py-2 bg-stone-50 sticky top-0 z-10 border-y border-stone-100">
+            <span className="text-xs font-semibold text-stone-500 uppercase tracking-wide">{tittel}</span>
+          </div>
+        )}
+        <ul className="divide-y divide-stone-100">
+          {bundleIds.map(bid => <BundleRad key={bid} bundleId={bid} />)}
+          {vms.map(vm => (
+            <VirtuelMotivRad key={vm.key} vm={vm}
+              onClick={() => velgVM(vm, { type: 'liste' })} />
+          ))}
+        </ul>
+      </>
+    )
+  }
+
+  // ── Tegnrutenett ──────────────────────────────────────────────────────────
+
+  function TegnGruppe({ label, tegns, bundleId }: { label: string; tegns: VirtuelMotiv[]; bundleId: string }) {
+    if (tegns.length === 0) return null
+    const currentView: PickerView = { type: 'tegn', bundleId }
+    return (
+      <div className="mb-5">
+        <p className="text-xs font-semibold text-stone-400 uppercase tracking-wide px-5 mb-2">
+          {label} ({tegns.length})
+        </p>
+        <div className="flex flex-wrap gap-2 px-5">
+          {tegns.map(vm => {
+            const s = vmStatus(vm, bboxCache)
+            return (
+              <button key={vm.key} onClick={() => velgVM(vm, currentView)}
+                title={vm.karakter ? undefined : vm.navn}
+                className={`w-10 h-10 rounded-lg border text-lg font-serif flex items-center justify-center transition-colors ${
+                  s === 'passer'
+                    ? 'border-stone-200 text-stone-700 hover:border-[#C9A57A] hover:bg-stone-50'
+                    : s === 'ikkeMalt'
+                      ? 'border-stone-200 text-stone-400 hover:border-amber-300 hover:bg-amber-50'
+                      : 'border-stone-100 text-stone-300 hover:border-red-200'
+                }`}>
+                {vm.karakter?.tegn ?? vm.navn.charAt(0)}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
+
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4">
       <div className="fixed inset-0 bg-black/30 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col" style={{ maxHeight: '85vh' }}>
 
-        {valgtMotiv ? (
-          <StorrelseVelger
-            motiv={valgtMotiv}
-            bboxCache={bboxCache}
-            onVelg={s => onVelg(valgtMotiv, s)}
-            onTilbake={() => setValgtMotiv(null)}
-          />
-        ) : (
+        {view.type === 'storrelse' && (() => {
+          const { vm, prevView } = view
+          const passende = vm.sizes.filter(s => {
+            const b = bboxCache.get(`${s.embroideryId}:${s.sizeId}`)
+            return b !== undefined && b !== null && b.widthMm < RAMME_GRENSE_MM && b.heightMm < RAMME_GRENSE_MM
+          })
+          const ingenPasser = cacheLastet && passende.length === 0
+            && vm.sizes.every(s => bboxCache.has(`${s.embroideryId}:${s.sizeId}`))
+          return (
+            <>
+              <Topptekst tittel={vm.navn} onTilbake={() => setView(prevView)} />
+              <div className="overflow-y-auto flex-1 min-h-0 p-4">
+                {ingenPasser && (
+                  <p className="text-sm text-red-500 mb-3 px-1">
+                    Ingen størrelser passer i 100×100 mm-rammen. Du kan fortsatt legge dem til.
+                  </p>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  {vm.sizes.map((s, i) => {
+                    const b = bboxCache.get(`${s.embroideryId}:${s.sizeId}`)
+                    const overGrense = b !== undefined && b !== null
+                      && (b.widthMm >= RAMME_GRENSE_MM || b.heightMm >= RAMME_GRENSE_MM)
+                    const dims = b !== undefined && b !== null
+                      ? `${b.widthMm.toFixed(1)} × ${b.heightMm.toFixed(1)} mm`
+                      : 'Ikke målt'
+                    return (
+                      <button key={i} onClick={() => velgStorrelse(vm, s)}
+                        className="flex flex-col items-start px-3 py-2 rounded-lg border border-stone-200 text-left hover:border-stone-400 transition-colors">
+                        <span className="text-sm text-stone-700">{vmSizeLabel(s)}</span>
+                        <span className={`text-xs ${overGrense ? 'text-red-500' : b !== undefined && b !== null ? 'text-stone-500' : 'text-stone-300 italic'}`}>
+                          {dims}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+              <div className="px-5 py-3 border-t border-stone-100 flex-shrink-0">
+                <button onClick={() => setView(prevView)}
+                  className="w-full py-2 text-sm text-stone-400 hover:text-stone-600 transition-colors">
+                  Tilbake
+                </button>
+              </div>
+            </>
+          )
+        })()}
+
+        {view.type === 'tegn' && (() => {
+          const vms = bundleVMs.get(view.bundleId) ?? []
+          const stor = vms.filter(vm => vm.karakter?.type === 'stor').sort((a, b) => a.karakter!.tegn.localeCompare(b.karakter!.tegn))
+          const liten = vms.filter(vm => vm.karakter?.type === 'liten').sort((a, b) => a.karakter!.tegn.localeCompare(b.karakter!.tegn))
+          const tall = vms.filter(vm => vm.karakter?.type === 'tall').sort((a, b) => a.karakter!.tegn.localeCompare(b.karakter!.tegn))
+          const symbol = vms.filter(vm => vm.karakter?.type === 'symbol').sort((a, b) => a.karakter!.tegn.localeCompare(b.karakter!.tegn))
+          return (
+            <>
+              <Topptekst tittel={bundlerMap.get(view.bundleId)?.data.navn ?? ''}
+                onTilbake={() => setView({ type: 'liste' })} />
+              <div className="overflow-y-auto flex-1 min-h-0 pt-4 pb-2">
+                <TegnGruppe label="Stor" tegns={stor} bundleId={view.bundleId} />
+                <TegnGruppe label="Liten" tegns={liten} bundleId={view.bundleId} />
+                <TegnGruppe label="Tall" tegns={tall} bundleId={view.bundleId} />
+                <TegnGruppe label="Symbol" tegns={symbol} bundleId={view.bundleId} />
+              </div>
+              <ParseBunnlinje />
+            </>
+          )
+        })()}
+
+        {view.type === 'bundle-innhold' && (() => {
+          const alleVMs = bundleVMs.get(view.bundleId) ?? []
+          const filtered = alleVMs.filter(vm => !searchQ || vm.navn.toLowerCase().includes(searchQ))
+          const { passerListe, ikkeMåltListe, antallSkjult } = (() => {
+            if (!filterPaaRamme) return { passerListe: filtered, ikkeMåltListe: [] as VirtuelMotiv[], antallSkjult: 0 }
+            const p: VirtuelMotiv[] = [], im: VirtuelMotiv[] = []
+            let sk = 0
+            for (const vm of filtered) {
+              const s = vmStatus(vm, bboxCache)
+              if (s === 'passer') p.push(vm)
+              else if (s === 'ikkeMalt') im.push(vm)
+              else sk++
+            }
+            return { passerListe: p, ikkeMåltListe: im, antallSkjult: sk }
+          })()
+          return (
+            <>
+              <Topptekst tittel={bundlerMap.get(view.bundleId)?.data.navn ?? ''}
+                onTilbake={() => setView({ type: 'liste' })} />
+              <div className="overflow-y-auto flex-1 min-h-0">
+                {filtered.length === 0 ? (
+                  <p className="text-sm text-stone-400 text-center py-12">Ingen motiver.</p>
+                ) : (
+                  <>
+                    <ul className="divide-y divide-stone-100">
+                      {passerListe.map(vm => (
+                        <VirtuelMotivRad key={vm.key} vm={vm}
+                          onClick={() => velgVM(vm, view)} />
+                      ))}
+                    </ul>
+                    {ikkeMåltListe.length > 0 && (
+                      <>
+                        <div className="px-5 py-2 bg-stone-50 sticky top-0 z-10 border-y border-stone-100">
+                          <span className="text-xs font-semibold text-stone-500 uppercase tracking-wide">Ikke målt ennå</span>
+                        </div>
+                        <ul className="divide-y divide-stone-100">
+                          {ikkeMåltListe.map(vm => (
+                            <VirtuelMotivRad key={vm.key} vm={vm}
+                              onClick={() => velgVM(vm, view)} />
+                          ))}
+                        </ul>
+                      </>
+                    )}
+                    {antallSkjult > 0 && (
+                      <p className="text-xs text-stone-400 text-center py-3">
+                        {antallSkjult} motiv{antallSkjult === 1 ? '' : 'er'} skjult — alle størrelser bekreftet for store
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+              <ParseBunnlinje />
+            </>
+          )
+        })()}
+
+        {view.type === 'liste' && (
           <>
             <div className="px-5 py-4 border-b border-stone-100 flex-shrink-0">
               <h3 className="font-serif text-xl text-stone-800 mb-3">Velg motiv</h3>
@@ -727,18 +1208,15 @@ function MotivPicker({ biblioteket, onVelg, onClose }: {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
                     d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                 </svg>
-                <input
-                  type="search" value={search} onChange={e => setSearch(e.target.value)} autoFocus
+                <input type="search" value={search} onChange={e => setSearch(e.target.value)} autoFocus
                   placeholder="Søk på navn eller bundle…"
-                  className="w-full pl-9 pr-4 py-2 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300"
-                />
+                  className="w-full pl-9 pr-4 py-2 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300" />
               </div>
               <label className="flex items-center gap-2 cursor-pointer mb-2">
-                <input
-                  type="checkbox" checked={filterPaaRamme} onChange={e => setFilterPaaRamme(e.target.checked)}
-                  className="w-4 h-4 rounded accent-[#C9A57A]"
-                />
-                <span className="text-sm text-stone-600">Bare motiver med minst én størrelse som passer i rammen (&lt;{RAMME_GRENSE_MM} mm)</span>
+                <input type="checkbox" checked={filterPaaRamme}
+                  onChange={e => setFilterPaaRamme(e.target.checked)}
+                  className="w-4 h-4 rounded accent-[#C9A57A]" />
+                <span className="text-sm text-stone-600">Bare motiver som passer i rammen (&lt;{RAMME_GRENSE_MM} mm)</span>
               </label>
               {cacheLastet && (
                 <p className="text-xs text-stone-400">
@@ -756,211 +1234,35 @@ function MotivPicker({ biblioteket, onVelg, onClose }: {
                 <div className="flex justify-center py-10">
                   <div className="w-6 h-6 border-2 border-stone-200 border-t-stone-600 rounded-full animate-spin" />
                 </div>
-              ) : passerListe.length === 0 && ikkeMåltListe.length === 0 ? (
+              ) : synligeBundles.passerListe.length === 0 && synligeBundles.ikkeMåltListe.length === 0 &&
+                 synligeStandalone.passerListe.length === 0 && synligeStandalone.ikkeMåltListe.length === 0 ? (
                 <p className="text-sm text-stone-400 text-center py-12">
-                  {motivRader.length === 0 ? 'Ingen motiver i biblioteket.' : 'Ingen treff.'}
+                  {biblioteket.length === 0 ? 'Ingen motiver i biblioteket.' : 'Ingen treff.'}
                 </p>
               ) : (
                 <>
-                  <ul className="divide-y divide-stone-100">
-                    {passerListe.map(r => (
-                      <MotivRadVisning
-                        key={r.motiv.id} rad={r}
-                        onVelg={() => setValgtMotiv(r.motiv)}
-                        onKategoriEndret={ny => settKategoriOverstyring(r.motiv, ny)}
-                      />
-                    ))}
-                  </ul>
-                  {ikkeMåltListe.length > 0 && (
-                    <>
-                      <div className="px-5 py-2 bg-stone-50 sticky top-0 z-10 border-y border-stone-100">
-                        <span className="text-xs font-semibold text-stone-500 uppercase tracking-wide">
-                          Ikke målt ennå — kan passe
-                        </span>
-                      </div>
-                      <ul className="divide-y divide-stone-100">
-                        {ikkeMåltListe.map(r => (
-                          <MotivRadVisning
-                            key={r.motiv.id} rad={r}
-                            onVelg={() => setValgtMotiv(r.motiv)}
-                            onKategoriEndret={ny => settKategoriOverstyring(r.motiv, ny)}
-                          />
-                        ))}
-                      </ul>
-                    </>
+                  <ListeSeksjon
+                    bundleIds={synligeBundles.passerListe}
+                    vms={synligeStandalone.passerListe} />
+                  {(synligeBundles.ikkeMåltListe.length > 0 || synligeStandalone.ikkeMåltListe.length > 0) && (
+                    <ListeSeksjon
+                      tittel="Ikke målt ennå — kan passe"
+                      bundleIds={synligeBundles.ikkeMåltListe}
+                      vms={synligeStandalone.ikkeMåltListe} />
                   )}
-                  {filterPaaRamme && antallSkjultHelt > 0 && (
+                  {filterPaaRamme && antallSkjultTotalt > 0 && (
                     <p className="text-xs text-stone-400 text-center py-3">
-                      {antallSkjultHelt} motiv{antallSkjultHelt === 1 ? '' : 'er'} skjult — alle størrelser er bekreftet for store
+                      {antallSkjultTotalt} {antallSkjultTotalt === 1 ? 'bundle/motiv' : 'bundles/motiver'} skjult — alle størrelser bekreftet for store
                     </p>
                   )}
                 </>
               )}
             </div>
 
-            <div className="px-5 py-3 border-t border-stone-100 flex-shrink-0">
-              {parseFremgang && (
-                <div className="mb-2">
-                  <div className="flex justify-between text-xs text-stone-400 mb-1">
-                    <span>Parser størrelser…</span>
-                    <span>
-                      {parseFremgang.done}/{parseFremgang.total}
-                      {parseFremgang.errors > 0 && <span className="text-red-400"> · {parseFremgang.errors} feil</span>}
-                    </span>
-                  </div>
-                  <div className="h-1.5 bg-stone-100 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-[#C9A57A] transition-all duration-300"
-                      style={{ width: `${(parseFremgang.done / parseFremgang.total) * 100}%` }}
-                    />
-                  </div>
-                </div>
-              )}
-              <div className="flex gap-2">
-                {parserAlle ? (
-                  <button
-                    onClick={avbrytParsing}
-                    className="flex-1 py-2 text-xs text-red-500 border border-red-200 rounded-lg hover:border-red-400 transition-colors"
-                  >
-                    Avbryt parsing
-                  </button>
-                ) : ikkeForsokt.length > 0 ? (
-                  <button
-                    onClick={parseAlle}
-                    className="flex-1 py-2 text-xs text-stone-500 border border-stone-200 rounded-lg hover:border-stone-400 transition-colors"
-                  >
-                    {`Parse ${ikkeForsokt.length} ${ikkeForsokt.length === 1 ? 'størrelse' : 'størrelser'}`}
-                  </button>
-                ) : null}
-                <button onClick={onClose} className="flex-1 py-2 text-sm text-stone-400 hover:text-stone-600 transition-colors">
-                  Avbryt
-                </button>
-              </div>
-            </div>
+            <ParseBunnlinje />
           </>
         )}
       </div>
     </div>
-  )
-}
-
-function MotivRadVisning({ rad, onVelg, onKategoriEndret }: {
-  rad: MotivRad
-  onVelg: () => void
-  onKategoriEndret: (ny: string) => void
-}) {
-  const { motiv, bundleNavn, kats, katArvet, antallStorrelser, antallPasser } = rad
-  const cover = getCoverImage(motiv.data)
-  return (
-    <li>
-      <div className="w-full flex items-center gap-3 px-5 py-2.5 hover:bg-stone-50 transition-colors">
-        <button onClick={onVelg} className="flex items-center gap-3 flex-1 min-w-0 text-left">
-          <div className="w-10 h-10 rounded-lg overflow-hidden bg-stone-100 flex-shrink-0">
-            {cover && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={cover} alt={motiv.data.navn} className="w-full h-full object-cover" />
-            )}
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm text-stone-800 truncate">{motiv.data.navn || 'Uten navn'}</p>
-            <p className="text-xs text-stone-400 truncate">
-              {bundleNavn ?? 'Løst motiv'} · {antallPasser}/{antallStorrelser} størrelser passer
-            </p>
-          </div>
-        </button>
-        <KategoriChip kats={kats} arvet={katArvet} onEndret={onKategoriEndret} />
-      </div>
-    </li>
-  )
-}
-
-function KategoriChip({ kats, arvet, onEndret }: {
-  kats: string[]
-  arvet: boolean
-  onEndret: (ny: string) => void
-}) {
-  const [redigerer, setRedigerer] = useState(false)
-
-  if (redigerer) {
-    return (
-      <select
-        autoFocus
-        defaultValue={kats[0] ?? ''}
-        onClick={e => e.stopPropagation()}
-        onChange={e => { onEndret(e.target.value); setRedigerer(false) }}
-        onBlur={() => setRedigerer(false)}
-        className="text-xs border border-stone-300 rounded-lg px-1.5 py-1 bg-white flex-shrink-0"
-      >
-        <option value="">Uten kategori</option>
-        {KATEGORIER.map(k => <option key={k} value={k}>{k}</option>)}
-      </select>
-    )
-  }
-
-  return (
-    <button
-      onClick={e => { e.stopPropagation(); setRedigerer(true) }}
-      title={kats.length === 0 ? 'Sett kategori' : arvet ? 'Arvet fra bundle — klikk for å overstyre' : 'Klikk for å endre'}
-      className={`text-xs px-2 py-1 rounded-lg border flex-shrink-0 whitespace-nowrap transition-colors ${
-        kats.length === 0
-          ? 'text-stone-300 border-stone-200 hover:border-stone-400'
-          : arvet
-            ? 'text-stone-500 border-dashed border-stone-300 hover:border-stone-400'
-            : 'text-stone-600 border-stone-200 hover:border-stone-400'
-      }`}
-    >
-      {kats[0] ?? 'Uten kategori'}{arvet && kats.length > 0 ? ' (arvet)' : ''}
-    </button>
-  )
-}
-
-function StorrelseVelger({ motiv, bboxCache, onVelg, onTilbake }: {
-  motiv: Embroidery
-  bboxCache: Map<string, BboxMm | null>
-  onVelg: (size: EmbroiderySize) => void
-  onTilbake: () => void
-}) {
-  const sizes = motiv.data.sizes ?? []
-  return (
-    <>
-      <div className="px-5 py-4 border-b border-stone-100 flex-shrink-0 flex items-center gap-3">
-        <button onClick={onTilbake} className="p-1 -ml-1 rounded-lg hover:bg-stone-100 text-stone-500 transition-colors flex-shrink-0">
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 19l-7-7 7-7" />
-          </svg>
-        </button>
-        <h3 className="font-serif text-xl text-stone-800 truncate">{motiv.data.navn || 'Uten navn'}</h3>
-      </div>
-      <div className="overflow-y-auto flex-1 min-h-0 p-3">
-        {sizes.length === 0 ? (
-          <p className="text-sm text-stone-400 text-center py-12">Motivet har ingen størrelser.</p>
-        ) : (
-          <div className="flex flex-wrap gap-2">
-            {sizes.map(s => {
-              const b = bboxCache.get(`${motiv.id}:${s.id}`)
-              const overGrense = b ? (b.widthMm >= RAMME_GRENSE_MM || b.heightMm >= RAMME_GRENSE_MM) : false
-              const dims = b ? `${b.widthMm.toFixed(1)} × ${b.heightMm.toFixed(1)} mm` : 'Ikke målt'
-              return (
-                <button
-                  key={s.id}
-                  onClick={() => onVelg(s)}
-                  className="flex flex-col items-start px-3 py-2 rounded-lg border border-stone-200 text-left hover:border-stone-400 transition-colors"
-                >
-                  <span className="text-sm text-stone-700">{s.sizeLabel}</span>
-                  <span className={`text-xs ${overGrense ? 'text-red-500' : b ? 'text-stone-500' : 'text-stone-300 italic'}`}>
-                    {dims}
-                  </span>
-                </button>
-              )
-            })}
-          </div>
-        )}
-      </div>
-      <div className="px-5 py-3 border-t border-stone-100 flex-shrink-0">
-        <button onClick={onTilbake} className="w-full py-2 text-sm text-stone-400 hover:text-stone-600 transition-colors">
-          Tilbake
-        </button>
-      </div>
-    </>
   )
 }

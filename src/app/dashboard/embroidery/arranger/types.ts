@@ -146,3 +146,35 @@ export interface BroderiKomposisjon {
 export function getCoverImage(d: EmbroideryData): string {
   return d.useCustomImage ? d.customImage : (d.coverImage || d.bmpPreview)
 }
+
+export function getBundleCoverImage(d: EmbroideryBundleData): string {
+  return d.useCustomImage ? d.customImage : d.coverImage
+}
+
+// Én faktisk PES-fil (embroidery-rad + størrelse) som del av et virtuelt motiv.
+// tommeLabel er utledet fra filnavnet (f.eks. "2.5"), null hvis ikke funnet.
+// sizeLabel er den opprinnelige etiketten fra embroidery-tabellen.
+export interface VirtuelStorrelse {
+  embroideryId: string
+  sizeId: string
+  tommeLabel: string | null
+  sizeLabel: string
+}
+
+// Et virtuelt motiv — en logisk enhet etter at tomme-regelen er brukt til å
+// gruppere faktiske embroidery-rader og størrelser. For Seraphine betyr dette
+// at alle 1.5"–5"-variantene av "lower_a" slås sammen til ett virtuelt motiv
+// med fem størrelser. For FloralAlphabet forblir hvert tegn én rad med egne
+// størrelser (allerede korrekt modellert). For ikke-alfabet-bundles er ett
+// virtuelt motiv typisk én embroidery-rad.
+export interface VirtuelMotiv {
+  key: string               // unik: `${bundleId}:${identitet}` eller embroideryId
+  bundleId: string | null
+  identitet: string         // filnavnbase uten tomme-prefiks
+  navn: string              // visningsnavn
+  coverImage: string
+  kats: string[]
+  katArvet: boolean
+  karakter?: import('./tomme').Karakter
+  sizes: VirtuelStorrelse[]
+}
