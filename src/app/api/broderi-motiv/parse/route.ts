@@ -13,50 +13,60 @@ interface EmbroiderySize {
   pesFilename: string
 }
 
-// pesUrl is the public URL returned by getPublicUrl() when the size was uploaded —
-// the object key inside the bucket is everything after "/embroidery-files/".
-function storageKeyFromPublicUrl(pesUrl: string): string | null {
-  const marker = '/embroidery-files/'
-  const idx = pesUrl.indexOf(marker)
-  if (idx === -1) return null
-  return decodeURIComponent(pesUrl.slice(idx + marker.length))
-}
-
 export async function POST(req: NextRequest) {
   try {
     const { embroideryId, sizeId } = await req.json()
     if (!embroideryId || !sizeId) {
-      return NextResponse.json({ error: 'embroideryId og sizeId er påkrevd' }, { status: 400 })
+      return NextResponse.json(
+        { error: `embroideryId og sizeId er påkrevd (fikk embroideryId=${embroideryId}, sizeId=${sizeId})` },
+        { status: 400 }
+      )
     }
 
+    // maybeSingle (not single) so a genuine "no row" case is distinguishable from a
+    // query/auth error — .single() reports both as the same error, which is exactly
+    // what hid the real cause last time.
     const { data: motif, error: motifErr } = await supabaseAdmin
       .from('embroidery')
       .select('id, data')
       .eq('id', embroideryId)
-      .single()
-    if (motifErr || !motif) {
-      return NextResponse.json({ error: 'Fant ikke motivet' }, { status: 404 })
+      .maybeSingle()
+    if (motifErr) {
+      console.error('[broderi-motiv/parse] embroidery-oppslag feilet', embroideryId, motifErr)
+      return NextResponse.json(
+        { error: `Feil ved oppslag i embroidery-tabellen for id ${embroideryId}: ${motifErr.message}` },
+        { status: 500 }
+      )
+    }
+    if (!motif) {
+      return NextResponse.json(
+        { error: `Fant ingen rad i embroidery-tabellen med id ${embroideryId}` },
+        { status: 404 }
+      )
     }
 
-    const size = (motif.data.sizes as EmbroiderySize[] | undefined)?.find(s => s.id === sizeId)
+    const sizes = (motif.data?.sizes as EmbroiderySize[] | undefined) ?? []
+    const size = sizes.find(s => s.id === sizeId)
     if (!size) {
-      return NextResponse.json({ error: 'Fant ikke størrelsen på motivet' }, { status: 404 })
+      const available = sizes.map(s => `${s.sizeLabel} (${s.id})`).join(', ') || '(ingen størrelser)'
+      return NextResponse.json(
+        { error: `Fant ingen størrelse med id ${sizeId} på motivet ${embroideryId} ("${motif.data?.navn}"). Tilgjengelige størrelser: ${available}` },
+        { status: 404 }
+      )
     }
 
-    const storageKey = storageKeyFromPublicUrl(size.pesUrl)
-    if (!storageKey) {
-      return NextResponse.json({ error: 'Klarte ikke tolke lagringsstien for PES-filen' }, { status: 500 })
+    // embroidery-files er en offentlig bucket — appen henter PES-filer med et vanlig
+    // fetch() på pesUrl overalt ellers (se regenCoverFromSizes i embroidery/page.tsx),
+    // ikke via Storage-SDK-en med utledet objekt-nøkkel. Gjenbruk samme mønster.
+    const pesResp = await fetch(size.pesUrl)
+    if (!pesResp.ok) {
+      return NextResponse.json(
+        { error: `Klarte ikke laste ned PES-filen fra ${size.pesUrl} (HTTP ${pesResp.status} ${pesResp.statusText})` },
+        { status: 502 }
+      )
     }
+    const pesBuffer = Buffer.from(await pesResp.arrayBuffer())
 
-    const { data: pesBlob, error: downloadErr } = await supabaseAdmin
-      .storage
-      .from('embroidery-files')
-      .download(storageKey)
-    if (downloadErr || !pesBlob) {
-      return NextResponse.json({ error: `Klarte ikke laste ned PES-filen: ${downloadErr?.message}` }, { status: 500 })
-    }
-
-    const pesBuffer = Buffer.from(await pesBlob.arrayBuffer())
     const origin = new URL(req.url).origin
     const parseRes = await fetch(`${origin}/api/parse-pes`, {
       method: 'POST',
@@ -64,8 +74,13 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({ pes_data: pesBuffer.toString('base64') }),
     })
     if (!parseRes.ok) {
-      const errBody = await parseRes.json().catch(() => ({}))
-      return NextResponse.json({ error: `Parsing feilet: ${errBody.error ?? parseRes.statusText}` }, { status: 502 })
+      const rawBody = await parseRes.text()
+      let pyError = rawBody
+      try { pyError = JSON.parse(rawBody).error ?? rawBody } catch { /* body wasn't JSON */ }
+      return NextResponse.json(
+        { error: `Python-parsefunksjonen (/api/parse-pes) svarte HTTP ${parseRes.status}: ${pyError}` },
+        { status: 502 }
+      )
     }
     const parsed = await parseRes.json()
 
@@ -75,19 +90,41 @@ export async function POST(req: NextRequest) {
         embroidery_id: embroideryId,
         size_id: sizeId,
         navn: `${motif.data.navn} – ${size.sizeLabel}`,
-        fil_sti: storageKey,
+        fil_sti: size.pesUrl,
         data: parsed,
       }, { onConflict: 'embroidery_id,size_id' })
       .select('id, data, created_at')
-      .single()
-    if (upsertErr || !saved) {
-      return NextResponse.json({ error: `Klarte ikke lagre parsede data: ${upsertErr?.message}` }, { status: 500 })
+      .maybeSingle()
+    if (upsertErr) {
+      console.error('[broderi-motiv/parse] upsert mot broderi_motiv feilet', embroideryId, sizeId, upsertErr)
+      if (upsertErr.code === '42P01') {
+        return NextResponse.json(
+          { error: 'Tabellen broderi_motiv finnes ikke i databasen — kjør supabase/migrations/004_create_broderi_motiv.sql i Supabase SQL editor.' },
+          { status: 500 }
+        )
+      }
+      if (upsertErr.code === '42501') {
+        return NextResponse.json(
+          { error: 'Appen har ikke rettigheter til å skrive til broderi_motiv — kjør supabase/migrations/005_grant_broderi_motiv.sql i Supabase SQL editor.' },
+          { status: 500 }
+        )
+      }
+      return NextResponse.json(
+        { error: `Klarte ikke lagre parsede data i broderi_motiv: ${upsertErr.message}` },
+        { status: 500 }
+      )
+    }
+    if (!saved) {
+      return NextResponse.json(
+        { error: `Upsert mot broderi_motiv returnerte ingen rad for embroidery_id=${embroideryId}, size_id=${sizeId}` },
+        { status: 500 }
+      )
     }
 
     return NextResponse.json(saved)
   } catch (err) {
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Noe gikk galt' },
+      { error: err instanceof Error ? `${err.name}: ${err.message}` : 'Noe gikk galt' },
       { status: 500 }
     )
   }

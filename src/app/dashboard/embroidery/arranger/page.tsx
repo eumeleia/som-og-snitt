@@ -203,12 +203,16 @@ function MotivVisning({ motiv, onBack }: { motiv: Embroidery; onBack: () => void
       setErrorDetails(null)
       setData(null)
       try {
-        const { data: cached } = await supabase
+        const { data: cached, error: cacheErr } = await supabase
           .from('broderi_motiv')
           .select('data')
           .eq('embroidery_id', motiv.id)
           .eq('size_id', size!.id)
           .maybeSingle()
+        // A permission/schema error here (e.g. missing GRANT) looks identical to "not
+        // cached yet" unless we log it — fall through to re-parsing either way, but
+        // don't let it pass silently.
+        if (cacheErr) console.error('[Arranger] Oppslag i broderi_motiv-cache feilet', cacheErr)
 
         if (cancelled) return
         if (cached) {
@@ -297,17 +301,16 @@ function MotivDetaljer({ data }: { data: BroderiMotivData }) {
   const heightMm = bbox ? (bbox.max_y - bbox.min_y) / 10 : 0
   const overGrense = widthMm > ADVARSEL_GRENSE_MM || heightMm > ADVARSEL_GRENSE_MM
 
-  // Rammen er alltid sentrert på registreringspunktet (0,0), som er hoop-senteret
-  // maskinen syr fra. ViewBox utvides forbi rammen bare hvis motivet stikker utenfor.
+  // Motivets registreringspunkt (0,0 i PES-koordinatene) er ikke en pålitelig
+  // hoop-midte — noen filer har bbox fra (0,0) og oppover, andre har den sentrert
+  // om origo. Sentrer i stedet rammen og viewBox på motivets EGEN bbox-midte, slik
+  // at motivet vises midt i 100×100-rammen uansett kildefilens konvensjon. Dette er
+  // bare en visnings-transform (translasjon) — stingkoordinatene i data er urørt.
   const halvRamme = RAMME_MM / 2
-  const motivHalv = bbox
-    ? Math.max(
-        Math.abs(bbox.min_x) / 10, Math.abs(bbox.max_x) / 10,
-        Math.abs(bbox.min_y) / 10, Math.abs(bbox.max_y) / 10,
-      )
-    : 0
-  const halv = Math.max(halvRamme, motivHalv) + 5
-  const viewBox = `${-halv} ${-halv} ${halv * 2} ${halv * 2}`
+  const senterXmm = bbox ? (bbox.min_x + bbox.max_x) / 20 : 0
+  const senterYmm = bbox ? (bbox.min_y + bbox.max_y) / 20 : 0
+  const halv = Math.max(halvRamme, widthMm / 2, heightMm / 2) + 5
+  const viewBox = `${senterXmm - halv} ${senterYmm - halv} ${halv * 2} ${halv * 2}`
 
   return (
     <div className="space-y-5">
@@ -321,7 +324,7 @@ function MotivDetaljer({ data }: { data: BroderiMotivData }) {
       <div className="bg-white rounded-2xl border border-stone-200 shadow-sm p-4">
         <svg viewBox={viewBox} className="w-full aspect-square">
           <rect
-            x={-halvRamme} y={-halvRamme} width={RAMME_MM} height={RAMME_MM}
+            x={senterXmm - halvRamme} y={senterYmm - halvRamme} width={RAMME_MM} height={RAMME_MM}
             fill="none" stroke="#C9A57A" strokeWidth={0.5} strokeDasharray="2 2"
           />
           {data.blokker.map((b, i) => (
