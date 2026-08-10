@@ -457,37 +457,6 @@ function guessFormatLabel(filename: string): string {
   return ''
 }
 
-async function renderAndUploadCover(
-  file: File
-): Promise<{ id: string; url: string } | null> {
-  try {
-    const ab    = await file.arrayBuffer()
-    await import('@/lib/readable-stream-async-iterator-polyfill')
-    const pdfjs = await import('pdfjs-dist')
-    pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-      'pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url
-    ).href
-    const pdf      = await pdfjs.getDocument({ data: new Uint8Array(ab) }).promise
-    const page1    = await pdf.getPage(1)
-    const viewport = page1.getViewport({ scale: 2 })
-    const canvas   = document.createElement('canvas')
-    canvas.width   = viewport.width
-    canvas.height  = viewport.height
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return null
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await page1.render({ canvas, canvasContext: ctx as any, viewport }).promise
-    const blob = await new Promise<Blob | null>(r => canvas.toBlob(r, 'image/jpeg', 0.85))
-    if (!blob) return null
-    const imgFilename = `recipe-cover-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`
-    const { error: imgErr } = await supabase.storage
-      .from('project-images').upload(imgFilename, blob, { contentType: 'image/jpeg' })
-    if (imgErr) return null
-    const { data: imgData } = supabase.storage.from('project-images').getPublicUrl(imgFilename)
-    return { id: uid(), url: imgData.publicUrl }
-  } catch { return null }
-}
-
 // ── NewRecipeModal ────────────────────────────────────────────────────────────
 
 type PdfEntry = { id: string; file: File; type: 'Oppskrift' | 'Mønster' | 'Annet' }
@@ -540,7 +509,6 @@ function NewRecipeModal({ onCreate, onClose }: {
 
       // 1. Analyse Oppskrift PDF first — name needed for Drive subfolder
       const oppskriftEntry = pdfs.find(p => p.type === 'Oppskrift') ?? null
-      const coverEntry     = oppskriftEntry ?? pdfs[0] ?? null
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let pdfDoc: any = null
 
@@ -776,16 +744,11 @@ function NewRecipeModal({ onCreate, onClose }: {
             }
           }
         } catch { /* No cover — user can add manually */ }
-      } else if (coverEntry) {
-        setProgress('Lager bilde...')
-        const cover = await renderAndUploadCover(coverEntry.file)
-        if (cover) {
-          recipeData.images       = [{ id: cover.id, url: cover.url }]
-          recipeData.coverImageId = cover.id
-          recipeData.focalX       = 50
-          recipeData.focalY       = 50
-        }
       }
+      // No Oppskrift PDF → no auto-generated cover. A cover must never be derived from a
+      // Mønster/Annet PDF: those files are Drive-only, and rendering their page 1 to an
+      // image would leak a derivative of them into Supabase Storage. User can add a cover
+      // manually via the gallery.
 
       // Create recipe
       setProgress('Oppretter oppskrift...')
