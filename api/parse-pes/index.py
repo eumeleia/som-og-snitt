@@ -24,7 +24,13 @@ def parse_pes(pes_bytes: bytes) -> dict:
         if pattern is None:
             raise ValueError("pyembroidery could not parse PES file")
 
-        blokker = []
+        # get_as_stitchblock() splits on EVERY trim/jump, not just on colour change —
+        # a design with many disconnected shapes (each flower, each leaf, ...) ends up
+        # with many stingblokker sharing the same colour in a row. stingblokker keeps
+        # that raw, ordered result untouched (never split or re-sorted); fargekjoringer
+        # is a derived grouping of consecutive stingblokker that share a colour, purely
+        # for display and later placement — it does not replace the stitch data.
+        stingblokker = []
         total_stitches = 0
 
         for stitches, thread in pattern.get_as_stitchblock():
@@ -33,9 +39,13 @@ def parse_pes(pes_bytes: bytes) -> dict:
             points = [[s[0], s[1]] for s in stitches]
             xs = [p[0] for p in points]
             ys = [p[1] for p in points]
-            blokker.append({
+            stingblokker.append({
                 'farge_hex': thread.hex_color(),
-                'tradnavn': thread.description,
+                # Read verbatim from the file's own thread table (EmbThread.description).
+                # Often just "R117 G133 B1" derived from RGB when no catalog match exists —
+                # kept in its own field so a Brother-palette name can replace it later
+                # without renaming this one.
+                'tradnavn_auto': thread.description,
                 'sting': points,
                 'antall_sting': len(points),
                 'bbox': {
@@ -44,6 +54,23 @@ def parse_pes(pes_bytes: bytes) -> dict:
                 },
             })
             total_stitches += len(points)
+
+        fargekjoringer = []
+        for i, blokk in enumerate(stingblokker):
+            forrige = fargekjoringer[-1] if fargekjoringer else None
+            if forrige is not None and forrige['farge_hex'] == blokk['farge_hex']:
+                forrige['til_index'] = i
+                forrige['antall_blokker'] += 1
+                forrige['antall_sting'] += blokk['antall_sting']
+            else:
+                fargekjoringer.append({
+                    'farge_hex': blokk['farge_hex'],
+                    'tradnavn_auto': blokk['tradnavn_auto'],
+                    'fra_index': i,
+                    'til_index': i,
+                    'antall_blokker': 1,
+                    'antall_sting': blokk['antall_sting'],
+                })
 
         bbox = None
         try:
@@ -55,19 +82,20 @@ def parse_pes(pes_bytes: bytes) -> dict:
                 }
         except Exception:
             pass
-        if bbox is None and blokker:
+        if bbox is None and stingblokker:
             bbox = {
-                'min_x': min(b['bbox']['min_x'] for b in blokker),
-                'min_y': min(b['bbox']['min_y'] for b in blokker),
-                'max_x': max(b['bbox']['max_x'] for b in blokker),
-                'max_y': max(b['bbox']['max_y'] for b in blokker),
+                'min_x': min(b['bbox']['min_x'] for b in stingblokker),
+                'min_y': min(b['bbox']['min_y'] for b in stingblokker),
+                'max_x': max(b['bbox']['max_x'] for b in stingblokker),
+                'max_y': max(b['bbox']['max_y'] for b in stingblokker),
             }
 
         return {
             'enhet': '1/10mm',
             'bbox': bbox,
             'total_sting': total_stitches,
-            'blokker': blokker,
+            'stingblokker': stingblokker,
+            'fargekjoringer': fargekjoringer,
         }
     finally:
         try:
