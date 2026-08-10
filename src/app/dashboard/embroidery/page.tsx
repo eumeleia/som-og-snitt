@@ -4,6 +4,8 @@ export const dynamic = 'force-dynamic'
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { supabase } from '@/lib/supabase'
+import { describeError, type ErrorDetails } from '@/lib/error-details'
+import { ErrorDetailsView } from '@/components/ErrorDetailsView'
 import {
   DndContext, closestCenter, PointerSensor, TouchSensor,
   useSensor, useSensors, type DragEndEvent,
@@ -354,13 +356,21 @@ function base64ToBlob(b64: string, mimeType: string): Blob {
   return new Blob([bytes], { type: mimeType })
 }
 
-async function renderPesPreview(pesData: Uint8Array): Promise<RenderResult | null> {
+const PES_RENDER_TIMEOUT_MS = 15000
+
+// Rendering happens server-side (/api/render-pes); on mobile networks a stalled request
+// or a hung serverless invocation never rejects on its own, so a plain `await fetch(...)`
+// blocks the upload loop forever. AbortController gives every attempt a hard deadline.
+async function renderPesPreview(pesData: Uint8Array, bodyExtra?: Record<string, unknown>): Promise<RenderResult | null> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), PES_RENDER_TIMEOUT_MS)
   try {
     const b64 = uint8ToBase64(pesData)
     const res = await fetch('/api/render-pes', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pes_data: b64 }),
+      body: JSON.stringify({ pes_data: b64, ...bodyExtra }),
+      signal: controller.signal,
     })
     if (!res.ok) return null
     const result = await res.json()
@@ -368,6 +378,8 @@ async function renderPesPreview(pesData: Uint8Array): Promise<RenderResult | nul
     return result as RenderResult
   } catch {
     return null
+  } finally {
+    clearTimeout(timer)
   }
 }
 
@@ -403,12 +415,15 @@ async function regenCoverFromSizes(sizes: EmbroiderySize[]): Promise<string | nu
 }
 
 async function fetchPesBounds(pesData: Uint8Array): Promise<{ widthMm: number; heightMm: number } | null> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), PES_RENDER_TIMEOUT_MS)
   try {
     const b64 = uint8ToBase64(pesData)
     const res = await fetch('/api/render-pes', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pes_data: b64, bounds_only: true }),
+      signal: controller.signal,
     })
     if (!res.ok) return null
     const result = await res.json()
@@ -418,8 +433,15 @@ async function fetchPesBounds(pesData: Uint8Array): Promise<{ widthMm: number; h
     return null
   } catch {
     return null
+  } finally {
+    clearTimeout(timer)
   }
 }
+
+// iOS Safari drops/refuses canvases above these limits under memory pressure — cap
+// so drawImage/toBlob never silently fail on a large embroidery cover BMP.
+const MAX_CANVAS_SIDE = 2048
+const MAX_CANVAS_PIXELS = 4_000_000
 
 function bmpToDataUrl(data: Uint8Array<ArrayBuffer>): Promise<string | null> {
   return new Promise(resolve => {
@@ -428,19 +450,29 @@ function bmpToDataUrl(data: Uint8Array<ArrayBuffer>): Promise<string | null> {
     const img = new window.Image()
     img.onload = () => {
       try {
+        const naturalW = img.naturalWidth || img.width
+        const naturalH = img.naturalHeight || img.height
+        let scale = Math.min(1, MAX_CANVAS_SIDE / naturalW, MAX_CANVAS_SIDE / naturalH)
+        if (naturalW * naturalH * scale * scale > MAX_CANVAS_PIXELS) {
+          scale = Math.min(scale, Math.sqrt(MAX_CANVAS_PIXELS / (naturalW * naturalH)))
+        }
         const canvas = document.createElement('canvas')
-        canvas.width = img.naturalWidth || img.width
-        canvas.height = img.naturalHeight || img.height
+        canvas.width = Math.max(1, Math.round(naturalW * scale))
+        canvas.height = Math.max(1, Math.round(naturalH * scale))
         const ctx = canvas.getContext('2d')
         if (!ctx) { URL.revokeObjectURL(url); resolve(null); return }
-        ctx.drawImage(img, 0, 0)
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
         canvas.toBlob(blob2 => {
           URL.revokeObjectURL(url)
-          if (!blob2) { resolve(null); return }
-          const reader = new FileReader()
-          reader.onload = () => resolve(reader.result as string)
-          reader.onerror = () => resolve(null)
-          reader.readAsDataURL(blob2)
+          if (blob2) {
+            const reader = new FileReader()
+            reader.onload = () => resolve(reader.result as string)
+            reader.onerror = () => resolve(null)
+            reader.readAsDataURL(blob2)
+            return
+          }
+          // toBlob can resolve null on iOS under memory pressure — fall back to toDataURL
+          try { resolve(canvas.toDataURL('image/png')) } catch { resolve(null) }
         }, 'image/png')
       } catch { URL.revokeObjectURL(url); resolve(null) }
     }
@@ -776,6 +808,8 @@ function UploadModal({ onDone, onClose }: {
   const [progressPct, setProgressPct] = useState(0)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [errorDetails, setErrorDetails] = useState<ErrorDetails | null>(null)
+  const [doneResult, setDoneResult] = useState<{ results: Embroidery[]; summary: string } | null>(null)
   const [uploadMode, setUploadMode] = useState<'loose' | 'bundle'>('loose')
   const [bundleName, setBundleName] = useState('')
   const [dragOver, setDragOver] = useState(false)
@@ -790,6 +824,8 @@ function UploadModal({ onDone, onClose }: {
   async function handleFiles(files: File[]) {
     setUploading(true)
     setError(null)
+    setErrorDetails(null)
+    setDoneResult(null)
     try {
       type PesEntry = { name: string; path: string; getData: () => Promise<Uint8Array> }
       type ImgEntry = { name: string; path: string; ext: string; getData: () => Promise<Uint8Array> }
@@ -800,6 +836,8 @@ function UploadModal({ onDone, onClose }: {
 
       const results: Embroidery[] = []
       let failedFiles = 0
+      let previewsAttempted = 0
+      let previewsSucceeded = 0
 
       async function processBatch(
         pesFiles: PesEntry[],
@@ -950,6 +988,7 @@ function UploadModal({ onDone, onClose }: {
             const repPesData = pesDataCache.get(repSize.sizeLabel)
             if (repPesData) {
               setProgress(`Rendrer forhåndsvisning for ${motifName}…`)
+              previewsAttempted++
               try {
                 const renderResult = await renderPesPreviewWithRetry(repPesData)
                 if (renderResult?.png_base64) {
@@ -964,11 +1003,22 @@ function UploadModal({ onDone, onClose }: {
                     const { data: renderUrl } = supabase.storage.from('embroidery-files').getPublicUrl(pngFilename)
                     coverImage = renderUrl.publicUrl
                     bmpPreview = renderUrl.publicUrl
+                    previewsSucceeded++
+                  } else {
+                    console.warn('[Embroidery] Opplasting av rendret forhåndsvisning feilet for', motifName, renderErr)
                   }
+                } else {
+                  // Every attempt inside renderPesPreviewWithRetry carries its own 15s
+                  // timeout, so a null result here means genuine failure/timeout, not a hang —
+                  // log which size failed and move on to the next motif.
+                  console.warn('[Embroidery] Forhåndsvisning tidsavbrutt eller feilet for', motifName, repSize.sizeLabel)
                 }
               } catch (renderErr) {
                 console.warn('[Embroidery] PES rendering feilet for', motifName, renderErr)
               }
+              // Yield to the UI thread between renders so the progress text keeps
+              // updating on mobile instead of the tab looking frozen.
+              await new Promise(r => setTimeout(r, 0))
             }
           }
 
@@ -1092,17 +1142,23 @@ function UploadModal({ onDone, onClose }: {
       }
 
       setProgressPct(100)
-      setProgress('Ferdig!')
-      await new Promise(r => setTimeout(r, 400))
+      const previewNote = previewsAttempted > 0
+        ? ` — ${previewsSucceeded} av ${previewsAttempted} forhåndsvisninger laget`
+        : ''
+      setProgress(`Ferdig${previewNote}`)
 
       setUploading(false)
       const summary = failedFiles > 0
         ? `${results.length} motiver lagt til, ${failedFiles} filer feilet`
         : `${results.length} motiver lagt til`
-      onDone(results, summary)
+      // Show an explicit end state with a close button instead of auto-closing —
+      // the PES files are already uploaded at this point, so the modal must never
+      // be able to get stuck even if something downstream (e.g. a preview) failed.
+      setDoneResult({ results, summary })
     } catch (err) {
       setUploading(false)
       setError(err instanceof Error ? err.message : 'Noe gikk galt')
+      setErrorDetails(describeError(err))
     }
   }
 
@@ -1120,7 +1176,7 @@ function UploadModal({ onDone, onClose }: {
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
         <div className="flex items-center justify-between mb-5">
           <h2 className="font-serif text-2xl text-stone-700">Last opp broderifiler</h2>
-          {!uploading && (
+          {!uploading && !doneResult && (
             <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-stone-100 text-stone-400 transition-colors">
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" />
@@ -1129,7 +1185,7 @@ function UploadModal({ onDone, onClose }: {
           )}
         </div>
 
-        {!uploading && (
+        {!uploading && !doneResult && (
           <>
             {/* Mode toggle */}
             <div className="mb-4">
@@ -1175,8 +1231,9 @@ function UploadModal({ onDone, onClose }: {
         )}
 
         {error && (
-          <div className="mb-4 px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
-            {error}
+          <div className="mb-4 px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700 space-y-2">
+            <p>{error}</p>
+            {errorDetails && <ErrorDetailsView details={errorDetails} context="Last opp broderifiler" />}
           </div>
         )}
 
@@ -1197,6 +1254,24 @@ function UploadModal({ onDone, onClose }: {
               {progressPct < 100 && <Spinner />}
               <span className="truncate">{progress || 'Behandler…'}</span>
             </div>
+          </div>
+        ) : doneResult ? (
+          <div className="py-5 space-y-4">
+            <div className="flex items-center gap-3 text-stone-600">
+              <svg className="w-8 h-8 text-emerald-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <div className="text-sm">
+                <p className="font-medium">{doneResult.summary}</p>
+                {progress && <p className="text-stone-400">{progress}</p>}
+              </div>
+            </div>
+            <button
+              onClick={() => onDone(doneResult.results, doneResult.summary)}
+              className="w-full py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors"
+            >
+              Lukk
+            </button>
           </div>
         ) : (
           <div className="space-y-3">

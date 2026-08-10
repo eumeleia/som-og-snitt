@@ -4,6 +4,7 @@ export const dynamic = 'force-dynamic'
 
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { supabase } from '@/lib/supabase'
+import { deepClone } from '@/lib/deep-clone'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -567,7 +568,7 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
   onSaved: () => void
   onDelete?: () => void
 }) {
-  const [form, setForm]             = useState<InventoryItemData>(() => structuredClone(item.data))
+  const [form, setForm]             = useState<InventoryItemData>(() => deepClone(item.data))
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
   const [showImgModal, setShowImgModal] = useState(false)
   const [toast, setToast]           = useState('')

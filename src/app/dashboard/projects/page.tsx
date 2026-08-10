@@ -5,6 +5,7 @@ export const dynamic = 'force-dynamic'
 import { useState, useEffect, useCallback, useRef, type ReactNode, type ChangeEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { supabase } from '@/lib/supabase'
+import { deepClone } from '@/lib/deep-clone'
 import { RecipePicker, type PickerRecipe } from '@/app/dashboard/_shared/RecipePicker'
 import {
   DndContext, closestCenter, PointerSensor, TouchSensor,
@@ -434,7 +435,7 @@ function NewProjectModal({ onCreated, onClose }: {
     try {
       const equipmentList = parseEquipmentList(recipe.data.otherEquipment ?? '')
       const projectData: ProjectData = {
-        ...structuredClone(EMPTY),
+        ...deepClone(EMPTY),
         name:          recipe.data.name ?? '',
         pdfs:          (recipe.data.pdfs ?? []).map(p => ({ ...p as PdfItem, id: uid() })),
         images:        (recipe.data.images ?? []).map(i => ({ ...i, id: uid() })),
@@ -460,7 +461,7 @@ function NewProjectModal({ onCreated, onClose }: {
     setMode('processing')
     setError('')
 
-    const projectData: ProjectData   = { ...structuredClone(EMPTY) }
+    const projectData: ProjectData   = { ...deepClone(EMPTY) }
     const recipeData: PendingRecipeData = {
       name: '', designer: '', category: '', sizes: [],
       recommendedFabrics: '', otherEquipment: '', notes: '',
@@ -606,7 +607,7 @@ function NewProjectModal({ onCreated, onClose }: {
     setError('')
     try {
       const projectData: ProjectData = {
-        ...structuredClone(EMPTY),
+        ...deepClone(EMPTY),
         name:     blankName.trim(),
         status:   blankStatus,
         category: blankCategory,
@@ -1581,8 +1582,8 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
   initialOpenPdfId?: string
 }) {
   const [form, setForm] = useState<ProjectData>(() => {
-    if (!project) return structuredClone(EMPTY)
-    const data: ProjectData = { ...structuredClone(EMPTY), ...structuredClone(project.data) }
+    if (!project) return deepClone(EMPTY)
+    const data: ProjectData = { ...deepClone(EMPTY), ...deepClone(project.data) }
     if ((data.pdfComments ?? []).length > 0 && (data.pdfAnnotations ?? []).length === 0) {
       data.pdfAnnotations = (data.pdfComments ?? []).map(c => ({
         id: c.id, pdfId: c.pdfId, page: c.page, text: c.text,
@@ -2988,7 +2989,7 @@ export default function ProjectsPage() {
   async function copyProject(p: Project) {
     const src = p.data
     const copyData: ProjectData = {
-      ...structuredClone(EMPTY),
+      ...deepClone(EMPTY),
       name:          `${src.name} (kopi)`,
       status:        'Planlagt',
       category:      src.category,

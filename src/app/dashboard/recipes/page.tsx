@@ -6,6 +6,9 @@ import { useState, useEffect, useCallback, useRef, type ReactNode, type ChangeEv
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { deepClone } from '@/lib/deep-clone'
+import { describeError, type ErrorDetails } from '@/lib/error-details'
+import { ErrorDetailsView } from '@/components/ErrorDetailsView'
 import {
   DndContext, closestCenter, PointerSensor, TouchSensor,
   useSensor, useSensors, type DragEndEvent,
@@ -221,15 +224,18 @@ async function extractPdfText(
 function normalizePdfText(text: string): string {
   // Collapse spaced-out decorative fonts: 'H e i d i' → 'Heidi'
   //
-  // Two fixes vs. the previous version:
+  // Fixes vs. the previous version:
   //   1. Use \s+ instead of \s – pdfjs sometimes inserts spaces inside items too,
   //      so letters may be separated by 2+ spaces rather than exactly 1.
   //   2. Use negative look-around instead of \b – JS \b is based on \w=[a-zA-Z0-9_]
   //      so it misses Nordic characters (Å, Ø, Æ, å, ø, æ etc.) as word chars.
   //   3. Require ≥4 consecutive single-letter tokens for a safer threshold.
+  //   4. No lookbehind (`(?<!`) — unsupported on iOS Safari < 16.4, and a regex
+  //      literal using it throws a SyntaxError at parse time, breaking the whole
+  //      module. The leading boundary is captured as a group and re-emitted instead.
   let normalized = text.replace(
-    /(?<![a-zA-ZÀ-ÿ])([a-zA-ZÀ-ÿ])(?:\s+([a-zA-ZÀ-ÿ])){3,}(?![a-zA-ZÀ-ÿ])/g,
-    (match) => match.replace(/\s+/g, '')
+    /([^a-zA-ZÀ-ÿ]|^)([a-zA-ZÀ-ÿ](?:\s+[a-zA-ZÀ-ÿ]){3,})(?![a-zA-ZÀ-ÿ])/g,
+    (_match, pre: string, letters: string) => pre + letters.replace(/\s+/g, '')
   )
   // Collapse multiple spaces to single (preserve newlines)
   normalized = normalized.replace(/[^\S\n]+/g, ' ')
@@ -489,7 +495,7 @@ function NewRecipeModal({ onCreate, onClose }: {
   const [mode, setMode]         = useState<'choose' | 'list' | 'creating' | 'blank'>('choose')
   const [pdfs, setPdfs]         = useState<PdfEntry[]>([])
   const [progress, setProgress] = useState('')
-  const [error, setError]       = useState('')
+  const [errorDetails, setErrorDetails] = useState<ErrorDetails | null>(null)
   const [analysisNote, setAnalysisNote] = useState('')
   const [blankName, setBlankName] = useState('')
   const [creating, setCreating] = useState(false)
@@ -519,11 +525,11 @@ function NewRecipeModal({ onCreate, onClose }: {
 
   async function handleCreate() {
     setMode('creating')
-    setError('')
+    setErrorDetails(null)
     setAnalysisNote('')
     setCreating(true)
 
-    const recipeData: RecipeData = { ...structuredClone(EMPTY) }
+    const recipeData: RecipeData = { ...deepClone(EMPTY) }
 
     try {
       const driveStatus = await fetch('/api/drive/status').then(r => r.json()) as { connected: boolean }
@@ -781,7 +787,7 @@ function NewRecipeModal({ onCreate, onClose }: {
       await onCreate(recipeData)
 
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Noe gikk galt. Prøv igjen.')
+      setErrorDetails(describeError(err))
       setCreating(false)
       setProgress('')
       setMode('list')
@@ -791,11 +797,11 @@ function NewRecipeModal({ onCreate, onClose }: {
   async function handleBlank() {
     if (!blankName.trim()) return
     setCreating(true)
-    setError('')
+    setErrorDetails(null)
     try {
-      await onCreate({ ...structuredClone(EMPTY), name: blankName.trim() })
-    } catch {
-      setError('Noe gikk galt. Prøv igjen.')
+      await onCreate({ ...deepClone(EMPTY), name: blankName.trim() })
+    } catch (err) {
+      setErrorDetails(describeError(err))
       setCreating(false)
     }
   }
@@ -831,9 +837,9 @@ function NewRecipeModal({ onCreate, onClose }: {
                 <p className="font-medium text-stone-700 mb-1">Last opp PDF</p>
                 <p className="text-xs text-stone-400">Anbefalt — navn, designer og størrelser fylles inn automatisk</p>
               </button>
-              {error && <p className="text-xs text-red-500">{error}</p>}
+              {errorDetails && <ErrorDetailsView details={errorDetails} context="Ny oppskrift" />}
               <button
-                onClick={() => { setError(''); setMode('blank') }}
+                onClick={() => { setErrorDetails(null); setMode('blank') }}
                 className="w-full py-2.5 text-sm text-stone-500 hover:text-stone-700 transition-colors">
                 Start tomt
               </button>
@@ -883,7 +889,11 @@ function NewRecipeModal({ onCreate, onClose }: {
                 </div>
               ))}
             </div>
-            {error && <p className="px-6 pt-2 text-xs text-red-500">{error}</p>}
+            {errorDetails && (
+              <div className="px-6 pt-2">
+                <ErrorDetailsView details={errorDetails} context="Ny oppskrift" />
+              </div>
+            )}
             <div className="p-6 pt-4 space-y-3">
               <button
                 onClick={() => fileInputRef.current?.click()}
@@ -933,7 +943,7 @@ function NewRecipeModal({ onCreate, onClose }: {
                   autoComplete="off" autoCapitalize="none" spellCheck={false}
                   placeholder="F.eks. Sommerkjole" />
               </div>
-              {error && <p className="text-xs text-red-500">{error}</p>}
+              {errorDetails && <ErrorDetailsView details={errorDetails} context="Ny oppskrift (tom)" />}
               <button
                 onClick={handleBlank}
                 disabled={!blankName.trim() || creating}
@@ -1464,7 +1474,7 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
 }) {
   const router = useRouter()
   const [form, setForm] = useState<RecipeData>(() =>
-    ({ ...structuredClone(EMPTY), ...structuredClone(recipe.data) })
+    ({ ...deepClone(EMPTY), ...deepClone(recipe.data) })
   )
   const [saveStatus, setSaveStatus]         = useState<SaveStatus>('idle')
   const [showImgModal, setShowImgModal]           = useState(false)
