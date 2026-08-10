@@ -10,8 +10,10 @@ import { SekvensPanel } from './SekvensPanel'
 import { EksportPanel } from './EksportPanel'
 import {
   type Embroidery, type EmbroiderySize, type BroderiMotivData, type BroderiBbox,
-  type BroderiKomposisjon, type PlassertMotiv, type SekvensElement, getCoverImage, getKats,
+  type BroderiKomposisjon, type PlassertMotiv, type SekvensElement, type EmbroideryBundle,
+  getCoverImage, getKatsMedArv,
 } from './types'
+import { KATEGORIER } from '../page'
 
 const RAMME_MM = 100
 const RAMME_HALV_TIENDEDEL_MM = (RAMME_MM / 2) * 10 // 500 — ±50 mm sentrert på origo
@@ -514,13 +516,26 @@ function PlassertMotivGruppe({ pm, data, bbox, valgt, utenforRamme, onPointerDow
   )
 }
 
-// ── Velg størrelse fra biblioteket ─────────────────────────────────────────────
+// ── Velg motiv, deretter størrelse ──────────────────────────────────────────────
 
-const INGEN_KAT = '__ingen__'
 const RAMME_GRENSE_MM = 98
 
 type BboxMm = { widthMm: number; heightMm: number }
 type ParseFremgang = { done: number; total: number; errors: number }
+
+interface MotivRad {
+  motiv: Embroidery
+  bundleNavn: string | null
+  kats: string[]
+  katArvet: boolean
+  antallStorrelser: number
+  antallPasser: number
+  antallIkkeMålt: number
+}
+
+function sorterNavn(a: MotivRad, b: MotivRad): number {
+  return (a.motiv.data.navn || '').localeCompare(b.motiv.data.navn || '', 'nb')
+}
 
 function MotivPicker({ biblioteket, onVelg, onClose }: {
   biblioteket: Embroidery[]
@@ -531,15 +546,22 @@ function MotivPicker({ biblioteket, onVelg, onClose }: {
   const [filterPaaRamme, setFilterPaaRamme] = useState(true)
   const [bboxCache, setBboxCache] = useState<Map<string, BboxMm | null>>(new Map())
   const [cacheLastet, setCacheLastet] = useState(false)
-  const [geslutten, setGeslutten] = useState<Set<string>>(new Set())
+  const [bundler, setBundler] = useState<Map<string, EmbroideryBundle>>(new Map())
+  const [kategoriOverstyringer, setKategoriOverstyringer] = useState<Map<string, string>>(new Map())
   const [parserAlle, setParserAlle] = useState(false)
   const [parseFremgang, setParseFremgang] = useState<ParseFremgang | null>(null)
+  const [valgtMotiv, setValgtMotiv] = useState<Embroidery | null>(null)
+  const avbrytRef = useRef(false)
+
+  useEffect(() => {
+    return () => { avbrytRef.current = true }
+  }, [])
 
   useEffect(() => {
     supabase.from('broderi_motiv').select('embroidery_id, size_id, data').then(({ data }) => {
       const map = new Map<string, BboxMm | null>()
       for (const row of (data ?? [])) {
-        const r = row as { embroidery_id: string; size_id: string; data: { bbox?: { min_x: number; min_y: number; max_x: number; max_y: number } } }
+        const r = row as { embroidery_id: string; size_id: string; data: { bbox?: BroderiBbox } }
         const bbox = r.data?.bbox
         map.set(`${r.embroidery_id}:${r.size_id}`, bbox
           ? { widthMm: (bbox.max_x - bbox.min_x) / 10, heightMm: (bbox.max_y - bbox.min_y) / 10 }
@@ -550,55 +572,106 @@ function MotivPicker({ biblioteket, onVelg, onClose }: {
     })
   }, [])
 
+  useEffect(() => {
+    supabase.from('embroidery_bundles').select('*').then(({ data }) => {
+      const map = new Map<string, EmbroideryBundle>()
+      for (const row of ((data ?? []) as EmbroideryBundle[])) map.set(row.id, row)
+      setBundler(map)
+    })
+  }, [])
+
   const alleStoerr = useMemo(() =>
-    biblioteket.flatMap(m =>
-      (m.data.sizes ?? []).map(s => ({ m, s, key: `${m.id}:${s.id}`, kats: getKats(m.data) }))
-    ),
+    biblioteket.flatMap(m => (m.data.sizes ?? []).map(s => ({ m, s, key: `${m.id}:${s.id}` }))),
     [biblioteket],
   )
 
-  const antallUparset = useMemo(
-    () => alleStoerr.filter(({ key }) => !bboxCache.has(key)).length,
-    [alleStoerr, bboxCache],
-  )
+  // Tre globale tall, uavhengig av søk/filter — et helsetall for hele biblioteket, ikke bare
+  // det som vises nå. En størrelse telles "ikke målt" både når parsing aldri er forsøkt OG når
+  // den er forsøkt og feilet (f.eks. den ødelagte Vintage Rose-nøkkelen) — begge betyr at vi
+  // ikke vet om den passer, som er nettopp det "ikke målt" skal formidle. Aldri "?" — det leses
+  // for lett som et mål.
+  const { antallPasserGlobalt, antallPasserIkkeGlobalt, antallIkkeMåltGlobalt } = useMemo(() => {
+    let passer = 0, passerIkke = 0, ikkeMålt = 0
+    for (const { key } of alleStoerr) {
+      const b = bboxCache.get(key)
+      if (b === undefined || b === null) ikkeMålt++
+      else if (b.widthMm < RAMME_GRENSE_MM && b.heightMm < RAMME_GRENSE_MM) passer++
+      else passerIkke++
+    }
+    return { antallPasserGlobalt: passer, antallPasserIkkeGlobalt: passerIkke, antallIkkeMåltGlobalt: ikkeMålt }
+  }, [alleStoerr, bboxCache])
+
+  // Bare de som ALDRI er forsøkt — en permanent feilet parsing (som en backslash-ødelagt
+  // storage-nøkkel) skal ikke kø-es opp igjen for hver gang "Parse"-knappen trykkes. Siden
+  // bboxCache kommer fra broderi_motiv-tabellen (persistert), er dette naturlig gjenopptakbart
+  // på nytt besøk også — bare det som faktisk mangler blir liggende i køen.
+  const ikkeForsokt = useMemo(() => alleStoerr.filter(({ key }) => !bboxCache.has(key)), [alleStoerr, bboxCache])
+
+  function settKategoriOverstyring(motiv: Embroidery, ny: string) {
+    setKategoriOverstyringer(prev => new Map(prev).set(motiv.id, ny))
+    supabase.from('embroidery')
+      .update({ data: { ...motiv.data, kategori: ny, kategorier: ny ? [ny] : [] } })
+      .eq('id', motiv.id)
+      .then(({ error }) => {
+        if (error) console.error('[MotivPicker] Klarte ikke lagre kategori', error)
+      })
+  }
+
+  const motivRader: MotivRad[] = useMemo(() => biblioteket.map(motiv => {
+    const sizes = motiv.data.sizes ?? []
+    let antallPasser = 0
+    let antallIkkeMålt = 0
+    for (const s of sizes) {
+      const b = bboxCache.get(`${motiv.id}:${s.id}`)
+      if (b === undefined || b === null) antallIkkeMålt++
+      else if (b.widthMm < RAMME_GRENSE_MM && b.heightMm < RAMME_GRENSE_MM) antallPasser++
+    }
+    const bundle = motiv.data.bundleId ? bundler.get(motiv.data.bundleId) : undefined
+    const overstyring = kategoriOverstyringer.get(motiv.id)
+    const egetData = overstyring !== undefined
+      ? { ...motiv.data, kategori: overstyring, kategorier: overstyring ? [overstyring] : [] }
+      : motiv.data
+    const { kats, arvet } = getKatsMedArv(egetData, bundle?.data)
+    return {
+      motiv, bundleNavn: bundle?.data.navn ?? null, kats, katArvet: arvet,
+      antallStorrelser: sizes.length, antallPasser, antallIkkeMålt,
+    }
+  }), [biblioteket, bboxCache, bundler, kategoriOverstyringer])
 
   const searchQ = search.toLowerCase().trim()
+  const synlige = useMemo(() => motivRader.filter(r => {
+    if (!searchQ) return true
+    return !!r.motiv.data.navn?.toLowerCase().includes(searchQ) || !!r.bundleNavn?.toLowerCase().includes(searchQ)
+  }), [motivRader, searchQ])
 
-  const synlige = useMemo(() =>
-    alleStoerr.filter(({ m, s, key }) => {
-      if (searchQ && !m.data.navn?.toLowerCase().includes(searchQ) && !s.sizeLabel.toLowerCase().includes(searchQ)) return false
-      if (filterPaaRamme) {
-        const b = bboxCache.get(key)
-        if (b !== undefined && b !== null && (b.widthMm >= RAMME_GRENSE_MM || b.heightMm >= RAMME_GRENSE_MM)) return false
-      }
-      return true
-    }),
-    [alleStoerr, searchQ, filterPaaRamme, bboxCache],
-  )
-
-  const antallSkjult = alleStoerr.length - synlige.length
-
-  const grupper = useMemo(() => {
-    const map = new Map<string, typeof synlige>()
-    for (const item of synlige) {
-      const kat = item.kats[0] ?? INGEN_KAT
-      if (!map.has(kat)) map.set(kat, [])
-      map.get(kat)!.push(item)
+  // Med filteret på: motiver med minst én bekreftet passende størrelse først, deretter — i en
+  // TYDELIG atskilt bolk — motiver der ingen er bekreftet men noen fortsatt er ikke målt (kan
+  // fortsatt passe). Motiver der ALLE størrelser er bekreftet for store skjules helt.
+  const { passerListe, ikkeMåltListe, antallSkjultHelt } = useMemo(() => {
+    if (!filterPaaRamme) {
+      return { passerListe: [...synlige].sort(sorterNavn), ikkeMåltListe: [] as MotivRad[], antallSkjultHelt: 0 }
     }
-    const entries = [...map.entries()]
-    return [
-      ...entries.filter(([k]) => k !== INGEN_KAT).sort(([a], [b]) => a.localeCompare(b, 'nb')),
-      ...entries.filter(([k]) => k === INGEN_KAT),
-    ].map(([kat, items]) => ({ kat, items }))
-  }, [synlige])
+    const passer: MotivRad[] = []
+    const ikkeMålt: MotivRad[] = []
+    let skjult = 0
+    for (const r of synlige) {
+      if (r.antallPasser > 0) passer.push(r)
+      else if (r.antallIkkeMålt > 0) ikkeMålt.push(r)
+      else skjult++
+    }
+    passer.sort(sorterNavn)
+    ikkeMålt.sort(sorterNavn)
+    return { passerListe: passer, ikkeMåltListe: ikkeMålt, antallSkjultHelt: skjult }
+  }, [synlige, filterPaaRamme])
 
   async function parseAlle() {
-    const koe = alleStoerr.filter(({ key }) => !bboxCache.has(key))
-    if (!koe.length) return
+    if (!ikkeForsokt.length) return
+    avbrytRef.current = false
     setParserAlle(true)
-    setParseFremgang({ done: 0, total: koe.length, errors: 0 })
-    for (let i = 0; i < koe.length; i += 3) {
-      await Promise.all(koe.slice(i, i + 3).map(async ({ m, s, key }) => {
+    setParseFremgang({ done: 0, total: ikkeForsokt.length, errors: 0 })
+    for (let i = 0; i < ikkeForsokt.length; i += 3) {
+      if (avbrytRef.current) break
+      await Promise.all(ikkeForsokt.slice(i, i + 3).map(async ({ m, s, key }) => {
         let ok = false
         try {
           const res = await fetch('/api/broderi-motiv/parse', {
@@ -619,18 +692,17 @@ function MotivPicker({ biblioteket, onVelg, onClose }: {
         } catch {
           setBboxCache(prev => new Map(prev).set(key, null))
         }
-        setParseFremgang(p => p ? { done: p.done + 1, total: p.total, errors: p.errors + (ok ? 0 : 1) } : null)
+        if (!avbrytRef.current) {
+          setParseFremgang(p => p ? { done: p.done + 1, total: p.total, errors: p.errors + (ok ? 0 : 1) } : null)
+        }
       }))
     }
     setParserAlle(false)
   }
 
-  function toggleGruppe(kat: string) {
-    setGeslutten(prev => {
-      const n = new Set(prev)
-      n.has(kat) ? n.delete(kat) : n.add(kat)
-      return n
-    })
+  function avbrytParsing() {
+    avbrytRef.current = true
+    setParserAlle(false)
   }
 
   return (
@@ -638,139 +710,257 @@ function MotivPicker({ biblioteket, onVelg, onClose }: {
       <div className="fixed inset-0 bg-black/30 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col" style={{ maxHeight: '85vh' }}>
 
-        <div className="px-5 py-4 border-b border-stone-100 flex-shrink-0">
-          <div className="flex items-baseline justify-between mb-3">
-            <h3 className="font-serif text-xl text-stone-800">Velg størrelse</h3>
-            {cacheLastet && (
-              <span className="text-xs shrink-0 ml-3">
-                <span className="text-stone-400">{synlige.length} vist</span>
-                {antallSkjult > 0 && <span className="text-amber-600"> · {antallSkjult} skjult</span>}
-              </span>
-            )}
-          </div>
-          <div className="relative mb-3">
-            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 pointer-events-none"
-              fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-            </svg>
-            <input
-              type="search" value={search} onChange={e => setSearch(e.target.value)} autoFocus
-              placeholder="Søk på navn…"
-              className="w-full pl-9 pr-4 py-2 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300"
-            />
-          </div>
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox" checked={filterPaaRamme} onChange={e => setFilterPaaRamme(e.target.checked)}
-              className="w-4 h-4 rounded accent-[#C9A57A]"
-            />
-            <span className="text-sm text-stone-600">Bare størrelser som passer i rammen (&lt;{RAMME_GRENSE_MM} mm)</span>
-          </label>
-        </div>
-
-        <div className="overflow-y-auto flex-1 min-h-0">
-          {!cacheLastet ? (
-            <div className="flex justify-center py-10">
-              <div className="w-6 h-6 border-2 border-stone-200 border-t-stone-600 rounded-full animate-spin" />
-            </div>
-          ) : grupper.length === 0 ? (
-            <p className="text-sm text-stone-400 text-center py-12">
-              {alleStoerr.length === 0 ? 'Ingen motiver i biblioteket.' : 'Ingen treff.'}
-            </p>
-          ) : grupper.map(({ kat, items }) => {
-            const aapen = !geslutten.has(kat)
-            return (
-              <div key={kat}>
-                <button
-                  onClick={() => toggleGruppe(kat)}
-                  className="w-full flex items-center justify-between px-5 py-2 bg-stone-50 hover:bg-stone-100 transition-colors sticky top-0 z-10"
-                >
-                  <span className="text-xs font-semibold text-stone-500 uppercase tracking-wide">
-                    {kat === INGEN_KAT ? 'Uten kategori' : kat}
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-stone-400 bg-white px-1.5 py-0.5 rounded border border-stone-100">{items.length}</span>
-                    <svg className={`w-4 h-4 text-stone-300 transition-transform ${aapen ? '' : '-rotate-90'}`}
-                      fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                    </svg>
-                  </div>
-                </button>
-                {aapen && (
-                  <ul className="divide-y divide-stone-100">
-                    {items.map(({ m, s, key }) => {
-                      const cover = getCoverImage(m.data)
-                      const b = bboxCache.get(key)
-                      const dims = b === undefined
-                        ? null
-                        : b === null
-                          ? 'Ukjent'
-                          : `${b.widthMm.toFixed(1)} × ${b.heightMm.toFixed(1)} mm`
-                      return (
-                        <li key={key}>
-                          <button
-                            onClick={() => onVelg(m, s)}
-                            className="w-full flex items-center gap-3 px-5 py-2.5 hover:bg-stone-50 transition-colors text-left"
-                          >
-                            <div className="w-10 h-10 rounded-lg overflow-hidden bg-stone-100 flex-shrink-0">
-                              {cover && (
-                                // eslint-disable-next-line @next/next/no-img-element
-                                <img src={cover} alt={m.data.navn} className="w-full h-full object-cover" />
-                              )}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <p className="text-sm text-stone-800 truncate">{m.data.navn || 'Uten navn'}</p>
-                              <p className="text-xs text-stone-400">{s.sizeLabel}</p>
-                            </div>
-                            <span className={`text-xs flex-shrink-0 tabular-nums ${dims === null ? 'text-stone-300 italic' : 'text-stone-500'}`}>
-                              {dims === null ? '? × ? mm' : dims}
-                            </span>
-                          </button>
-                        </li>
-                      )
-                    })}
-                  </ul>
-                )}
-              </div>
-            )
-          })}
-        </div>
-
-        <div className="px-5 py-3 border-t border-stone-100 flex-shrink-0">
-          {parseFremgang && (
-            <div className="mb-2">
-              <div className="flex justify-between text-xs text-stone-400 mb-1">
-                <span>Parser størrelser…</span>
-                <span>
-                  {parseFremgang.done}/{parseFremgang.total}
-                  {parseFremgang.errors > 0 && <span className="text-red-400"> · {parseFremgang.errors} feil</span>}
-                </span>
-              </div>
-              <div className="h-1.5 bg-stone-100 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-[#C9A57A] transition-all duration-300"
-                  style={{ width: `${(parseFremgang.done / parseFremgang.total) * 100}%` }}
+        {valgtMotiv ? (
+          <StorrelseVelger
+            motiv={valgtMotiv}
+            bboxCache={bboxCache}
+            onVelg={s => onVelg(valgtMotiv, s)}
+            onTilbake={() => setValgtMotiv(null)}
+          />
+        ) : (
+          <>
+            <div className="px-5 py-4 border-b border-stone-100 flex-shrink-0">
+              <h3 className="font-serif text-xl text-stone-800 mb-3">Velg motiv</h3>
+              <div className="relative mb-3">
+                <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 pointer-events-none"
+                  fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                    d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+                <input
+                  type="search" value={search} onChange={e => setSearch(e.target.value)} autoFocus
+                  placeholder="Søk på navn eller bundle…"
+                  className="w-full pl-9 pr-4 py-2 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300"
                 />
               </div>
+              <label className="flex items-center gap-2 cursor-pointer mb-2">
+                <input
+                  type="checkbox" checked={filterPaaRamme} onChange={e => setFilterPaaRamme(e.target.checked)}
+                  className="w-4 h-4 rounded accent-[#C9A57A]"
+                />
+                <span className="text-sm text-stone-600">Bare motiver med minst én størrelse som passer i rammen (&lt;{RAMME_GRENSE_MM} mm)</span>
+              </label>
+              {cacheLastet && (
+                <p className="text-xs text-stone-400">
+                  <span className="text-stone-500">{antallPasserGlobalt} passer</span>
+                  {' · '}
+                  <span className="text-stone-500">{antallPasserIkkeGlobalt} passer ikke</span>
+                  {' · '}
+                  <span className="text-amber-600">{antallIkkeMåltGlobalt} ikke målt</span>
+                </p>
+              )}
             </div>
-          )}
-          <div className="flex gap-2">
-            {antallUparset > 0 && (
-              <button
-                onClick={parseAlle}
-                disabled={parserAlle}
-                className="flex-1 py-2 text-xs text-stone-500 border border-stone-200 rounded-lg hover:border-stone-400 transition-colors disabled:opacity-50"
-              >
-                {parserAlle ? 'Parser…' : `Parse ${antallUparset} ${antallUparset === 1 ? 'størrelse' : 'størrelser'}`}
-              </button>
-            )}
-            <button onClick={onClose} className="flex-1 py-2 text-sm text-stone-400 hover:text-stone-600 transition-colors">
-              Avbryt
-            </button>
-          </div>
-        </div>
+
+            <div className="overflow-y-auto flex-1 min-h-0">
+              {!cacheLastet ? (
+                <div className="flex justify-center py-10">
+                  <div className="w-6 h-6 border-2 border-stone-200 border-t-stone-600 rounded-full animate-spin" />
+                </div>
+              ) : passerListe.length === 0 && ikkeMåltListe.length === 0 ? (
+                <p className="text-sm text-stone-400 text-center py-12">
+                  {motivRader.length === 0 ? 'Ingen motiver i biblioteket.' : 'Ingen treff.'}
+                </p>
+              ) : (
+                <>
+                  <ul className="divide-y divide-stone-100">
+                    {passerListe.map(r => (
+                      <MotivRadVisning
+                        key={r.motiv.id} rad={r}
+                        onVelg={() => setValgtMotiv(r.motiv)}
+                        onKategoriEndret={ny => settKategoriOverstyring(r.motiv, ny)}
+                      />
+                    ))}
+                  </ul>
+                  {ikkeMåltListe.length > 0 && (
+                    <>
+                      <div className="px-5 py-2 bg-stone-50 sticky top-0 z-10 border-y border-stone-100">
+                        <span className="text-xs font-semibold text-stone-500 uppercase tracking-wide">
+                          Ikke målt ennå — kan passe
+                        </span>
+                      </div>
+                      <ul className="divide-y divide-stone-100">
+                        {ikkeMåltListe.map(r => (
+                          <MotivRadVisning
+                            key={r.motiv.id} rad={r}
+                            onVelg={() => setValgtMotiv(r.motiv)}
+                            onKategoriEndret={ny => settKategoriOverstyring(r.motiv, ny)}
+                          />
+                        ))}
+                      </ul>
+                    </>
+                  )}
+                  {filterPaaRamme && antallSkjultHelt > 0 && (
+                    <p className="text-xs text-stone-400 text-center py-3">
+                      {antallSkjultHelt} motiv{antallSkjultHelt === 1 ? '' : 'er'} skjult — alle størrelser er bekreftet for store
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+
+            <div className="px-5 py-3 border-t border-stone-100 flex-shrink-0">
+              {parseFremgang && (
+                <div className="mb-2">
+                  <div className="flex justify-between text-xs text-stone-400 mb-1">
+                    <span>Parser størrelser…</span>
+                    <span>
+                      {parseFremgang.done}/{parseFremgang.total}
+                      {parseFremgang.errors > 0 && <span className="text-red-400"> · {parseFremgang.errors} feil</span>}
+                    </span>
+                  </div>
+                  <div className="h-1.5 bg-stone-100 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-[#C9A57A] transition-all duration-300"
+                      style={{ width: `${(parseFremgang.done / parseFremgang.total) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+              <div className="flex gap-2">
+                {parserAlle ? (
+                  <button
+                    onClick={avbrytParsing}
+                    className="flex-1 py-2 text-xs text-red-500 border border-red-200 rounded-lg hover:border-red-400 transition-colors"
+                  >
+                    Avbryt parsing
+                  </button>
+                ) : ikkeForsokt.length > 0 ? (
+                  <button
+                    onClick={parseAlle}
+                    className="flex-1 py-2 text-xs text-stone-500 border border-stone-200 rounded-lg hover:border-stone-400 transition-colors"
+                  >
+                    {`Parse ${ikkeForsokt.length} ${ikkeForsokt.length === 1 ? 'størrelse' : 'størrelser'}`}
+                  </button>
+                ) : null}
+                <button onClick={onClose} className="flex-1 py-2 text-sm text-stone-400 hover:text-stone-600 transition-colors">
+                  Avbryt
+                </button>
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
+  )
+}
+
+function MotivRadVisning({ rad, onVelg, onKategoriEndret }: {
+  rad: MotivRad
+  onVelg: () => void
+  onKategoriEndret: (ny: string) => void
+}) {
+  const { motiv, bundleNavn, kats, katArvet, antallStorrelser, antallPasser } = rad
+  const cover = getCoverImage(motiv.data)
+  return (
+    <li>
+      <div className="w-full flex items-center gap-3 px-5 py-2.5 hover:bg-stone-50 transition-colors">
+        <button onClick={onVelg} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+          <div className="w-10 h-10 rounded-lg overflow-hidden bg-stone-100 flex-shrink-0">
+            {cover && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={cover} alt={motiv.data.navn} className="w-full h-full object-cover" />
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm text-stone-800 truncate">{motiv.data.navn || 'Uten navn'}</p>
+            <p className="text-xs text-stone-400 truncate">
+              {bundleNavn ?? 'Løst motiv'} · {antallPasser}/{antallStorrelser} størrelser passer
+            </p>
+          </div>
+        </button>
+        <KategoriChip kats={kats} arvet={katArvet} onEndret={onKategoriEndret} />
+      </div>
+    </li>
+  )
+}
+
+function KategoriChip({ kats, arvet, onEndret }: {
+  kats: string[]
+  arvet: boolean
+  onEndret: (ny: string) => void
+}) {
+  const [redigerer, setRedigerer] = useState(false)
+
+  if (redigerer) {
+    return (
+      <select
+        autoFocus
+        defaultValue={kats[0] ?? ''}
+        onClick={e => e.stopPropagation()}
+        onChange={e => { onEndret(e.target.value); setRedigerer(false) }}
+        onBlur={() => setRedigerer(false)}
+        className="text-xs border border-stone-300 rounded-lg px-1.5 py-1 bg-white flex-shrink-0"
+      >
+        <option value="">Uten kategori</option>
+        {KATEGORIER.map(k => <option key={k} value={k}>{k}</option>)}
+      </select>
+    )
+  }
+
+  return (
+    <button
+      onClick={e => { e.stopPropagation(); setRedigerer(true) }}
+      title={kats.length === 0 ? 'Sett kategori' : arvet ? 'Arvet fra bundle — klikk for å overstyre' : 'Klikk for å endre'}
+      className={`text-xs px-2 py-1 rounded-lg border flex-shrink-0 whitespace-nowrap transition-colors ${
+        kats.length === 0
+          ? 'text-stone-300 border-stone-200 hover:border-stone-400'
+          : arvet
+            ? 'text-stone-500 border-dashed border-stone-300 hover:border-stone-400'
+            : 'text-stone-600 border-stone-200 hover:border-stone-400'
+      }`}
+    >
+      {kats[0] ?? 'Uten kategori'}{arvet && kats.length > 0 ? ' (arvet)' : ''}
+    </button>
+  )
+}
+
+function StorrelseVelger({ motiv, bboxCache, onVelg, onTilbake }: {
+  motiv: Embroidery
+  bboxCache: Map<string, BboxMm | null>
+  onVelg: (size: EmbroiderySize) => void
+  onTilbake: () => void
+}) {
+  const sizes = motiv.data.sizes ?? []
+  return (
+    <>
+      <div className="px-5 py-4 border-b border-stone-100 flex-shrink-0 flex items-center gap-3">
+        <button onClick={onTilbake} className="p-1 -ml-1 rounded-lg hover:bg-stone-100 text-stone-500 transition-colors flex-shrink-0">
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 19l-7-7 7-7" />
+          </svg>
+        </button>
+        <h3 className="font-serif text-xl text-stone-800 truncate">{motiv.data.navn || 'Uten navn'}</h3>
+      </div>
+      <div className="overflow-y-auto flex-1 min-h-0 p-3">
+        {sizes.length === 0 ? (
+          <p className="text-sm text-stone-400 text-center py-12">Motivet har ingen størrelser.</p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {sizes.map(s => {
+              const b = bboxCache.get(`${motiv.id}:${s.id}`)
+              const overGrense = b ? (b.widthMm >= RAMME_GRENSE_MM || b.heightMm >= RAMME_GRENSE_MM) : false
+              const dims = b ? `${b.widthMm.toFixed(1)} × ${b.heightMm.toFixed(1)} mm` : 'Ikke målt'
+              return (
+                <button
+                  key={s.id}
+                  onClick={() => onVelg(s)}
+                  className="flex flex-col items-start px-3 py-2 rounded-lg border border-stone-200 text-left hover:border-stone-400 transition-colors"
+                >
+                  <span className="text-sm text-stone-700">{s.sizeLabel}</span>
+                  <span className={`text-xs ${overGrense ? 'text-red-500' : b ? 'text-stone-500' : 'text-stone-300 italic'}`}>
+                    {dims}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+      <div className="px-5 py-3 border-t border-stone-100 flex-shrink-0">
+        <button onClick={onTilbake} className="w-full py-2 text-sm text-stone-400 hover:text-stone-600 transition-colors">
+          Tilbake
+        </button>
+      </div>
+    </>
   )
 }

@@ -75,7 +75,7 @@ type SortOrder = 'newest' | 'oldest' | 'name' | 'manual'
 type SaveStatus = 'idle' | 'saving' | 'saved'
 type View = 'gallery' | 'bundle' | 'motif'
 
-const KATEGORIER = [
+export const KATEGORIER = [
   'Frukt', 'Bær', 'Dyr', 'Blomster', 'Natur', 'Rosemaling',
   'Høytider', 'Rammer', 'Figurer', 'Bunad', 'Baby', 'Bokstaver', 'Monogram', 'Annet',
 ]
@@ -1098,7 +1098,12 @@ function UploadModal({ onDone, onClose }: {
         zip.forEach((relativePath, zipEntry) => {
           if (zipEntry.dir) return
           const lower = relativePath.toLowerCase()
-          const name = relativePath.split('/').pop() ?? relativePath
+          // Windows-bygde ZIP-er kan ha \ som stiseparator internt i arkivet — uten denne
+          // normaliseringen blir hele den interne stien (med backslash og alt) brukt som
+          // filnavn, som til slutt ender opp i storage-objektnøkkelen og gir en ubrukelig
+          // (%5C-kodet) URL. parsePesPath/pathCategory normaliserer allerede — dette var
+          // det eneste stedet som ikke gjorde det.
+          const name = relativePath.replace(/\\/g, '/').split('/').pop() ?? relativePath
           if (lower.endsWith('.pes')) {
             zipPes.push({ name, path: relativePath, getData: () => zipEntry.async('uint8array') })
           } else if (/\.(bmp|jpg|jpeg|png)$/.test(lower)) {

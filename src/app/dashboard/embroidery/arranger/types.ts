@@ -14,6 +14,7 @@ export interface EmbroideryData {
   navn: string
   kategori?: string
   kategorier?: string[]
+  bundleId?: string
   coverImage: string
   bmpPreview: string
   customImage: string
@@ -27,10 +28,42 @@ export function getKats(data: { kategori?: string; kategorier?: string[] }): str
   return []
 }
 
+// Kategori settes i dag på bundelen, ikke på hver enkelt fil — uten dette blir de aller
+// fleste motivene i en bundle stående som ukategoriserte. Arver bundelens kategori bare når
+// motivet ikke har en egen (aldri kopiert ved opplasting, så en senere endring på bundelen
+// slår gjennom til alle filene som ikke har overstyrt den selv).
+export function getKatsMedArv(
+  motivData: { kategori?: string; kategorier?: string[] },
+  bundleData?: { kategori?: string; kategorier?: string[] },
+): { kats: string[]; arvet: boolean } {
+  const eget = getKats(motivData)
+  if (eget.length > 0) return { kats: eget, arvet: false }
+  if (bundleData) {
+    const arvet = getKats(bundleData)
+    if (arvet.length > 0) return { kats: arvet, arvet: true }
+  }
+  return { kats: [], arvet: false }
+}
+
 export interface Embroidery {
   id: string
   created_at: string
   data: EmbroideryData
+}
+
+export interface EmbroideryBundleData {
+  navn: string
+  kategori?: string
+  kategorier?: string[]
+  coverImage: string
+  customImage: string
+  useCustomImage: boolean
+}
+
+export interface EmbroideryBundle {
+  id: string
+  created_at: string
+  data: EmbroideryBundleData
 }
 
 export interface BroderiBbox {
