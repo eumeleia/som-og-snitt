@@ -69,6 +69,22 @@ export function plassertBbox(
   return plassertUnderBbox(motivBbox, motivBbox, rotasjonGrader, posisjonXTiendedelMm, posisjonYTiendedelMm)
 }
 
+// Roterer OG plasserer stingpunkter — samme to steg som rendringen gjør (roterLokalePunkter,
+// deretter en SVG-translasjon), bare at addisjonen her gjøres i koden i stedet for av SVG-en.
+// Addisjon er eksakt uansett hvem som gjør den, så dette er IKKE en ny transformasjon — det
+// er de samme to primitivene brukt av rendringen og bbox-utregningen, satt sammen én gang.
+// Brukes til PES-eksport, som må ha de faktiske absolutte stingkoordinatene.
+export function plassertPunkter(
+  sting: [number, number][],
+  motivBbox: BroderiBbox,
+  rotasjonGrader: number,
+  posisjonXTiendedelMm: number,
+  posisjonYTiendedelMm: number,
+): [number, number][] {
+  const roterte = roterLokalePunkter(sting, motivBbox, rotasjonGrader)
+  return roterte.map(([x, y]) => [x + posisjonXTiendedelMm, y + posisjonYTiendedelMm])
+}
+
 export function kombinerBbox(bokser: BroderiBbox[]): BroderiBbox | null {
   if (bokser.length === 0) return null
   return {

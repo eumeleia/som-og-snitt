@@ -7,6 +7,7 @@ import { ErrorDetailsView } from '@/components/ErrorDetailsView'
 import { roterLokalePunkter, plassertBbox, kombinerBbox } from './geometri'
 import { synkroniserSekvens } from './sekvens'
 import { SekvensPanel } from './SekvensPanel'
+import { EksportPanel } from './EksportPanel'
 import {
   type Embroidery, type EmbroiderySize, type BroderiMotivData, type BroderiBbox,
   type BroderiKomposisjon, type PlassertMotiv, type SekvensElement, getCoverImage, getKats,
@@ -433,6 +434,12 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
         <div className="mt-6">
           <h3 className="font-serif text-lg text-stone-700 mb-3">Sekvens</h3>
           <SekvensPanel sekvens={sekvens} onChange={setSekvens} motiver={motiver} resolved={resolved} />
+        </div>
+      )}
+
+      {sekvens.length > 0 && (
+        <div className="mt-6">
+          <EksportPanel sekvens={sekvens} motiver={motiver} resolved={resolved} navn={navn} />
         </div>
       )}
 
