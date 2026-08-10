@@ -5,13 +5,15 @@ import { supabase } from '@/lib/supabase'
 import { describeError, type ErrorDetails } from '@/lib/error-details'
 import { ErrorDetailsView } from '@/components/ErrorDetailsView'
 import { roterLokalePunkter, plassertBbox, kombinerBbox } from './geometri'
+import { synkroniserSekvens } from './sekvens'
+import { SekvensPanel } from './SekvensPanel'
 import {
   type Embroidery, type EmbroiderySize, type BroderiMotivData, type BroderiBbox,
-  type BroderiKomposisjon, type PlassertMotiv, getCoverImage,
+  type BroderiKomposisjon, type PlassertMotiv, type SekvensElement, getCoverImage,
 } from './types'
 
 const RAMME_MM = 100
-const ADVARSEL_GRENSE_MM = 98
+const RAMME_HALV_TIENDEDEL_MM = (RAMME_MM / 2) * 10 // 500 — ±50 mm sentrert på origo
 
 function uid() {
   return Math.random().toString(36).slice(2, 10)
@@ -19,6 +21,30 @@ function uid() {
 
 function motivKey(embroideryId: string, sizeId: string): string {
   return `${embroideryId}:${sizeId}`
+}
+
+const ROTASJON_SNAPP_PUNKTER = [-180, -90, 0, 90, 180]
+const ROTASJON_SNAPP_TERSKEL = 4
+
+function snappRotasjon(v: number): number {
+  for (const punkt of ROTASJON_SNAPP_PUNKTER) {
+    if (Math.abs(v - punkt) <= ROTASJON_SNAPP_TERSKEL) return punkt === -180 ? 180 : punkt
+  }
+  return v
+}
+
+// Normaliserer en vinkel til (-180, 180] bare for å vise riktig håndtak-posisjon på
+// glideren når den lagrede verdien kommer fra tallfeltet og ligger utenfor det området.
+function normaliserForGlider(v: number): number {
+  const m = ((v % 360) + 540) % 360 - 180
+  return m
+}
+
+function erUtenforRamme(bbox: BroderiBbox): boolean {
+  return (
+    bbox.min_x < -RAMME_HALV_TIENDEDEL_MM || bbox.max_x > RAMME_HALV_TIENDEDEL_MM ||
+    bbox.min_y < -RAMME_HALV_TIENDEDEL_MM || bbox.max_y > RAMME_HALV_TIENDEDEL_MM
+  )
 }
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
@@ -31,6 +57,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
   const [id, setId] = useState<string | null>(komposisjon?.id ?? null)
   const [navn, setNavn] = useState(komposisjon?.data.navn ?? 'Ny komposisjon')
   const [motiver, setMotiver] = useState<PlassertMotiv[]>(komposisjon?.data.motiver ?? [])
+  const [sekvens, setSekvens] = useState<SekvensElement[]>(komposisjon?.data.sekvens ?? [])
   const [valgtId, setValgtId] = useState<string | null>(null)
   const [showPicker, setShowPicker] = useState(false)
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
@@ -90,6 +117,12 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
     }
   }, [motiver, resolved, fetchErrors, sikreMotivData])
 
+  // Legger fargekjøringene til nylig tilkomne (og nå tolkede) motiver til sekvensen,
+  // og fjerner elementer for motiver som er slettet — se synkroniserSekvens.
+  useEffect(() => {
+    setSekvens(s => synkroniserSekvens(s, { motiver, resolved }))
+  }, [motiver, resolved])
+
   function leggTilMotiv(motiv: Embroidery, size: EmbroiderySize) {
     const nyId = uid()
     const kaskade = motiver.length * 50 // 5 mm forskyvning per nytt motiv, så de ikke stables eksakt
@@ -134,21 +167,34 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [valgtId])
 
-  // ── Bbox for hele komposisjonen, etter rotasjon ────────────────────────────────
+  // ── Bbox for hele komposisjonen og hvilke motiver som stikker utenfor rammen ────
+  // Sjekker den FAKTISKE plasserte (rotert + forskjøvet) bboxen til hvert motiv mot
+  // ±50 mm sentrert på origo — ikke bare størrelsen på den samlede bboxen, som ikke
+  // sier noe om posisjonen (et lite motiv langt utenfor rammen har fortsatt en liten
+  // bbox og ville aldri trigget en størrelsesbasert sjekk).
 
-  const combinedBbox = useMemo(() => {
-    const bokser: BroderiBbox[] = []
+  const plasserteBbokser = useMemo(() => {
+    const map = new Map<string, BroderiBbox>()
     for (const pm of motiver) {
       const data = resolved[motivKey(pm.embroideryId, pm.sizeId)]
       if (!data?.bbox) continue
-      bokser.push(plassertBbox(data.bbox, pm.rotasjonGrader, pm.posisjonXTiendedelMm, pm.posisjonYTiendedelMm))
+      map.set(pm.id, plassertBbox(data.bbox, pm.rotasjonGrader, pm.posisjonXTiendedelMm, pm.posisjonYTiendedelMm))
     }
-    return kombinerBbox(bokser)
+    return map
   }, [motiver, resolved])
 
-  const widthMm = combinedBbox ? (combinedBbox.max_x - combinedBbox.min_x) / 10 : 0
-  const heightMm = combinedBbox ? (combinedBbox.max_y - combinedBbox.min_y) / 10 : 0
-  const overGrense = widthMm > ADVARSEL_GRENSE_MM || heightMm > ADVARSEL_GRENSE_MM
+  const utenforRammeIder = useMemo(
+    () => motiver.filter(pm => {
+      const bbox = plasserteBbokser.get(pm.id)
+      return bbox && erUtenforRamme(bbox)
+    }).map(pm => pm.id),
+    [motiver, plasserteBbokser],
+  )
+
+  const combinedBbox = useMemo(
+    () => kombinerBbox(Array.from(plasserteBbokser.values())),
+    [plasserteBbokser],
+  )
 
   const halvRamme = RAMME_MM / 2
   const halv = useMemo(() => {
@@ -200,7 +246,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
     setSaveStatus('saving')
     setSaveErrorDetails(null)
     try {
-      const body = { data: { navn, motiver } }
+      const body = { data: { navn, motiver, sekvens } }
       const res = id
         ? await fetch(`/api/broderi-komposisjon/${id}`, {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -249,10 +295,11 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
         </div>
       )}
 
-      {overGrense && (
+      {utenforRammeIder.length > 0 && (
         <div className="px-4 py-3 mb-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
-          Komposisjonen er {widthMm.toFixed(1)} × {heightMm.toFixed(1)} mm etter rotasjon — det er over{' '}
-          {ADVARSEL_GRENSE_MM} mm i én retning og har lite margin igjen til 100×100 mm-rammen.
+          {utenforRammeIder.length} motiv{utenforRammeIder.length === 1 ? '' : 'er'} stikker utenfor
+          100×100 mm-rammen (markert med rødt i lerretet):{' '}
+          {utenforRammeIder.map(id => motiver.find(pm => pm.id === id)?.navn).filter(Boolean).join(', ')}
         </div>
       )}
 
@@ -279,6 +326,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
                 data={data}
                 bbox={data.bbox}
                 valgt={pm.id === valgtId}
+                utenforRamme={utenforRammeIder.includes(pm.id)}
                 onPointerDown={e => onPointerDownMotiv(e, pm)}
               />
             )
@@ -334,6 +382,17 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
               />
             </label>
           </div>
+          <div className="mt-3">
+            <input
+              type="range" min={-180} max={180} step={1}
+              value={normaliserForGlider(valgtMotiv.rotasjonGrader)}
+              onChange={e => oppdaterValgt({ rotasjonGrader: snappRotasjon(Number(e.target.value)) })}
+              className="w-full accent-[#C9A57A]"
+            />
+            <div className="flex justify-between text-[10px] text-stone-400 px-0.5">
+              <span>-180°</span><span>-90°</span><span>0°</span><span>90°</span><span>180°</span>
+            </div>
+          </div>
         </div>
       )}
 
@@ -352,6 +411,9 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
                   }`}
                 >
                   <span className="flex-1 min-w-0 text-sm text-stone-700 truncate">{pm.navn}</span>
+                  {utenforRammeIder.includes(pm.id) && (
+                    <span className="text-xs text-red-500 flex-shrink-0" title="Stikker utenfor rammen">⚠ Utenfor</span>
+                  )}
                   {feil ? (
                     <span className="text-xs text-red-500 flex-shrink-0">Feil</span>
                   ) : !lastet ? (
@@ -367,6 +429,13 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
         </ul>
       )}
 
+      {sekvens.length > 0 && (
+        <div className="mt-6">
+          <h3 className="font-serif text-lg text-stone-700 mb-3">Sekvens</h3>
+          <SekvensPanel sekvens={sekvens} onChange={setSekvens} motiver={motiver} resolved={resolved} />
+        </div>
+      )}
+
       {showPicker && (
         <MotivPicker
           biblioteket={biblioteket}
@@ -380,11 +449,12 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
 
 // ── Ett plassert motiv, rendret som roterte + forskjøvede stingbaner ──────────────
 
-function PlassertMotivGruppe({ pm, data, bbox, valgt, onPointerDown }: {
+function PlassertMotivGruppe({ pm, data, bbox, valgt, utenforRamme, onPointerDown }: {
   pm: PlassertMotiv
   data: BroderiMotivData
   bbox: BroderiBbox
   valgt: boolean
+  utenforRamme: boolean
   onPointerDown: (e: ReactPointerEvent) => void
 }) {
   const roterteBlokker = useMemo(
@@ -419,6 +489,13 @@ function PlassertMotivGruppe({ pm, data, bbox, valgt, onPointerDown }: {
         x={-halvW} y={-halvH} width={halvW * 2} height={halvH * 2}
         fill="transparent" stroke="none" transform={`rotate(${pm.rotasjonGrader})`}
       />
+      {utenforRamme && (
+        <rect
+          x={-halvW} y={-halvH} width={halvW * 2} height={halvH * 2}
+          fill="none" stroke="#ef4444" strokeWidth={0.8} strokeDasharray="3 1.5"
+          transform={`rotate(${pm.rotasjonGrader})`}
+        />
+      )}
       {valgt && (
         <rect
           x={-halvW} y={-halvH} width={halvW * 2} height={halvH * 2}

@@ -71,9 +71,29 @@ export interface PlassertMotiv {
   rotasjonGrader: number
 }
 
+// Sekvensen er den flate, faktiske sylisten på tvers av alle plasserte motiver —
+// enheten som flyttes er hele fargekjøringen (aldri enkelt-stingblokker inni).
+// fargekjoringIndex peker inn i DET MOTIVETS egen fargekjoringer[] (fra broderi_motiv-
+// cachen), som aldri endres — bare rekkefølgen og en eventuell fargeoverride her gjør.
+export interface SekvensKjoring {
+  id: string
+  type: 'kjoring'
+  plassertMotivId: string
+  fargekjoringIndex: number
+  fargeOverrideHex?: string
+}
+
+export interface SekvensPause {
+  id: string
+  type: 'pause'
+}
+
+export type SekvensElement = SekvensKjoring | SekvensPause
+
 export interface BroderiKomposisjonData {
   navn: string
   motiver: PlassertMotiv[]
+  sekvens: SekvensElement[]
 }
 
 export interface BroderiKomposisjon {

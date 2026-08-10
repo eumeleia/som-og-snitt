@@ -32,29 +32,41 @@ export function roterLokalePunkter(
   return sting.map(([x, y]) => roter(x - cx, y - cy))
 }
 
-// Bbox for et plassert (rotert + forskjøvet) motiv. Roterer motivets fire
-// bbox-hjørner om sitt eget senter og finner axis-aligned min/max av de roterte
-// hjørnene — det gir eksakt bbox for det roterte motivet, uten å måtte rotere
-// hvert enkelt stingpunkt.
-export function plassertBbox(
+// Bbox for en underboks (typisk én fargekjørings sting-bbox) etter at HELE motivet
+// den hører til roteres om sitt eget senter og flyttes til posisjonen på lerretet.
+// Roterer underBbox sine fire hjørner om motivBbox sitt senter (ikke underBbox sitt
+// eget senter) — det er motivets pivot, ikke kjøringens egen, siden kjøringen sitter
+// fast i motivet den er en del av.
+export function plassertUnderBbox(
+  underBbox: BroderiBbox,
   motivBbox: BroderiBbox,
   rotasjonGrader: number,
   posisjonXTiendedelMm: number,
   posisjonYTiendedelMm: number,
 ): BroderiBbox {
-  const halvW = (motivBbox.max_x - motivBbox.min_x) / 2
-  const halvH = (motivBbox.max_y - motivBbox.min_y) / 2
+  const [mcx, mcy] = bboxSenter(motivBbox)
   const roter = lagRotasjon(rotasjonGrader)
   const hjorner = [
-    roter(-halvW, -halvH), roter(halvW, -halvH),
-    roter(-halvW, halvH), roter(halvW, halvH),
-  ]
+    [underBbox.min_x, underBbox.min_y], [underBbox.max_x, underBbox.min_y],
+    [underBbox.min_x, underBbox.max_y], [underBbox.max_x, underBbox.max_y],
+  ].map(([x, y]) => roter(x - mcx, y - mcy))
   const xs = hjorner.map(([x]) => x + posisjonXTiendedelMm)
   const ys = hjorner.map(([, y]) => y + posisjonYTiendedelMm)
   return {
     min_x: Math.min(...xs), max_x: Math.max(...xs),
     min_y: Math.min(...ys), max_y: Math.max(...ys),
   }
+}
+
+// Bbox for et helt plassert (rotert + forskjøvet) motiv — samme som å be om
+// plassertUnderBbox for motivets egen bbox, siden det da roterer om sitt eget senter.
+export function plassertBbox(
+  motivBbox: BroderiBbox,
+  rotasjonGrader: number,
+  posisjonXTiendedelMm: number,
+  posisjonYTiendedelMm: number,
+): BroderiBbox {
+  return plassertUnderBbox(motivBbox, motivBbox, rotasjonGrader, posisjonXTiendedelMm, posisjonYTiendedelMm)
 }
 
 export function kombinerBbox(bokser: BroderiBbox[]): BroderiBbox | null {
@@ -65,4 +77,8 @@ export function kombinerBbox(bokser: BroderiBbox[]): BroderiBbox | null {
     max_x: Math.max(...bokser.map(b => b.max_x)),
     max_y: Math.max(...bokser.map(b => b.max_y)),
   }
+}
+
+export function bokserOverlapper(a: BroderiBbox, b: BroderiBbox): boolean {
+  return !(a.max_x < b.min_x || b.max_x < a.min_x || a.max_y < b.min_y || b.max_y < a.min_y)
 }
