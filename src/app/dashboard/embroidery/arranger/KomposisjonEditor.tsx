@@ -791,18 +791,31 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
   useEffect(() => { return () => { avbrytRef.current = true } }, [])
 
   useEffect(() => {
-    supabase.from('broderi_motiv').select('embroidery_id, size_id, data').then(({ data }) => {
+    let cancelled = false
+    async function lastBboxCache() {
       const map = new Map<string, BboxMm | null>()
-      for (const row of (data ?? [])) {
-        const r = row as { embroidery_id: string; size_id: string; data: { bbox?: BroderiBbox } }
-        const bbox = r.data?.bbox
-        map.set(`${r.embroidery_id}:${r.size_id}`, bbox
-          ? { widthMm: (bbox.max_x - bbox.min_x) / 10, heightMm: (bbox.max_y - bbox.min_y) / 10 }
-          : null)
+      const pageSize = 200
+      let offset = 0
+      while (!cancelled) {
+        const { data, error } = await supabase
+          .from('broderi_motiv')
+          .select('embroidery_id, size_id, data->bbox')
+          .range(offset, offset + pageSize - 1)
+        if (error) { console.error('[MotivPicker] bbox-cache-feil', error); break }
+        if (!data || data.length === 0) break
+        for (const row of (data as Array<{ embroidery_id: string; size_id: string; bbox: BroderiBbox | null }>)) {
+          map.set(`${row.embroidery_id}:${row.size_id}`, row.bbox
+            ? { widthMm: (row.bbox.max_x - row.bbox.min_x) / 10, heightMm: (row.bbox.max_y - row.bbox.min_y) / 10 }
+            : null)
+        }
+        if (!cancelled) setBboxCache(new Map(map))
+        if (data.length < pageSize) break
+        offset += pageSize
       }
-      setBboxCache(map)
-      setCacheLastet(true)
-    })
+      if (!cancelled) setCacheLastet(true)
+    }
+    lastBboxCache()
+    return () => { cancelled = true }
   }, [])
 
   useEffect(() => {
@@ -1017,6 +1030,7 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
       }))
     }
     setParserAlle(false)
+    setParseFremgang(null)
   }
 
   const searchQ = search.toLowerCase().trim()
@@ -1107,7 +1121,7 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
         )}
         <div className="flex gap-2">
           {parserAlle ? (
-            <button onClick={() => { avbrytRef.current = true; setParserAlle(false) }}
+            <button onClick={() => { avbrytRef.current = true; setParserAlle(false); setParseFremgang(null) }}
               className="flex-1 py-2 text-xs text-red-500 border border-red-200 rounded-lg hover:border-red-400 transition-colors">
               Avbryt parsing
             </button>
