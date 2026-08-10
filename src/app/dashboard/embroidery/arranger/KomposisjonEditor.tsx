@@ -12,9 +12,10 @@ import {
   type Embroidery, type EmbroiderySize, type EmbroideryData, type BroderiMotivData, type BroderiBbox,
   type BroderiKomposisjon, type PlassertMotiv, type SekvensElement, type EmbroideryBundle,
   type VirtuelMotiv, type VirtuelStorrelse,
-  getCoverImage, getBundleCoverImage, getKatsMedArv,
+  getCoverImage, getBundleCoverImage, getKats, getKatsMedArv,
 } from './types'
 import { utledTomme, trekktUtKarakter } from './tomme'
+import { buildFontData, layoutTekst, type FontData, type TextLayout } from './fontUtils'
 import { KATEGORIER } from '../page'
 
 const RAMME_MM = 100
@@ -144,6 +145,23 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
     setValgtId(nyId)
     setShowPicker(false)
     sikreMotivData(embroideryId, sizeId)
+  }
+
+  function leggTilMotiverBolk(items: Array<{ embroideryId: string; sizeId: string; navn: string; x: number; y: number }>) {
+    if (items.length === 0) return
+    const nye: PlassertMotiv[] = items.map(item => ({
+      id: uid(),
+      embroideryId: item.embroideryId,
+      sizeId: item.sizeId,
+      navn: item.navn,
+      posisjonXTiendedelMm: item.x,
+      posisjonYTiendedelMm: item.y,
+      rotasjonGrader: 0,
+    }))
+    setMotiver(m => [...m, ...nye])
+    setValgtId(null)
+    setShowPicker(false)
+    for (const item of items) sikreMotivData(item.embroideryId, item.sizeId)
   }
 
   function oppdaterValgt(patch: Partial<PlassertMotiv>) {
@@ -451,6 +469,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
         <MotivPicker
           biblioteket={biblioteket}
           onVelg={leggTilMotiv}
+          onVelgFlere={leggTilMotiverBolk}
           onClose={() => setShowPicker(false)}
         />
       )}
@@ -518,6 +537,206 @@ function PlassertMotivGruppe({ pm, data, bbox, valgt, utenforRamme, onPointerDow
   )
 }
 
+// ── Tekstverktøy ─────────────────────────────────────────────────────────────
+
+function TextVerktoy({ bundleNavn, vms, biblioteket, onLeggTil, onBack }: {
+  bundleNavn: string
+  vms: VirtuelMotiv[]
+  biblioteket: Embroidery[]
+  onLeggTil: (items: Array<{ embroideryId: string; sizeId: string; navn: string; x: number; y: number }>) => void
+  onBack: () => void
+}) {
+  const tilgjengeligeTommes = useMemo(() => {
+    const set = new Set<string>()
+    for (const vm of vms) {
+      for (const s of vm.sizes) {
+        if (s.tommeLabel) set.add(s.tommeLabel)
+      }
+    }
+    return Array.from(set).sort((a, b) => parseFloat(a) - parseFloat(b))
+  }, [vms])
+
+  const [tomme, setTomme] = useState<string>(tilgjengeligeTommes[0] ?? '')
+  const [tekst, setTekst] = useState('')
+  const [tracking, setTracking] = useState(0)
+  const [mellomromFaktor, setMellomromFaktor] = useState(0.6)
+
+  const fontData: FontData | null = useMemo(
+    () => tomme ? buildFontData(vms, tomme, biblioteket) : null,
+    [vms, tomme, biblioteket],
+  )
+
+  const layout: TextLayout | null = useMemo(
+    () => (fontData && tekst.trim()) ? layoutTekst(tekst, fontData, { tracking, mellomromFaktor }) : null,
+    [fontData, tekst, tracking, mellomromFaktor],
+  )
+
+  const alternativStørrelse: string | null = useMemo(() => {
+    if (!layout || (layout.totalBreddeMm <= 100 && layout.totalHøydeMm <= 100)) return null
+    const rene = tekst.replace(/\s/g, '')
+    for (const t of [...tilgjengeligeTommes].reverse()) {
+      if (t === tomme) continue
+      const fd = buildFontData(vms, t, biblioteket)
+      const lay = layoutTekst(rene, fd, { tracking, mellomromFaktor })
+      if (lay.totalBreddeMm <= 100 && lay.totalHøydeMm <= 100) return t
+    }
+    return null
+  }, [layout, tilgjengeligeTommes, tomme, tekst, vms, biblioteket, tracking, mellomromFaktor])
+
+  const passerBredde = !layout || layout.totalBreddeMm <= 100
+  const passerHøyde = !layout || layout.totalHøydeMm <= 100
+  const passerIRamme = passerBredde && passerHøyde
+
+  function leggTil() {
+    if (!layout || !fontData || !tekst.trim() || layout.bokstaver.length === 0) return
+    onLeggTil(layout.bokstaver.map(b => ({
+      embroideryId: b.info.embroideryId,
+      sizeId: b.info.sizeId,
+      navn: `${b.tegn} – ${tomme}" (${bundleNavn})`,
+      x: b.posXTiendedelMm,
+      y: b.posYTiendedelMm,
+    })))
+  }
+
+  return (
+    <div className="flex flex-col" style={{ maxHeight: '85vh' }}>
+      {/* Header */}
+      <div className="px-5 py-4 border-b border-stone-100 flex-shrink-0 flex items-center gap-3">
+        <button onClick={onBack} className="p-1 -ml-1 rounded-lg hover:bg-stone-100 text-stone-500 transition-colors flex-shrink-0">
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 19l-7-7 7-7" />
+          </svg>
+        </button>
+        <div className="min-w-0">
+          <h3 className="font-serif text-xl text-stone-800 truncate">{bundleNavn}</h3>
+          <p className="text-xs text-stone-400">Legg til tekst</p>
+        </div>
+      </div>
+
+      <div className="overflow-y-auto flex-1 min-h-0 p-5 space-y-5">
+
+        {/* Size selector */}
+        <div>
+          <p className="text-xs font-medium text-stone-500 mb-2">Størrelse</p>
+          <div className="flex flex-wrap gap-2">
+            {tilgjengeligeTommes.map(t => (
+              <button key={t} onClick={() => setTomme(t)}
+                className={`px-3 py-1.5 rounded-lg border text-sm transition-colors ${
+                  t === tomme
+                    ? 'bg-stone-800 text-white border-stone-800'
+                    : 'border-stone-200 text-stone-600 hover:border-stone-400'
+                }`}>
+                {t}&quot;
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Text input */}
+        <div>
+          <p className="text-xs font-medium text-stone-500 mb-2">Tekst</p>
+          <input
+            type="text"
+            value={tekst}
+            onChange={e => setTekst(e.target.value)}
+            placeholder="Skriv tekst…"
+            autoFocus
+            className="w-full px-3 py-2 border border-stone-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-stone-300"
+          />
+        </div>
+
+        {/* Sliders */}
+        <div className="space-y-4">
+          <div>
+            <div className="flex justify-between text-xs text-stone-500 mb-1.5">
+              <span>Sporing</span>
+              <span>{tracking >= 0 ? '+' : ''}{tracking.toFixed(1)} mm</span>
+            </div>
+            <input type="range" min={-3} max={5} step={0.1} value={tracking}
+              onChange={e => setTracking(parseFloat(e.target.value))}
+              className="w-full accent-[#C9A57A]" />
+          </div>
+          <div>
+            <div className="flex justify-between text-xs text-stone-500 mb-1.5">
+              <span>Mellomrom (space)</span>
+              <span>{mellomromFaktor.toFixed(1)}× x-høyde</span>
+            </div>
+            <input type="range" min={0.3} max={1.2} step={0.05} value={mellomromFaktor}
+              onChange={e => setMellomromFaktor(parseFloat(e.target.value))}
+              className="w-full accent-[#C9A57A]" />
+          </div>
+        </div>
+
+        {/* Character preview */}
+        {tekst && (
+          <div>
+            <p className="text-xs font-medium text-stone-500 mb-2">
+              {layout ? `${layout.bokstaver.length} tegn plassert` : 'Ingen data'}
+              {layout?.mangler.length ? (
+                <span className="text-amber-600 ml-2">
+                  Mangler: {layout.mangler.map(ch => `«${ch}»`).join(', ')}
+                </span>
+              ) : null}
+            </p>
+            <div className="flex flex-wrap gap-1">
+              {Array.from(tekst).map((ch, i) => {
+                const isSpace = ch === ' '
+                const mangler = !isSpace && fontData && !fontData.tegn[ch]
+                return (
+                  <span key={i}
+                    className={`inline-block rounded px-1.5 py-0.5 text-sm font-mono ${
+                      isSpace ? 'text-stone-300' :
+                      mangler ? 'bg-amber-50 text-amber-600 border border-amber-200' :
+                      'bg-stone-100 text-stone-700'
+                    }`}>
+                    {isSpace ? '·' : ch}
+                  </span>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Frame fit indicator */}
+        {layout && layout.bokstaver.length > 0 && (
+          <div className={`p-3 rounded-lg text-sm ${passerIRamme ? 'bg-stone-50 text-stone-600' : 'bg-red-50 text-red-600'}`}>
+            <p>
+              {layout.totalBreddeMm.toFixed(1)} mm bred
+              {!passerBredde && <span className="font-medium"> — for bred</span>}
+              {' · '}
+              {layout.totalHøydeMm.toFixed(1)} mm høy
+              {!passerHøyde && <span className="font-medium"> — for høy</span>}
+            </p>
+            {!passerIRamme && (
+              <p className="mt-1 text-xs">
+                {alternativStørrelse
+                  ? `Prøv ${alternativStørrelse}" — passer i 100×100 mm`
+                  : 'Ingen størrelse passer i 100×100 mm med denne teksten'}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Footer */}
+      <div className="px-5 py-3 border-t border-stone-100 flex-shrink-0 flex gap-2">
+        <button
+          onClick={leggTil}
+          disabled={!layout || layout.bokstaver.length === 0}
+          className="flex-1 py-2 text-sm bg-stone-800 text-white rounded-lg hover:bg-stone-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+          {layout?.bokstaver.length
+            ? `Legg til ${layout.bokstaver.length} bokstaver`
+            : 'Skriv tekst'}
+        </button>
+        <button onClick={onBack}
+          className="px-4 py-2 text-sm text-stone-400 hover:text-stone-600 transition-colors">
+          Avbryt
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ── Motiv-velger ─────────────────────────────────────────────────────────────
 
 const RAMME_GRENSE_MM = 98
@@ -529,6 +748,7 @@ type PickerView =
   | { type: 'liste' }
   | { type: 'bundle-innhold'; bundleId: string }
   | { type: 'tegn'; bundleId: string }
+  | { type: 'tekst'; bundleId: string }
   | { type: 'storrelse'; vm: VirtuelMotiv; prevView: PickerView }
 
 function vmSizeLabel(s: VirtuelStorrelse): string {
@@ -551,9 +771,10 @@ function vmStatus(vm: VirtuelMotiv, bboxCache: Map<string, BboxMm | null>): 'pas
 }
 
 
-function MotivPicker({ biblioteket, onVelg, onClose }: {
+function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
   biblioteket: Embroidery[]
   onVelg: (embroideryId: string, sizeId: string, navn: string) => void
+  onVelgFlere: (items: Array<{ embroideryId: string; sizeId: string; navn: string; x: number; y: number }>) => void
   onClose: () => void
 }) {
   const [view, setView] = useState<PickerView>({ type: 'liste' })
@@ -951,34 +1172,43 @@ function MotivPicker({ biblioteket, onVelg, onClose }: {
     const bundle = bundlerMap.get(bundleId)!
     const cover = getBundleCoverImage(bundle.data)
     const vms = bundleVMs.get(bundleId) ?? []
-    const erAlf = alfabetBundles.has(bundleId)
+    const erFont = getKats(bundle.data).some(k => k.toLowerCase() === 'font')
+    const erAlf = !erFont && alfabetBundles.has(bundleId)
     const { kats, arvet } = getKatsMedArv({ kategori: undefined }, bundle.data)
     const antallPasser = vms.filter(vm => vmStatus(vm, bboxCache) === 'passer').length
     const stat = bundleStat(bundleId)
+    const handleClick = erFont
+      ? () => setView({ type: 'tekst', bundleId })
+      : erAlf
+        ? () => setView({ type: 'tegn', bundleId })
+        : () => setView({ type: 'bundle-innhold', bundleId })
     return (
       <li>
         <div className="w-full flex items-center gap-3 px-5 py-2.5 hover:bg-stone-50 transition-colors">
-          <button
-            onClick={() => setView(erAlf ? { type: 'tegn', bundleId } : { type: 'bundle-innhold', bundleId })}
-            className="flex items-center gap-3 flex-1 min-w-0 text-left">
-            <div className="w-10 h-10 rounded-lg overflow-hidden bg-stone-100 flex-shrink-0">
+          <button onClick={handleClick} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+            <div className="w-10 h-10 rounded-lg overflow-hidden bg-stone-100 flex-shrink-0 relative">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               {cover && <img src={cover} alt={bundle.data.navn} className="w-full h-full object-cover" />}
+              {erFont && (
+                <div className="absolute inset-0 flex items-center justify-center bg-stone-800/60">
+                  <span className="text-white font-serif font-bold text-sm">T</span>
+                </div>
+              )}
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-sm text-stone-800 truncate">{bundle.data.navn}</p>
               <p className="text-xs text-stone-400 truncate">
-                {erAlf ? `${vms.length} tegn` : `${vms.length} motiver`}
-                {' · '}
-                {stat === 'passer'
+                {erFont ? 'Font' : erAlf ? `${vms.length} tegn` : `${vms.length} motiver`}
+                {!erFont && ' · '}
+                {!erFont && (stat === 'passer'
                   ? <span className="text-stone-500">{antallPasser}/{vms.length} passer</span>
                   : stat === 'ikkeMalt'
                     ? <span className="text-amber-600">Ikke målt</span>
-                    : <span className="text-red-400">For stor</span>}
+                    : <span className="text-red-400">For stor</span>)}
               </p>
             </div>
           </button>
-          <KategoriBrikke kats={kats} arvet={arvet} onEndret={() => {}} />
+          <KategoriBrikke kats={kats.filter(k => k.toLowerCase() !== 'font')} arvet={arvet} onEndret={() => {}} />
         </div>
       </li>
     )
@@ -1195,6 +1425,20 @@ function MotivPicker({ biblioteket, onVelg, onClose }: {
               </div>
               <ParseBunnlinje />
             </>
+          )
+        })()}
+
+        {view.type === 'tekst' && (() => {
+          const vms = bundleVMs.get(view.bundleId) ?? []
+          const bundleNavn = bundlerMap.get(view.bundleId)?.data.navn ?? ''
+          return (
+            <TextVerktoy
+              bundleNavn={bundleNavn}
+              vms={vms}
+              biblioteket={biblioteket}
+              onLeggTil={items => onVelgFlere(items)}
+              onBack={() => setView({ type: 'liste' })}
+            />
           )
         })()}
 

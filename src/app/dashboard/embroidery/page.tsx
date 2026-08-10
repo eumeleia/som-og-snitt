@@ -77,7 +77,7 @@ type View = 'gallery' | 'bundle' | 'motif'
 
 export const KATEGORIER = [
   'Frukt', 'Bær', 'Dyr', 'Blomster', 'Natur', 'Rosemaling',
-  'Høytider', 'Rammer', 'Figurer', 'Bunad', 'Baby', 'Bokstaver', 'Monogram', 'Annet',
+  'Høytider', 'Rammer', 'Figurer', 'Bunad', 'Baby', 'Bokstaver', 'Monogram', 'Annet', 'font',
 ]
 
 // Returns the categories for a motif/bundle, handling both old string and new array format
