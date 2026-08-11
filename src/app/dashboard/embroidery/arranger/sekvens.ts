@@ -135,6 +135,19 @@ export interface SammenslaingForslag {
 
 const MAKS_FORSLAG = 8
 
+// Returnerer true hvis sekvensen bevarer rekkefølgen innenfor hvert motiv:
+// for et gitt plassertMotivId må fargekjoringIndex-verdiene øke monotont gjennom sekvensen.
+export function bevarerMotivRekkefølge(sekvens: SekvensElement[]): boolean {
+  const sist = new Map<string, number>()
+  for (const el of sekvens) {
+    if (el.type !== 'kjoring') continue
+    const prev = sist.get(el.plassertMotivId)
+    if (prev !== undefined && el.fargekjoringIndex <= prev) return false
+    sist.set(el.plassertMotivId, el.fargekjoringIndex)
+  }
+  return true
+}
+
 // Foreslår sammenslåing av par av IKKE-tilstøtende kjøringer med samme farge.
 // "Sammenslåing" er alltid: flytt den andre kjøringen til rett etter den første i
 // sekvensen — det er en ren reordering, stingblokkene inni røres aldri.
@@ -173,6 +186,7 @@ export function finnSammenslaingsforslag(
       const etterOmtredninger = tellOmtredninger(flyttet, ctx)
       const spart = forOmtredninger - etterOmtredninger
       if (spart <= 0) continue
+      if (!bevarerMotivRekkefølge(flyttet)) continue
 
       const mellomKjoringer = mellomElementer.filter((el): el is SekvensKjoring => el.type === 'kjoring')
       const fargerMellom = Array.from(

@@ -67,6 +67,8 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
   const [navn, setNavn] = useState(komposisjon?.data.navn ?? 'Ny komposisjon')
   const [motiver, setMotiver] = useState<PlassertMotiv[]>(komposisjon?.data.motiver ?? [])
   const [sekvens, setSekvens] = useState<SekvensElement[]>(komposisjon?.data.sekvens ?? [])
+  const [undoStack, setUndoStack] = useState<SekvensElement[][]>([])
+  const [redoStack, setRedoStack] = useState<SekvensElement[][]>([])
   const [valgtId, setValgtId] = useState<string | null>(null)
   const [showPicker, setShowPicker] = useState(false)
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
@@ -86,6 +88,32 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
     startPosX: number
     startPosY: number
   } | null>(null)
+
+  function handleSekvensChange(ny: SekvensElement[]) {
+    setUndoStack(u => [...u.slice(-30), sekvens])
+    setRedoStack([])
+    setSekvens(ny)
+  }
+
+  function handleUndo() {
+    if (undoStack.length === 0) return
+    const prev = undoStack[undoStack.length - 1]
+    setRedoStack(r => [sekvens, ...r.slice(0, 29)])
+    setUndoStack(u => u.slice(0, -1))
+    setSekvens(prev)
+  }
+
+  function handleRedo() {
+    if (redoStack.length === 0) return
+    const next = redoStack[0]
+    setUndoStack(u => [...u.slice(-29), sekvens])
+    setRedoStack(r => r.slice(1))
+    setSekvens(next)
+  }
+
+  function handleTilbakestill() {
+    handleSekvensChange(synkroniserSekvens([], { motiver, resolved }))
+  }
 
   const sikreMotivData = useCallback(async (embroideryId: string, sizeId: string) => {
     const key = motivKey(embroideryId, sizeId)
@@ -194,6 +222,19 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [valgtId])
+
+  const undoRedoRef = useRef<{ handleUndo: () => void; handleRedo: () => void }>({ handleUndo, handleRedo })
+  undoRedoRef.current = { handleUndo, handleRedo }
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (!(e.metaKey || e.ctrlKey)) return
+      if (e.key === 'z' && !e.shiftKey) { e.preventDefault(); undoRedoRef.current.handleUndo() }
+      if ((e.key === 'z' && e.shiftKey) || e.key === 'y') { e.preventDefault(); undoRedoRef.current.handleRedo() }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   // ── Bbox for hele komposisjonen og hvilke motiver som stikker utenfor rammen ────
   // Sjekker den FAKTISKE plasserte (rotert + forskjøvet) bboxen til hvert motiv mot
@@ -493,12 +534,17 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
           <h3 className="font-serif text-lg text-stone-700 mb-3">Sekvens</h3>
           <SekvensPanel
             sekvens={sekvens}
-            onChange={setSekvens}
+            onChange={handleSekvensChange}
             motiver={motiver}
             resolved={resolved}
             fokusKjoringId={fokusKjoringId}
             setFokusKjoringId={setFokusKjoringId}
             onHoverEndret={setHoverKjoringId}
+            kanAngre={undoStack.length > 0}
+            kanGjørOm={redoStack.length > 0}
+            onAngre={handleUndo}
+            onGjørOm={handleRedo}
+            onTilbakestill={handleTilbakestill}
           />
         </div>
       )}

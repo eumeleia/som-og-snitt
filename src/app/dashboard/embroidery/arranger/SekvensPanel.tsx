@@ -13,7 +13,7 @@ import { FargePicker } from './FargePicker'
 import {
   finnFargekjoring, effektivFarge, tellOmtredninger, flyttElementEtter,
   finnSammenslaingsforslag, sjekkFasesortering, fasesorter, nyPause,
-  plassertFargekjoringRaster, type SekvensKontekst, type SammenslaingForslag,
+  plassertFargekjoringRaster, bevarerMotivRekkefølge, type SekvensKontekst, type SammenslaingForslag,
 } from './sekvens'
 import { plassertPunkter } from './geometri'
 import type { BroderiMotivData, PlassertMotiv, SekvensElement, SekvensKjoring } from './types'
@@ -21,6 +21,7 @@ import type { BroderiMotivData, PlassertMotiv, SekvensElement, SekvensKjoring } 
 export function SekvensPanel({
   sekvens, onChange, motiver, resolved,
   fokusKjoringId, setFokusKjoringId, onHoverEndret,
+  kanAngre, kanGjørOm, onAngre, onGjørOm, onTilbakestill,
 }: {
   sekvens: SekvensElement[]
   onChange: (ny: SekvensElement[]) => void
@@ -29,9 +30,15 @@ export function SekvensPanel({
   fokusKjoringId: string | null
   setFokusKjoringId: (id: string | null) => void
   onHoverEndret: (id: string | null) => void
+  kanAngre?: boolean
+  kanGjørOm?: boolean
+  onAngre?: () => void
+  onGjørOm?: () => void
+  onTilbakestill?: () => void
 }) {
   const [fargePickerForId, setFargePickerForId] = useState<string | null>(null)
   const [forhåndsvisForslag, setForhåndsvisForslag] = useState<SammenslaingForslag | null>(null)
+  const [dndFeil, setDndFeil] = useState<string | null>(null)
 
   const ctx: SekvensKontekst = useMemo(() => ({ motiver, resolved }), [motiver, resolved])
 
@@ -65,7 +72,17 @@ export function SekvensPanel({
     const oldIndex = sekvens.findIndex(el => el.id === active.id)
     const newIndex = sekvens.findIndex(el => el.id === over.id)
     if (oldIndex === -1 || newIndex === -1) return
-    onChange(arrayMove(sekvens, oldIndex, newIndex))
+    const ny = arrayMove(sekvens, oldIndex, newIndex)
+    if (!bevarerMotivRekkefølge(ny)) {
+      const el = sekvens[oldIndex]
+      const motivNavn = el.type === 'kjoring'
+        ? (finnFargekjoring(ctx, el)?.pm.navn ?? 'motivet')
+        : 'motivet'
+      setDndFeil(`Kan ikke flytte hit — dette ville endret rekkefølgen inni ${motivNavn}.`)
+      return
+    }
+    setDndFeil(null)
+    onChange(ny)
   }
 
   function settFarge(elId: string, hex: string) {
@@ -185,25 +202,51 @@ export function SekvensPanel({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-stone-600">
-          <span className="font-medium text-stone-800">{omtredninger}</span> omtredning{omtredninger === 1 ? '' : 'er'}
-        </p>
-        <div className="text-right">
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
           <button
-            disabled={!faseStatus.kan}
-            title={faseStatus.kan ? 'Bygg om rekkefølgen: kjøring 1 fra alle motiver, så kjøring 2 fra alle, osv.' : faseStatus.grunn}
-            onClick={() => onChange(fasesorter(sekvens, ctx))}
-            className={`h-9 px-3 rounded-xl border text-sm transition-colors ${
-              faseStatus.kan
-                ? 'bg-white text-stone-600 border-stone-200 hover:border-stone-400'
-                : 'bg-stone-50 text-stone-300 border-stone-100 cursor-not-allowed'
-            }`}
+            onClick={onAngre}
+            disabled={!kanAngre}
+            title="Angre (⌘Z)"
+            className="px-2.5 py-1.5 rounded-lg border border-stone-200 text-stone-600 text-xs hover:bg-stone-50 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
           >
-            Fasesorter
+            ← Angre
           </button>
-          {!faseStatus.kan && <p className="text-[10px] text-stone-400 mt-1 max-w-[220px]">{faseStatus.grunn}</p>}
+          <button
+            onClick={onGjørOm}
+            disabled={!kanGjørOm}
+            title="Gjør om (⌘⇧Z)"
+            className="px-2.5 py-1.5 rounded-lg border border-stone-200 text-stone-600 text-xs hover:bg-stone-50 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            Gjør om →
+          </button>
+          <p className="text-sm text-stone-600 flex-1 text-center">
+            <span className="font-medium text-stone-800">{omtredninger}</span> omtredning{omtredninger === 1 ? '' : 'er'}
+          </p>
+          <div className="flex flex-col items-end gap-1">
+            <button
+              disabled={!faseStatus.kan}
+              title={faseStatus.kan ? 'Bygg om rekkefølgen: kjøring 1 fra alle motiver, så kjøring 2 fra alle, osv.' : faseStatus.grunn}
+              onClick={() => onChange(fasesorter(sekvens, ctx))}
+              className={`h-8 px-3 rounded-xl border text-xs transition-colors ${
+                faseStatus.kan
+                  ? 'bg-white text-stone-600 border-stone-200 hover:border-stone-400'
+                  : 'bg-stone-50 text-stone-300 border-stone-100 cursor-not-allowed'
+              }`}
+            >
+              Fasesorter
+            </button>
+            {!faseStatus.kan && <p className="text-[10px] text-stone-400 max-w-[220px] text-right">{faseStatus.grunn}</p>}
+          </div>
         </div>
+        {onTilbakestill && (
+          <button
+            onClick={onTilbakestill}
+            className="text-xs text-stone-400 hover:text-stone-600 transition-colors underline underline-offset-2"
+          >
+            Tilbakestill sekvens til motivenes opprinnelige rekkefølge
+          </button>
+        )}
       </div>
 
       {forslag.length > 0 && (
@@ -227,7 +270,7 @@ export function SekvensPanel({
         </div>
       )}
 
-      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd} onDragStart={() => setDndFeil(null)}>
         <SortableContext items={sekvens.map(el => el.id)} strategy={verticalListSortingStrategy}>
           <ul className="divide-y divide-stone-100 bg-white rounded-2xl border border-stone-200 shadow-sm overflow-hidden">
             {sekvens.map(el => {
@@ -252,6 +295,11 @@ export function SekvensPanel({
             })}
           </ul>
         </SortableContext>
+        {dndFeil && (
+          <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mt-2">
+            {dndFeil}
+          </p>
+        )}
       </DndContext>
 
       {fargePickerEl && fargePickerFunn && (

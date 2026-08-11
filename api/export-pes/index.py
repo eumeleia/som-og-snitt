@@ -93,13 +93,15 @@ def bygg_forventet_fargekjoringer(segmenter):
         farge_hex = seg.get('farge_hex')
         blokker = seg.get('blokker') or []
         antall_sting = sum(len(b) for b in blokker)
+        antall_deler = len(blokker)
         if not farge_hex or antall_sting == 0:
             continue
         farge_hex = _snap_til_palett(farge_hex)
         if kjoringer and forrige_farge == farge_hex:
             kjoringer[-1]['antall_sting'] += antall_sting
+            kjoringer[-1]['antall_deler'] += antall_deler
         else:
-            kjoringer.append({'farge_hex': farge_hex, 'antall_sting': antall_sting})
+            kjoringer.append({'farge_hex': farge_hex, 'antall_sting': antall_sting, 'antall_deler': antall_deler})
         forrige_farge = farge_hex
     return kjoringer
 
@@ -210,6 +212,10 @@ def selvsjekk(pes_bytes, segmenter):
             if forventet['antall_sting'] != faktisk['antall_sting']:
                 avvik.append(
                     f'Kjøring {i + 1} ({forventet["farge_hex"]}): forventet {forventet["antall_sting"]} sting, fikk {faktisk["antall_sting"]}'
+                )
+            if forventet['antall_deler'] != faktisk['antall_deler']:
+                avvik.append(
+                    f'Kjøring {i + 1} ({forventet["farge_hex"]}): forventet {forventet["antall_deler"]} klipp-deler, fikk {faktisk["antall_deler"]}'
                 )
 
     forventet_total = sum(k['antall_sting'] for k in forventede_kjoringer)
