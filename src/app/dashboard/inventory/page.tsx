@@ -29,11 +29,14 @@ interface InventoryItemData {
   vask?:         string
   type?:         StoffType
   mengde?:       string
+  forbrukStoff?: string
+  tiltenktProsjekt?: string
   // Tilbehør
   underkategori?: string
   antall?:        string
   farge?:         string
   lengde?:        string   // for Glidelås
+  forbruksniva?:  'ubrukt' | 'lite-brukt' | 'mye-brukt' | 'oppbrukt'
   // Utstyr
   utstyrstype?:  string
   detaljer?:     string
@@ -50,8 +53,17 @@ interface InventoryItem {
 
 const KATEGORIER: Kategori[]  = ['Stoff', 'Tilbehør', 'Utstyr']
 const STOFF_TYPES: StoffType[] = ['Hovedstoff', 'Fôr', 'Mellomlegg', 'Annet']
-const TILBEHOR_CHIPS = ['Sytråd', 'Glidelås', 'Vliselin', 'Knapper', 'Elastikk']
-const UTSTYR_CHIPS   = ['Nål', 'Symaskinfot', 'Saks', 'Måleband', 'Annet']
+const TILBEHOR_CHIPS = ['Sytråd', 'Overlocktråd', 'Broderigarn', 'Broderitråd', 'Glidelås', 'Vliselin', 'Knapper', 'Elastikk', 'Skråbånd']
+const UTSTYR_CHIPS   = ['Nål', 'Symaskinfot', 'Nålebord', 'Saks', 'Rull', 'Måleband', 'Annet']
+
+const THREAD_UNDERKATEGORIER = new Set(['Sytråd', 'Overlocktråd', 'Broderigarn', 'Broderitråd'])
+
+const FORBRUKSNIVA_OPTIONS: { value: InventoryItemData['forbruksniva']; label: string; cls: string }[] = [
+  { value: 'ubrukt',    label: 'Ubrukt',    cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+  { value: 'lite-brukt', label: 'Lite brukt', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+  { value: 'mye-brukt', label: 'Mye brukt', cls: 'bg-orange-50 text-orange-700 border-orange-200' },
+  { value: 'oppbrukt',  label: 'Oppbrukt',  cls: 'bg-red-50 text-red-400 border-red-200' },
+]
 
 const KATEGORI_STYLE: Record<Kategori, string> = {
   Stoff:    'bg-[#F5EFE6] text-[#8B6340] border-[#D4A574]',
@@ -60,7 +72,10 @@ const KATEGORI_STYLE: Record<Kategori, string> = {
 }
 
 function emptyData(kategori: Kategori): InventoryItemData {
-  return { kategori, navn: '', bilde: '', notater: '', tenktTil: '', plassering: '', kjopsdato: '', kilde: '' }
+  return {
+    kategori, navn: '', bilde: '', notater: '', tenktTil: '', plassering: '', kjopsdato: '', kilde: '',
+    ...(kategori === 'Stoff' ? { mengde: '1 m' } : {}),
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -114,23 +129,55 @@ function Badge({ label, cls }: { label: string; cls: string }) {
 
 // ── InventoryCard ─────────────────────────────────────────────────────────────
 
-function InventoryCard({ item, onEdit, onDelete }: {
-  item: InventoryItem; onEdit: () => void; onDelete: () => void
+function InventoryCard({ item, onEdit, onDelete, selectable, selected, onSelect }: {
+  item: InventoryItem
+  onEdit: () => void
+  onDelete: () => void
+  selectable?: boolean
+  selected?: boolean
+  onSelect?: () => void
 }) {
   const d = item.data
-  const subtitle = d.kategori === 'Stoff' ? (d.materiale ?? '')
+
+  const subtitleBase = d.kategori === 'Stoff' ? (d.materiale ?? '')
     : d.kategori === 'Tilbehør' ? (d.underkategori ?? '')
     : (d.utstyrstype ?? '')
+
+  const subtitle = d.kategori === 'Tilbehør' && d.farge && d.farge !== d.navn
+    ? `${subtitleBase}${subtitleBase ? ' · ' : ''}${d.farge}`
+    : subtitleBase
 
   const badge = d.kategori === 'Stoff' ? d.mengde
     : d.kategori === 'Tilbehør' ? d.antall
     : null
 
+  const forbruksInfo = d.kategori === 'Tilbehør' && d.underkategori && THREAD_UNDERKATEGORIER.has(d.underkategori)
+    ? FORBRUKSNIVA_OPTIONS.find(o => o.value === d.forbruksniva)
+    : null
+
+  function handleClick() {
+    if (selectable && onSelect) { onSelect(); return }
+    onEdit()
+  }
+
   return (
     <article
-      onClick={onEdit}
-      className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col h-full relative min-w-0"
+      onClick={handleClick}
+      className={`group bg-white rounded-xl border shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col h-full relative min-w-0 ${
+        selected ? 'border-stone-500 ring-2 ring-stone-400' : 'border-stone-200'
+      }`}
     >
+      {selectable && (
+        <div className={`absolute top-2 left-2 z-10 w-5 h-5 rounded border-2 flex items-center justify-center ${
+          selected ? 'bg-stone-800 border-stone-800' : 'bg-white/80 border-stone-300'
+        }`}>
+          {selected && (
+            <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+            </svg>
+          )}
+        </div>
+      )}
       <div className="w-full aspect-[5/4] bg-stone-50 overflow-hidden relative">
         {d.bilde ? (
           <img src={d.bilde} alt={d.navn}
@@ -155,21 +202,28 @@ function InventoryCard({ item, onEdit, onDelete }: {
       </div>
 
       <div className="px-3 py-2 flex items-center justify-between border-t border-stone-100 min-w-0">
-        <div className="text-xs text-stone-500 truncate min-w-0 mr-1 flex-1">
+        <div className="text-xs text-stone-500 truncate min-w-0 mr-1 flex-1 flex items-center gap-1.5">
           {badge && <span className="font-medium">{badge}</span>}
+          {forbruksInfo && (
+            <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-xs font-medium ${forbruksInfo.cls}`}>
+              {forbruksInfo.label}
+            </span>
+          )}
         </div>
         <Badge label={d.kategori} cls={KATEGORI_STYLE[d.kategori]} />
       </div>
 
-      <button
-        onClick={e => { e.stopPropagation(); onDelete() }}
-        className="absolute bottom-1 right-1.5 z-10 p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors"
-      >
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-        </svg>
-      </button>
+      {!selectable && (
+        <button
+          onClick={e => { e.stopPropagation(); onDelete() }}
+          className="absolute bottom-1 right-1.5 z-10 p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
+        </button>
+      )}
     </article>
   )
 }
@@ -667,6 +721,7 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
   const isStoff    = d.kategori === 'Stoff'
   const isTilbehor = d.kategori === 'Tilbehør'
   const isUtstyr   = d.kategori === 'Utstyr'
+  const isThreadItem = isTilbehor && d.underkategori ? THREAD_UNDERKATEGORIER.has(d.underkategori) : false
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: '#FAF7F4' }}>
@@ -804,6 +859,19 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
                     placeholder="F.eks. 20 cm" />
                 </div>
               )}
+              {isThreadItem && (
+                <div>
+                  <label className={labelCls}>Forbruksnivå</label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {FORBRUKSNIVA_OPTIONS.map(o => (
+                      <button key={o.value} onClick={() => upd({ forbruksniva: o.value })}
+                        className={chipCls(d.forbruksniva === o.value)}>
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </>
           )}
 
@@ -847,6 +915,38 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
               value={isStoff ? (d.mengde ?? '') : (d.antall ?? '')}
               onChange={e => upd(isStoff ? { mengde: e.target.value } : { antall: e.target.value })}
               placeholder={isStoff ? 'F.eks. 2,5 m' : 'F.eks. 3 stk eller 5 m'} />
+          </>
+        )}
+
+        {/* 3b. Forbruk (Stoff only) */}
+        {isStoff && (
+          <>
+            <SectionHeading>Forbruk</SectionHeading>
+            <div className="space-y-3">
+              <input className={inputCls}
+                value={d.forbrukStoff ?? ''}
+                onChange={e => upd({ forbrukStoff: e.target.value })}
+                placeholder="f.eks. 0.5 m" />
+              <div className="flex gap-1.5">
+                {(['alt', 'noe', 'litt'] as const).map(v => (
+                  <button key={v} onClick={() => upd({ forbrukStoff: v })}
+                    className={chipCls(d.forbrukStoff === v)}>
+                    {v}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* 3c. Tiltenkt prosjekt (Stoff only) */}
+        {isStoff && (
+          <>
+            <SectionHeading>Tiltenkt prosjekt</SectionHeading>
+            <input className={inputCls}
+              value={d.tiltenktProsjekt ?? ''}
+              onChange={e => upd({ tiltenktProsjekt: e.target.value })}
+              placeholder="Skriv inn prosjektnavn…" />
           </>
         )}
 
@@ -959,6 +1059,9 @@ export default function InventoryPage() {
   const [deleteId, setDeleteId]               = useState<string | null>(null)
   const [utstyrSearch, setUtstyrSearch]       = useState('')
   const [tilbehorExpanded, setTilbehorExpanded] = useState<Record<string, boolean>>({})
+  const [moveMode, setMoveMode]               = useState(false)
+  const [selectedIds, setSelectedIds]         = useState<Set<string>>(new Set())
+  const [moving, setMoving]                   = useState(false)
 
   useEffect(() => {
     if (!typeDropdownOpen) return
@@ -998,6 +1101,9 @@ export default function InventoryPage() {
 
   useEffect(() => { load() }, [load])
   useEffect(() => { setTypeFilter('Alle') }, [tab])
+  useEffect(() => {
+    if (!moveMode) setSelectedIds(new Set())
+  }, [moveMode, tab])
 
   async function createItem(data: InventoryItemData) {
     const { data: rows, error } = await supabase.from('inventory').insert({ data }).select()
@@ -1021,6 +1127,34 @@ export default function InventoryPage() {
 
   function openEdit(item: InventoryItem) { setCurrentItem(item); setShowDetail(true) }
   function handleBack()                  { setShowDetail(false); setCurrentItem(null); load() }
+
+  function toggleSelect(id: string) {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+
+  async function handleMove() {
+    const destination: Kategori = tab === 'Tilbehør' ? 'Utstyr' : 'Tilbehør'
+    setMoving(true)
+    try {
+      for (const id of selectedIds) {
+        const item = items.find(i => i.id === id)
+        if (!item) continue
+        const updatedData = { ...item.data, kategori: destination }
+        await supabase.from('inventory').update({ data: updatedData }).eq('id', id)
+      }
+      await load()
+      setMoveMode(false)
+      setSelectedIds(new Set())
+    } catch (err) {
+      console.error('move error:', err)
+    } finally {
+      setMoving(false)
+    }
+  }
 
   const tabItems = items.filter(i => i.data.kategori === tab)
 
@@ -1066,6 +1200,9 @@ export default function InventoryPage() {
     : deleteItem_?.data.kategori === 'Tilbehør' ? 'tilbehør'
     : 'utstyr'
 
+  const showMoveButton = tab === 'Tilbehør' || tab === 'Utstyr'
+  const moveDestination: Kategori = tab === 'Tilbehør' ? 'Utstyr' : 'Tilbehør'
+
   if (showDetail && currentItem) {
     return (
       <>
@@ -1089,10 +1226,10 @@ export default function InventoryPage() {
   return (
     <>
       {/* Tabs */}
-      <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 mb-3 overflow-x-hidden">
+      <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 mb-3">
         <div className="flex gap-1 p-1 bg-stone-100 rounded-xl w-full">
           {KATEGORIER.map(k => (
-            <button key={k} onClick={() => setTab(k)}
+            <button key={k} onClick={() => { setTab(k); setMoveMode(false) }}
               className={`flex-1 min-w-0 py-2 text-sm rounded-lg font-medium transition-colors truncate ${
                 tab === k ? 'bg-white text-stone-800 shadow-sm' : 'text-stone-500 hover:text-stone-700'
               }`}>
@@ -1103,7 +1240,7 @@ export default function InventoryPage() {
       </div>
 
       {/* Search + filters */}
-      <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 mb-4 space-y-3 overflow-x-hidden">
+      <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 mb-4 space-y-3">
         <div className="relative w-full min-w-0">
           <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 pointer-events-none"
             fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1140,7 +1277,7 @@ export default function InventoryPage() {
               )}
             </button>
             {typeDropdownOpen && (
-              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-20 min-w-[160px] py-1">
+              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-50 min-w-[160px] py-1">
                 <button
                   onClick={() => { setTypeFilter('Alle'); setTypeDropdownOpen(false) }}
                   className={`w-full text-left px-4 py-2 text-sm transition-colors hover:bg-stone-50 ${typeFilter === 'Alle' ? 'text-stone-800 font-medium' : 'text-stone-600'}`}
@@ -1180,7 +1317,7 @@ export default function InventoryPage() {
               )}
             </button>
             {sortDropdownOpen && (
-              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-20 min-w-[160px] py-1">
+              <div className="absolute top-full left-0 mt-1 bg-white border border-stone-200 rounded-xl shadow-lg z-50 min-w-[160px] py-1">
                 {([['newest', 'Nyeste'], ['oldest', 'Eldste'], ['name', 'Navn A-Å']] as [SortOrder, string][]).map(([v, label]) => (
                   <button
                     key={v}
@@ -1193,12 +1330,26 @@ export default function InventoryPage() {
               </div>
             )}
           </div>
+
+          {/* Flytt button (Tilbehør and Utstyr only) */}
+          {showMoveButton && (
+            <button
+              onClick={() => setMoveMode(m => !m)}
+              className={`px-3 h-9 text-sm rounded-xl border transition-colors ${
+                moveMode
+                  ? 'bg-stone-800 text-white border-stone-800'
+                  : 'bg-white text-stone-500 border-stone-200 hover:border-stone-400'
+              }`}
+            >
+              Flytt
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Utstyr smart search (5E) */}
+      {/* Utstyr smart search */}
       {tab === 'Utstyr' && (
-        <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 mb-4 overflow-x-hidden">
+        <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 mb-4">
           <div className="relative w-full min-w-0">
             <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#C9A57A] pointer-events-none"
               fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1217,13 +1368,13 @@ export default function InventoryPage() {
       )}
 
       {/* Grid */}
-      <main className="w-full min-w-0 max-w-6xl mx-auto px-4 sm:px-6 pb-24 overflow-x-hidden">
+      <main className="w-full min-w-0 max-w-6xl mx-auto px-4 sm:px-6 pb-24">
         {loading ? (
           <div className="flex justify-center py-32">
             <div className="w-8 h-8 border-2 border-stone-300 border-t-stone-700 rounded-full animate-spin" />
           </div>
         ) : tab === 'Tilbehør' && !search.trim() && typeFilter === 'Alle' ? (
-          /* 5D: Grouped Tilbehør sections */
+          /* Grouped Tilbehør sections */
           (() => {
             const groups = Array.from(
               filtered.reduce((map, item) => {
@@ -1258,7 +1409,10 @@ export default function InventoryPage() {
                         {visible.map(item => (
                           <InventoryCard key={item.id} item={item}
                             onEdit={() => openEdit(item)}
-                            onDelete={() => setDeleteId(item.id)} />
+                            onDelete={() => setDeleteId(item.id)}
+                            selectable={moveMode}
+                            selected={selectedIds.has(item.id)}
+                            onSelect={() => toggleSelect(item.id)} />
                         ))}
                       </div>
                       {hasMore && (
@@ -1274,8 +1428,51 @@ export default function InventoryPage() {
               </div>
             )
           })()
+        ) : tab === 'Utstyr' && !search.trim() && typeFilter === 'Alle' && !utstyrSearch.trim() ? (
+          /* Grouped Utstyr sections */
+          (() => {
+            const groups = Array.from(
+              filtered.reduce((map, item) => {
+                const key = item.data.utstyrstype ?? 'Annet'
+                if (!map.has(key)) map.set(key, [])
+                map.get(key)!.push(item)
+                return map
+              }, new Map<string, InventoryItem[]>())
+            )
+            if (groups.length === 0) return (
+              <div className="text-center py-28">
+                <p className="font-serif text-2xl text-stone-400 font-light">Ingen utstyr i lageret ennå.</p>
+                <button onClick={() => setShowNewModal(true)}
+                  className="mt-5 px-6 py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors font-medium">
+                  Legg til utstyr
+                </button>
+              </div>
+            )
+            return (
+              <div className="space-y-8">
+                {groups.map(([groupName, groupItems]) => (
+                  <section key={groupName}>
+                    <h3 className="font-medium text-stone-600 text-sm mb-3 flex items-center gap-2">
+                      {groupName}
+                      <span className="text-stone-400 font-normal">({groupItems.length})</span>
+                    </h3>
+                    <div className="w-full min-w-0 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-3 sm:gap-5 overflow-hidden">
+                      {groupItems.map(item => (
+                        <InventoryCard key={item.id} item={item}
+                          onEdit={() => openEdit(item)}
+                          onDelete={() => setDeleteId(item.id)}
+                          selectable={moveMode}
+                          selected={selectedIds.has(item.id)}
+                          onSelect={() => toggleSelect(item.id)} />
+                      ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            )
+          })()
         ) : tab === 'Utstyr' && utstyrSearch.trim() ? (
-          /* 5E: Smart Utstyr search results */
+          /* Smart Utstyr search results */
           (() => {
             const q = utstyrSearch.toLowerCase()
             const matches = filtered.filter(i => {
@@ -1335,11 +1532,37 @@ export default function InventoryPage() {
             {filtered.map(item => (
               <InventoryCard key={item.id} item={item}
                 onEdit={() => openEdit(item)}
-                onDelete={() => setDeleteId(item.id)} />
+                onDelete={() => setDeleteId(item.id)}
+                selectable={moveMode}
+                selected={selectedIds.has(item.id)}
+                onSelect={() => toggleSelect(item.id)} />
             ))}
           </div>
         )}
       </main>
+
+      {/* Move action bar */}
+      {moveMode && (
+        <div className="fixed bottom-0 left-0 right-0 z-40 bg-white border-t border-stone-200 px-4 py-3 flex items-center justify-between gap-3 shadow-lg">
+          <span className="text-sm text-stone-600">
+            {selectedIds.size} valgt
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => { setMoveMode(false); setSelectedIds(new Set()) }}
+              className="px-4 py-2 text-sm text-stone-500 hover:text-stone-700 transition-colors">
+              Avbryt
+            </button>
+            <button
+              onClick={handleMove}
+              disabled={selectedIds.size === 0 || moving}
+              className="px-5 py-2 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
+              {moving && <Spinner />}
+              Flytt til {moveDestination}
+            </button>
+          </div>
+        </div>
+      )}
 
       {showNewModal && (
         <NewInventoryModal onCreate={createItem} onClose={() => setShowNewModal(false)} initialKategori={tab} />
@@ -1356,7 +1579,9 @@ export default function InventoryPage() {
       {/* FAB */}
       <button
         onClick={() => setShowNewModal(true)}
-        className="fixed bottom-6 right-6 w-14 h-14 bg-[#C9A57A] text-white rounded-full shadow-lg hover:bg-[#b8925f] transition-all flex items-center justify-center cursor-pointer z-30"
+        className={`fixed right-6 w-14 h-14 bg-[#C9A57A] text-white rounded-full shadow-lg hover:bg-[#b8925f] transition-all flex items-center justify-center cursor-pointer z-30 ${
+          moveMode ? 'bottom-20' : 'bottom-6'
+        }`}
         aria-label="Legg til"
       >
         <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">

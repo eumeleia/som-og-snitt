@@ -39,7 +39,15 @@ export async function POST(req: NextRequest) {
 
     const start = Date.now()
     const { data: rader, error } = await query
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+    if (error) {
+      if (error.code === '42703' && error.message.includes('miniatyr_svg')) {
+        return NextResponse.json(
+          { error: 'Kolonnen miniatyr_svg mangler i databasen. Kjør supabase/migrations/008_broderi_motiv_miniatyr.sql i Supabase SQL editor.' },
+          { status: 500 },
+        )
+      }
+      return NextResponse.json({ error: error.message }, { status: 500 })
+    }
 
     let totalOppdatert = 0
     for (const rad of rader ?? []) {

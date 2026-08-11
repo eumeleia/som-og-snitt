@@ -99,11 +99,43 @@ export function bokserOverlapper(a: BroderiBbox, b: BroderiBbox): boolean {
   return !(a.max_x < b.min_x || b.max_x < a.min_x || a.max_y < b.min_y || b.max_y < a.min_y)
 }
 
-// Rasteriserer et sett stingpunkter (allerede plassert på lerretet, i 1/10 mm) til hvilke
-// celler i et rutenett de faller i — celleTiendedelMm er cellesiden i 1/10 mm (10 ≈ 1 mm).
-// Brukes til en PRESIS overlapptest: to omsluttende bounding-bokser kan krysse hverandre
-// uten at et enkelt sting fra de to formene faktisk møtes (f.eks. to L-former som griper inn
-// i hverandres "hjørne" uten å røre), så selve bbox-en er for grov til å avgjøre ekte kollisjon.
+// Sampler jevnt fordelte punkter langs hver STREK mellom to påfølgende sting i lista — ikke
+// bare endepunktene. En satengkolonne har nålestikk bare langs de to kantene, med hele
+// innsiden tom; rasterCeller under ser bare punktene den får inn, så uten denne
+// interpoleringen blir hele midten av en satengsydd form et hull i rasteret.
+// Dette er en SAMPLING langs stinget, ikke en eksakt linjerasterisering: med et steg på en
+// halv rastercelle kan en diagonal strek i sjeldne tilfeller fortsatt hoppe over en
+// hjørnecelle av rasteret den til slutt brukes med. Det er et bevisst valg — å miste en
+// hjørnecelle er ubetydelig sammenlignet med å miste hele innsiden av en satengkolonne, som
+// var den opprinnelige feilen.
+export function interpolerSting(sting: [number, number][], stegTiendedelMm: number): [number, number][] {
+  const ut: [number, number][] = []
+  for (let i = 0; i < sting.length; i++) {
+    if (i > 0) {
+      const [x0, y0] = sting[i - 1]
+      const [x1, y1] = sting[i]
+      const lengde = Math.hypot(x1 - x0, y1 - y0)
+      const antallSteg = Math.floor(lengde / stegTiendedelMm)
+      for (let s = 1; s <= antallSteg; s++) {
+        const t = (s * stegTiendedelMm) / lengde
+        ut.push([x0 + (x1 - x0) * t, y0 + (y1 - y0) * t])
+      }
+    }
+    ut.push(sting[i])
+  }
+  return ut
+}
+
+// Rasteriserer et sett punkter (allerede plassert på lerretet, i 1/10 mm) til hvilke celler i
+// et rutenett de faller i — celleTiendedelMm er cellesiden i 1/10 mm (10 ≈ 1 mm). Dekker KUN
+// cellene punktene selv faller i — funksjonen trekker ingen streker mellom dem. Sparsomme
+// punkter (f.eks. nålestikkene langs kantene av en satengkolonne, der hele innsiden er tom
+// for sting) gir derfor et raster med hull midt i formen, med mindre kalleren har interpolert
+// punkter langs hvert sting FØR de sendes inn hit (se interpolerSting over, og bruken i
+// sekvens.ts sin plassertFargekjoringRaster). Brukes til en overlapptest som er mer treffsikker
+// enn bounding-bokser — to omsluttende bokser kan krysse hverandre uten at et enkelt sting fra
+// de to formene faktisk møtes (f.eks. to L-former som griper inn i hverandres "hjørne" uten å
+// røre) — men er ikke i seg selv en eksakt linjerasterisering, se forbeholdet over.
 export function rasterCeller(punkter: [number, number][], celleTiendedelMm: number): Set<string> {
   const celler = new Set<string>()
   for (const [x, y] of punkter) {

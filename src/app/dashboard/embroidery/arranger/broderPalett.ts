@@ -70,3 +70,57 @@ export const BROTHER_PALETT: { hex: string; navn: string }[] = [
   { hex: '#fff08d', navn: 'Cream Yellow' },
   { hex: '#ffc8c8', navn: 'Applique' },
 ]
+
+// Nøyaktig samme algoritme som pyembroiderys EmbThread.find_nearest_color_index /
+// color_distance_red_mean (installert under pyembroidery/EmbThread.py, linje ~46-88 —
+// samme kode PesWriter kaller ved skriving, via _snap_til_palett i api/export-pes/index.py).
+// IKKE euklidsk RGB-avstand, men compuphase sin røde-middel-vektede avstand. Målet er
+// BIT-IDENTISK resultat med Python, ikke en tilnærming — se docs/broderivurdering-
+// uavhengig-20260811.md punkt A2 for kryssjekken mot en ekte kjøring av Python-koden.
+//
+// To detaljer i Python-koden er lette å overse og gir feil svar om de hoppes over:
+//  1. `round((r1+r2)/2)` i Python 3 er BANKERS ROUNDING — halve verdier rundes til
+//     nærmeste PARTALL, ikke oppover. Math.round i JS runder .5 oppover, og gir en annen
+//     palettfarge for 21 av 79 507 farger i et tett rutenett over hele RGB-kuben.
+//  2. Løkken i Python bruker `dist <= current_closest_value` — ved eksakt likhet vinner
+//     den SISTE (høyeste indeks) av de like nære, ikke den første. En naiv `<` gir feil
+//     svar for 17 av de samme 79 507 fargene.
+
+function bankersRound(x: number): number {
+  const gulv = Math.floor(x)
+  const diff = x - gulv
+  if (diff < 0.5) return gulv
+  if (diff > 0.5) return gulv + 1
+  return gulv % 2 === 0 ? gulv : gulv + 1 // eksakt .5 -> nærmeste partall
+}
+
+function hexTilRgb(hex: string): [number, number, number] {
+  const h = hex.replace('#', '')
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)]
+}
+
+// compuphase sin røde-middel-vektede fargeavstand. Alle mellomregninger holder seg godt
+// innenfor 32-bits heltall (maks sum er langt under 2^31), så `>> 8` (ikke `/ 256`) er
+// trygt og eksakt her, akkurat som i Python.
+function fargeavstandRodMidde(r1: number, g1: number, b1: number, r2: number, g2: number, b2: number): number {
+  const rodMidde = bankersRound((r1 + r2) / 2)
+  const r = r1 - r2, g = g1 - g2, b = b1 - b2
+  return (((512 + rodMidde) * r * r) >> 8) + 4 * g * g + (((767 - rodMidde) * b * b) >> 8)
+}
+
+// Snapper en rå hex-farge til nærmeste farge i BROTHER_PALETT — samme resultat som
+// PesWriter kommer til å gi når fila faktisk bygges. Returnerer hele palettoppføringen
+// (hex OG navn), ikke bare hex, siden navnet skal vises i grensesnittet. Idempotent:
+// alle 64 palettfargene snapper til seg selv (bekreftet i kryssjekken), så det er trygt
+// at Python snapper en gang til på en verdi som allerede er snappet her.
+export function snappTilPalett(hex: string): { hex: string; navn: string } {
+  const [r, g, b] = hexTilRgb(hex)
+  let bestDist = Infinity
+  let bestIdx = 0
+  for (let i = 0; i < BROTHER_PALETT.length; i++) {
+    const [r2, g2, b2] = hexTilRgb(BROTHER_PALETT[i].hex)
+    const dist = fargeavstandRodMidde(r, g, b, r2, g2, b2)
+    if (dist <= bestDist) { bestDist = dist; bestIdx = i } // <= : sist vinner ved likhet, se over
+  }
+  return BROTHER_PALETT[bestIdx]
+}

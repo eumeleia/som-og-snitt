@@ -1,5 +1,5 @@
 import { plassertPunkter } from './geometri'
-import { finnFargekjoring, effektivFarge, type SekvensKontekst } from './sekvens'
+import { finnFargekjoring, effektivTradfarge, type SekvensKontekst } from './sekvens'
 import type { SekvensElement } from './types'
 
 export interface EksportKjoringSegment {
@@ -43,7 +43,11 @@ export function byggEksportSegmenter(sekvens: SekvensElement[], ctx: SekvensKont
     }
     if (blokker.length === 0) continue
 
-    const fargeHex = effektivFarge(ctx, el)
+    // Snappet, ikke rå — Python snapper uansett igjen ved skriving (idempotent, se
+    // effektivTradfarge), men å sende den allerede-snappede verdien betyr at
+    // selvsjekkens fasit og det frontend viste FØR eksport er samme farge, uten å
+    // stole på at begge steder snapper identisk ved en tilfeldighet.
+    const fargeHex = effektivTradfarge(ctx, el)?.hex
     if (!fargeHex) return null
 
     segmenter.push({ type: 'kjoring', farge_hex: fargeHex, blokker })

@@ -1,6 +1,6 @@
 import { plassertPunkter, plassertBbox, kombinerBbox } from './geometri'
-import { motivKey } from './sekvens'
-import type { BroderiBbox, BroderiMotivData, PlassertMotiv } from './types'
+import { motivKey, byggFargePerBlokk, type SekvensKontekst } from './sekvens'
+import type { BroderiBbox, BroderiMotivData, PlassertMotiv, SekvensElement } from './types'
 
 const RAMME_MM = 100
 const HALV_RAMME_MM = RAMME_MM / 2
@@ -29,12 +29,19 @@ function fmt(n: number): string {
 // Bygger en liten, forenklet SVG av HELE komposisjonen slik den ser ut på lerretet akkurat
 // nå — samme transformasjon (plassertPunkter, altså roterLokalePunkter + translasjon) som
 // lerretet (PlassertMotivGruppe) og PES-eksporten (eksport.ts) bruker, ikke en tredje egen
-// variant. Kalles KUN fra lagre() i KomposisjonEditor, aldri fra en listevisning — se
-// miniatyrSvg-kommentaren i types.ts.
+// variant. Tar sekvensen med for å slå opp snappet trådfarge per stingblokk via
+// byggFargePerBlokk — samme kilde (og samme Brother-palett-snapping) som lerretet leser
+// fra — så miniatyren ikke lyver om fargen PlassertMotivGruppe allerede viser riktig.
+// Kalles KUN fra lagre() i KomposisjonEditor, aldri fra en listevisning — se
+// miniatyrSvg-kommentaren i types.ts. Eksisterende lagrede miniatyrer med gamle
+// (rå/uendret palett-)farger migreres ikke; de regenereres først ved neste lagring.
 export function byggMiniatyrSvg(
   motiver: PlassertMotiv[],
   resolved: Record<string, BroderiMotivData>,
+  sekvens: SekvensElement[],
 ): string {
+  const ctx: SekvensKontekst = { motiver, resolved }
+  const fargePerBlokk = byggFargePerBlokk(sekvens, ctx)
   const plasserteBbokser: BroderiBbox[] = []
   const alleBlokker: Array<{ farge_hex: string; punkter: [number, number][] }> = []
 
@@ -43,15 +50,16 @@ export function byggMiniatyrSvg(
     const motivBbox = data?.bbox
     if (!motivBbox) continue
     plasserteBbokser.push(plassertBbox(motivBbox, pm.rotasjonGrader, pm.posisjonXTiendedelMm, pm.posisjonYTiendedelMm))
-    for (const blokk of data.stingblokker) {
+    const snappedeFarger = fargePerBlokk[pm.id]
+    data.stingblokker.forEach((blokk, i) => {
       alleBlokker.push({
-        farge_hex: blokk.farge_hex,
+        farge_hex: snappedeFarger?.[i] ?? blokk.farge_hex,
         punkter: plassertPunkter(
           nedskalertBlokk(blokk.sting), motivBbox, pm.rotasjonGrader,
           pm.posisjonXTiendedelMm, pm.posisjonYTiendedelMm,
         ),
       })
-    }
+    })
   }
 
   // Samme utregning av synlig område som viewBox i KomposisjonEditor — rammen er alltid med,

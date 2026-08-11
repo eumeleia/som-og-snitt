@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { plassertPunkter } from './geometri'
-import { effektivFarge, finnFargekjoring, type SekvensKontekst } from './sekvens'
+import { effektivFargeRaa, effektivTradfarge, finnFargekjoring, type SekvensKontekst } from './sekvens'
 import type { BroderiMotivData, PlassertMotiv, SekvensElement } from './types'
 
 interface SimSubPath {
@@ -12,7 +12,9 @@ interface SimSubPath {
 
 interface SimSegment {
   elId: string
-  farge: string
+  farge: string // snappet trådfarge — det maskinen faktisk syr, brukes til selve tegningen
+  fargeNavn: string
+  raaFarge: string // rå, kun til sammenligning/visning når den avviker fra farge
   motivNavn: string
   kjoringNummer: number
   stingFra: number
@@ -31,7 +33,9 @@ function byggSegmenter(sekvens: SekvensElement[], ctx: SekvensKontekst): SimSegm
     if (!funn) continue
     const { pm, data, kjoring } = funn
     if (!data.bbox) continue
-    const farge = effektivFarge(ctx, el) ?? kjoring.farge_hex
+    const raaFarge = effektivFargeRaa(ctx, el) ?? kjoring.farge_hex
+    const tradfarge = effektivTradfarge(ctx, el)
+    const farge = tradfarge?.hex ?? raaFarge
     const subPaths: SimSubPath[] = []
     let segSting = cumSting
     for (let i = kjoring.fra_index; i <= kjoring.til_index; i++) {
@@ -43,7 +47,7 @@ function byggSegmenter(sekvens: SekvensElement[], ctx: SekvensKontekst): SimSegm
     }
     if (subPaths.length === 0) continue
     segments.push({
-      elId: el.id, farge, motivNavn: pm.navn, kjoringNummer,
+      elId: el.id, farge, fargeNavn: tradfarge?.navn ?? '', raaFarge, motivNavn: pm.navn, kjoringNummer,
       stingFra: cumSting, stingTil: segSting, subPaths,
     })
     cumSting = segSting
@@ -183,14 +187,19 @@ export function StingSimulator({ sekvens, motiver, resolved, halv }: {
       />
 
       {currentSeg && (
-        <p className="text-sm text-stone-700 mb-2">
-          Kjøring {currentSeg.kjoringNummer}
-          <span
-            className="inline-block w-4 h-4 rounded border border-stone-300 mx-1.5 align-middle"
-            style={{ backgroundColor: currentSeg.farge }}
-          />
-          {currentSeg.farge} · {currentSeg.motivNavn}
-        </p>
+        <div className="text-sm text-stone-700 mb-2">
+          <p>
+            Kjøring {currentSeg.kjoringNummer}
+            <span
+              className="inline-block w-4 h-4 rounded border border-stone-300 mx-1.5 align-middle"
+              style={{ backgroundColor: currentSeg.farge }}
+            />
+            {currentSeg.farge}{currentSeg.fargeNavn ? ` · ${currentSeg.fargeNavn}` : ''} · {currentSeg.motivNavn}
+          </p>
+          {currentSeg.raaFarge !== currentSeg.farge && (
+            <p className="text-xs text-stone-400">Kildefila har {currentSeg.raaFarge} — maskinen syr {currentSeg.farge}.</p>
+          )}
+        </div>
       )}
 
       <canvas

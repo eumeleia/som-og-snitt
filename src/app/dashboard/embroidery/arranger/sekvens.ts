@@ -1,6 +1,7 @@
 import {
-  plassertUnderBbox, kombinerBbox, bokserOverlapper, plassertPunkter, rasterCeller, cellerKolliderer,
+  plassertUnderBbox, kombinerBbox, bokserOverlapper, plassertPunkter, interpolerSting, rasterCeller, cellerKolliderer,
 } from './geometri'
+import { snappTilPalett } from './broderPalett'
 import type {
   BroderiBbox, BroderiMotivData, PlassertMotiv, SekvensElement, SekvensKjoring,
 } from './types'
@@ -37,9 +38,52 @@ export function finnFargekjoring(ctx: SekvensKontekst, el: SekvensKjoring) {
   return { pm, data, kjoring }
 }
 
-export function effektivFarge(ctx: SekvensKontekst, el: SekvensKjoring): string | undefined {
+// Den RÅ effektive fargen — brukerens overstyring hvis den finnes, ellers fargen slik
+// den ble tolket fra kildefila. IKKE snappet til Brother-paletten. Trengs bare til å vise
+// «opprinnelig farge»; alt som skal representere hva maskinen faktisk syr (telling,
+// likhetstester, eksport, visning) skal bruke effektivTradfarge under.
+export function effektivFargeRaa(ctx: SekvensKontekst, el: SekvensKjoring): string | undefined {
   if (el.fargeOverrideHex) return el.fargeOverrideHex
   return finnFargekjoring(ctx, el)?.kjoring.farge_hex
+}
+
+// Den effektive TRÅDFARGEN — effektivFargeRaa snappet til nærmeste farge i Brothers
+// 64-fargers palett (snappTilPalett), altså den samme fargen PesWriter kommer til å
+// bruke når fila faktisk bygges. Dette er fargen "sant" i appens forstand: to kjøringer
+// som snapper likt ER samme tråd, selv om de rå hex-verdiene er ulike.
+export function effektivTradfarge(ctx: SekvensKontekst, el: SekvensKjoring): { hex: string; navn: string } | undefined {
+  const raa = effektivFargeRaa(ctx, el)
+  if (!raa) return undefined
+  return snappTilPalett(raa)
+}
+
+// Snappet trådfarge PER STINGBLOKK per plassert motiv, for HVER kjøring i sekvensen —
+// ikke bare de som er overstyrt. Palett-snapping er billig for ett kall, men lerretet og
+// miniatyren tegner opptil tusenvis av blokker per rendring; å snappe INNI den løkken
+// ville gjort det samme oppslaget på nytt for hver enkelt polyline. Regn den ut HER, én
+// gang per sekvens-/motiv-endring (se kalleren, KomposisjonEditor.tsx), og slå bare opp i
+// det ferdige arrayet i selve rendringen. Nøkkelen er plassertMotivId, indeksen er
+// stingblokk-indeksen i det motivets egen data.stingblokker — en kjøring kan spenne flere
+// blokker (fra_index..til_index), og ALLE dem får samme (snappede) farge. undefined betyr
+// bare at motivet ikke er tolket ferdig ennå (finnFargekjoring/effektivTradfarge returnerte
+// undefined); kallstedet faller da tilbake til den rå blokk.farge_hex.
+export function byggFargePerBlokk(
+  sekvens: SekvensElement[], ctx: SekvensKontekst,
+): Record<string, (string | undefined)[]> {
+  const ut: Record<string, (string | undefined)[]> = {}
+  for (const el of sekvens) {
+    if (el.type !== 'kjoring') continue
+    const funn = finnFargekjoring(ctx, el)
+    if (!funn) continue
+    const { data, kjoring } = funn
+    const tradfarge = effektivTradfarge(ctx, el)
+    if (!tradfarge) continue
+    const arr = ut[el.plassertMotivId] ?? (ut[el.plassertMotivId] = new Array(data.stingblokker.length).fill(undefined))
+    for (let i = kjoring.fra_index; i <= kjoring.til_index; i++) {
+      if (i >= 0 && i < arr.length) arr[i] = tradfarge.hex
+    }
+  }
+  return ut
 }
 
 // Bbox for selve fargekjøringen (ikke hele motivet), plassert på lerretet etter
@@ -62,23 +106,38 @@ export function plassertFargekjoringBbox(ctx: SekvensKontekst, el: SekvensKjorin
 
 const OVERLAPP_CELLE_TIENDEDEL_MM = 10 // ≈ 1 mm per celle
 
-// De FAKTISKE plasserte stingpunktene for én fargekjøring (ikke bare dens bbox) — brukes av
-// den rasteriserte overlapptesten. plassertFargekjoringBbox er fortsatt riktig verktøy der en
-// rask, grov boks er nok (den brukes andre steder); selve advarselen under trenger noe
-// presist, siden to bokser kan krysse hverandre uten at et sting fra formene faktisk møtes.
-function plassertFargekjoringPunkter(ctx: SekvensKontekst, el: SekvensKjoring): [number, number][] | undefined {
+// Steglengden ved interpolering langs stingene før rasterisering (se beregnFargekjoringRaster
+// under og interpolerSting i geometri.ts) — en halv rastercelle, altså 5 tiendedels mm ≈ 0,5 mm.
+// Regnet ut FRA cellestørrelsen (ikke et eget fast tall) så de to alltid forblir i det
+// tiltenkte forholdet til hverandre.
+const OVERLAPP_INTERPOLER_STEG_TIENDEDEL_MM = OVERLAPP_CELLE_TIENDEDEL_MM / 2
+
+// Bygger rasteret for én fargekjøring BLOKK FOR BLOKK, aldri over hele kjøringens flate
+// stingliste. En fargekjøring kan spenne flere stingblokker (kjoring.fra_index..til_index),
+// og grensen mellom to blokker kan være et klipp — der finnes ingen tråd. Å flate ut alle
+// blokkenes sting til én liste og interpolere over DEN ville trekke en falsk linje fra siste
+// sting i én blokk til første sting i neste, tvers over klippet, og gi falske kollisjoner.
+// Derfor: interpoler og rasteriser hver blokk for seg, og slå bare sammen CELLENE (ikke
+// punktene) i ett Set til slutt — ingen interpolert linje kan da krysse en blokkgrense.
+// plassertFargekjoringBbox er fortsatt riktig verktøy der en rask, grov boks er nok (den
+// brukes andre steder som forhåndssjekk); dette dekker selve den presise overlapptesten.
+function beregnFargekjoringRaster(ctx: SekvensKontekst, el: SekvensKjoring): Set<string> | undefined {
   const funn = finnFargekjoring(ctx, el)
   if (!funn) return undefined
   const { pm, data, kjoring } = funn
   const motivBbox = data.bbox
   if (!motivBbox) return undefined
-  const lokalePunkter: [number, number][] = []
+  const celler = new Set<string>()
+  let harSting = false
   for (let i = kjoring.fra_index; i <= kjoring.til_index; i++) {
     const blokk = data.stingblokker[i]
-    if (blokk) lokalePunkter.push(...blokk.sting)
+    if (!blokk || blokk.sting.length === 0) continue
+    harSting = true
+    const interpolert = interpolerSting(blokk.sting, OVERLAPP_INTERPOLER_STEG_TIENDEDEL_MM)
+    const plassert = plassertPunkter(interpolert, motivBbox, pm.rotasjonGrader, pm.posisjonXTiendedelMm, pm.posisjonYTiendedelMm)
+    for (const celle of rasterCeller(plassert, OVERLAPP_CELLE_TIENDEDEL_MM)) celler.add(celle)
   }
-  if (lokalePunkter.length === 0) return undefined
-  return plassertPunkter(lokalePunkter, motivBbox, pm.rotasjonGrader, pm.posisjonXTiendedelMm, pm.posisjonYTiendedelMm)
+  return harSting ? celler : undefined
 }
 
 // Rutenettet for en kjøring kan koste å bygge (opptil tusenvis av sting) og avhenger BARE av
@@ -91,21 +150,23 @@ export function plassertFargekjoringRaster(
   const key = `${el.plassertMotivId}:${el.fargekjoringIndex}`
   const cached = cache.get(key)
   if (cached !== undefined) return cached ?? undefined
-  const punkter = plassertFargekjoringPunkter(ctx, el)
-  const raster = punkter ? rasterCeller(punkter, OVERLAPP_CELLE_TIENDEDEL_MM) : null
+  const raster = beregnFargekjoringRaster(ctx, el) ?? null
   cache.set(key, raster)
   return raster ?? undefined
 }
 
 // Antall omtredninger = antall kjøringer etter at TILSTØTENDE kjøringer med samme
-// effektive farge er slått sammen. En pause bryter alltid sammenslåingen, selv ved
-// samme farge — maskinen stopper uansett, det er nettopp det pausen er til for.
+// effektive TRÅDFARGE (snappet, ikke rå) er slått sammen. En pause bryter alltid
+// sammenslåingen, selv ved samme farge — maskinen stopper uansett, det er nettopp det
+// pausen er til for. Må bruke den snappede fargen: to rå hex-verdier som er ULIKE kan
+// snappe til samme palettfarge, og da blir de faktisk EN omtredning i fila, uansett hva
+// de rå verdiene sier.
 export function tellOmtredninger(sekvens: SekvensElement[], ctx: SekvensKontekst): number {
   let count = 0
   let forrige: string | null = null
   for (const el of sekvens) {
     if (el.type === 'pause') { forrige = null; continue }
-    const farge = effektivFarge(ctx, el)
+    const farge = effektivTradfarge(ctx, el)?.hex
     if (farge === undefined) continue
     if (farge !== forrige) count++
     forrige = farge
@@ -148,7 +209,10 @@ export function bevarerMotivRekkefølge(sekvens: SekvensElement[]): boolean {
   return true
 }
 
-// Foreslår sammenslåing av par av IKKE-tilstøtende kjøringer med samme farge.
+// Foreslår sammenslåing av par av IKKE-tilstøtende kjøringer med samme TRÅDFARGE (snappet,
+// ikke rå) — to kjøringer som snapper likt ER samme tråd i fila, selv om de rå hex-verdiene
+// er ulike, så de skal regnes som kandidater her. At det gir FLERE forslag enn en ren
+// rå-hex-sammenligning ville gjort, er riktig, ikke en bug.
 // "Sammenslåing" er alltid: flytt den andre kjøringen til rett etter den første i
 // sekvensen — det er en ren reordering, stingblokkene inni røres aldri.
 export function finnSammenslaingsforslag(
@@ -166,8 +230,8 @@ export function finnSammenslaingsforslag(
     for (let b = a + 1; b < kjoringer.length; b++) {
       const iEl = kjoringer[a]
       const jEl = kjoringer[b]
-      const fargeI = effektivFarge(ctx, iEl.el)
-      const fargeJ = effektivFarge(ctx, jEl.el)
+      const fargeI = effektivTradfarge(ctx, iEl.el)?.hex
+      const fargeJ = effektivTradfarge(ctx, jEl.el)?.hex
       if (!fargeI || !fargeJ || fargeI !== fargeJ) continue
 
       const mellomIndekser: number[] = []
@@ -177,7 +241,7 @@ export function finnSammenslaingsforslag(
       const mellomElementer = mellomIndekser.map(k => sekvens[k])
       // Alt mellom dem er allerede samme farge og ingen pause → allerede én omtredning i praksis.
       const alleSammeFargeUtenPause = mellomElementer.every(
-        el => el.type === 'kjoring' && effektivFarge(ctx, el) === fargeI,
+        el => el.type === 'kjoring' && effektivTradfarge(ctx, el)?.hex === fargeI,
       )
       if (alleSammeFargeUtenPause) continue
 
@@ -190,7 +254,7 @@ export function finnSammenslaingsforslag(
 
       const mellomKjoringer = mellomElementer.filter((el): el is SekvensKjoring => el.type === 'kjoring')
       const fargerMellom = Array.from(
-        new Set(mellomKjoringer.map(el => effektivFarge(ctx, el)).filter((f): f is string => !!f)),
+        new Set(mellomKjoringer.map(el => effektivTradfarge(ctx, el)?.hex).filter((f): f is string => !!f)),
       )
 
       // Sammenslåingen flytter ALDRI i — bare j, til rett etter i. Rekkefølgen mellom i og
@@ -202,7 +266,7 @@ export function finnSammenslaingsforslag(
       const overlappendeFarger: string[] = []
       if (jBbox) {
         for (const mEl of mellomKjoringer) {
-          const mFarge = effektivFarge(ctx, mEl)
+          const mFarge = effektivTradfarge(ctx, mEl)?.hex
           if (!mFarge || mFarge === fargeI) continue
           const mBbox = plassertFargekjoringBbox(ctx, mEl)
           // Bbox-krysset er en billig FORHÅNDSSJEKK, ikke selve avgjørelsen — to bokser kan

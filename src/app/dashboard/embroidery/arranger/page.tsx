@@ -34,6 +34,7 @@ export default function ArrangerPage() {
   const [aktivKomposisjon, setAktivKomposisjon] = useState<BroderiKomposisjon | null>(null)
   const [nyKomposisjon, setNyKomposisjon] = useState(false)
   const [deleteKompId, setDeleteKompId] = useState<string | null>(null)
+  const [kopierKompId, setKopierKompId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -91,6 +92,21 @@ export default function ArrangerPage() {
       setKomposisjoner(k => k.filter(x => x.id !== id))
     }
     setDeleteKompId(null)
+  }
+
+  async function kopierKomposisjon(k: BroderiKomposisjon) {
+    setKopierKompId(k.id)
+    const kopi = { ...k.data, navn: `${k.data.navn || 'Uten navn'} (kopi)` }
+    const res = await fetch('/api/broderi-komposisjon', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: kopi }),
+    })
+    if (res.ok) {
+      const ny = await res.json() as BroderiKomposisjon
+      setKomposisjoner(prev => [ny, ...prev])
+    }
+    setKopierKompId(null)
   }
 
   const filtered = useMemo(() => {
@@ -247,16 +263,29 @@ export default function ArrangerPage() {
                       </button>
                     </div>
                   ) : (
-                    <button
-                      onClick={() => setDeleteKompId(k.id)}
-                      className="p-2 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors flex-shrink-0"
-                      aria-label="Slett komposisjon"
-                    >
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                          d="M6 7h12M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2m-7 0v12a1 1 0 001 1h6a1 1 0 001-1V7" />
-                      </svg>
-                    </button>
+                    <div className="flex items-center gap-0.5 flex-shrink-0">
+                      <button
+                        onClick={() => kopierKomposisjon(k)}
+                        disabled={kopierKompId === k.id}
+                        className="p-2 rounded-lg hover:bg-stone-100 text-stone-300 hover:text-stone-500 transition-colors disabled:opacity-40"
+                        aria-label="Kopier komposisjon"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                            d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                      </button>
+                      <button
+                        onClick={() => setDeleteKompId(k.id)}
+                        className="p-2 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors"
+                        aria-label="Slett komposisjon"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                            d="M6 7h12M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2m-7 0v12a1 1 0 001 1h6a1 1 0 001-1V7" />
+                        </svg>
+                      </button>
+                    </div>
                   )}
                 </li>
               ))}

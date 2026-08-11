@@ -638,48 +638,72 @@ function NewRecipeModal({ onCreate, onClose }: {
       }
 
       // Resumable upload: server creates session URL, browser PUTs bytes directly to Drive.
-      // CORS blocks reading the PUT response, so we verify via a server-side file lookup.
-      async function uploadToDrive(file: File): Promise<{ fileId: string; webViewLink: string } | null> {
-        if (!driveFolderId) return null
+      // upload-session forwards the incoming Origin to Drive's init call — an UNVERIFIED
+      // hypothesis that the session URL then answers with CORS, so the PUT response becomes
+      // readable. If it doesn't, or the fetch itself is rejected (which looks identical to a
+      // real network failure — an opaque `TypeError: Failed to fetch` can't be told apart
+      // from CORS), fall through to the server-side file-by-name lookup as a backstop.
+      type DriveUploadResult =
+        | { ok: true; fileId: string; webViewLink: string }
+        | { ok: false; grunn: 'ingen-svar' | 'ikke-levert' }
+
+      async function uploadToDrive(file: File): Promise<DriveUploadResult> {
+        if (!driveFolderId) return { ok: false, grunn: 'ingen-svar' }
         try {
           const sessionRes = await fetch('/api/drive/upload-session', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ fileName: file.name, mimeType: 'application/pdf', folderId: driveFolderId }),
           })
-          if (!sessionRes.ok) return null
-          const { uploadUrl } = await sessionRes.json() as { uploadUrl: string }
+          if (!sessionRes.ok) return { ok: false, grunn: 'ingen-svar' }
+          const { uploadUrl, sessionStartetVed } = await sessionRes.json() as {
+            uploadUrl: string
+            sessionStartetVed: number
+          }
 
-          // PUT bytes directly to Drive. CORS may block reading the response even on success —
-          // swallow that error and verify via the file-by-name lookup below.
           try {
-            await fetch(uploadUrl, {
+            const putRes = await fetch(uploadUrl, {
               method: 'PUT',
               headers: { 'Content-Type': 'application/pdf' },
               body: file,
             })
-          } catch { /* CORS blocked response reading; upload likely succeeded */ }
+            // Response IS readable here (no CORS block) — a non-2xx status is a real,
+            // confirmed failure, not an assumption.
+            if (!putRes.ok) return { ok: false, grunn: 'ikke-levert' }
+            const body = await putRes.json() as { id?: string }
+            if (body.id) {
+              return { ok: true, fileId: body.id, webViewLink: `https://drive.google.com/file/d/${body.id}/view` }
+            }
+            // Readable but no id — unexpected; give the lookup below a chance before giving up.
+          } catch {
+            // fetch rejected with an opaque TypeError — could be CORS OR a real network
+            // failure, and the two are indistinguishable from this error alone. Don't assume
+            // success: fall through to the lookup instead of swallowing it as "probably fine".
+          }
 
-          // Verify upload and retrieve file metadata server-side
+          // Backstop: server-side lookup with retries and a session timestamp that tells
+          // THIS upload session's file apart from a same-named file left by an earlier
+          // (failed) attempt — see the createdTime filter in file-by-name.
           const lookupRes = await fetch('/api/drive/file-by-name', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ fileName: file.name, folderId: driveFolderId }),
+            body: JSON.stringify({ fileName: file.name, folderId: driveFolderId, sessionStartetVed }),
           })
-          if (!lookupRes.ok) return null
+          if (!lookupRes.ok) return { ok: false, grunn: 'ikke-levert' } // lookup ran and found nothing
           const { fileId, webViewLink } = await lookupRes.json() as { fileId: string; webViewLink: string }
-          if (!fileId) return null
-          return { fileId, webViewLink }
+          if (!fileId) return { ok: false, grunn: 'ikke-levert' }
+          return { ok: true, fileId, webViewLink }
         } catch {
-          return null
+          return { ok: false, grunn: 'ingen-svar' }
         }
       }
 
       const uploadResults = await Promise.all(
         pdfs.map(async ({ file, type }) => {
+          let driveGrunn: 'ingen-svar' | 'ikke-levert' | null = null
           if (driveFolderId) {
             const driveResult = await uploadToDrive(file)
-            if (driveResult) {
+            if (driveResult.ok) {
               const { fileId, webViewLink } = driveResult
               if (type === 'Mønster') {
                 // Mønstre: Drive only
@@ -698,10 +722,17 @@ function NewRecipeModal({ onCreate, onClose }: {
               const { data: urlData } = supabase.storage.from('project-images').getPublicUrl(filename)
               return { id: uid(), name: file.name, url: urlData.publicUrl, type, source: 'upload' as const, storage: 'supabase' as const, driveFileId: fileId, driveLink: webViewLink }
             }
+            driveGrunn = driveResult.grunn
           }
-          // Mønster og Annet skal KUN ligge i Drive — ikke fall back til Supabase
-          if (type === 'Mønster') throw new Error(`Mønster «${file.name}» ble ikke lastet opp til Drive`)
-          if (type === 'Annet') throw new Error(`«${file.name}» ble ikke lastet opp til Drive`)
+          // Mønster og Annet skal KUN ligge i Drive — ikke fall back til Supabase. Meldingen
+          // skiller HVA som gikk galt i stedet for å si «ble ikke lastet opp» uansett årsak.
+          if (type === 'Mønster' || type === 'Annet') {
+            const label = type === 'Mønster' ? `Mønster «${file.name}»` : `«${file.name}»`
+            const grunnTekst = driveGrunn === 'ingen-svar' ? 'Drive svarte ikke'
+              : driveGrunn === 'ikke-levert' ? 'fila kom ikke fram til Drive'
+              : 'Drive er ikke tilkoblet'
+            throw new Error(`${label}: ${grunnTekst}`)
+          }
 
           // Fallback for Oppskrift: Supabase (Drive ikke tilkoblet eller Drive-opplasting feilet)
           const filename = `recipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.pdf`

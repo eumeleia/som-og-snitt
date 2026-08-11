@@ -10,8 +10,9 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { FargePicker } from './FargePicker'
+import { snappTilPalett } from './broderPalett'
 import {
-  finnFargekjoring, effektivFarge, tellOmtredninger, flyttElementEtter,
+  finnFargekjoring, effektivFargeRaa, effektivTradfarge, tellOmtredninger, flyttElementEtter,
   finnSammenslaingsforslag, sjekkFasesortering, fasesorter, nyPause,
   plassertFargekjoringRaster, bevarerMotivRekkefølge, type SekvensKontekst, type SammenslaingForslag,
 } from './sekvens'
@@ -135,7 +136,7 @@ export function SekvensPanel({
       const funn = finnFargekjoring(ctx, el)
       return {
         nr: kjoringsNummer.get(mid) ?? '?',
-        farge: effektivFarge(ctx, el) ?? funn?.kjoring.farge_hex,
+        farge: effektivTradfarge(ctx, el)?.hex ?? funn?.kjoring.farge_hex,
         navn: funn?.pm.navn,
       }
     }).filter((x): x is { nr: number | string; farge: string | undefined; navn: string | undefined } => x !== null)
@@ -304,8 +305,13 @@ export function SekvensPanel({
 
       {fargePickerEl && fargePickerFunn && (
         <FargePicker
-          nuvarendeHex={fargePickerEl.fargeOverrideHex ?? fargePickerFunn.kjoring.farge_hex}
-          originalHex={fargePickerFunn.kjoring.farge_hex}
+          // Begge må være snappede palettverdier, ikke bare nuvarendeHex — FargePickerens
+          // rutenett ER paletten (f.hex === nuvarendeHex), og "Nullstill til original"
+          // vises når nuvarendeHex !== originalHex. Var originalHex fortsatt rå, ville en
+          // IKKE-overstyrt kjøring med en rå farge som ikke selv er en palettfarge alltid
+          // vist "Nullstill" (snappet ≠ rå) selv uten noen faktisk overstyring å nullstille.
+          nuvarendeHex={effektivTradfarge(ctx, fargePickerEl)?.hex ?? fargePickerFunn.kjoring.farge_hex}
+          originalHex={snappTilPalett(fargePickerFunn.kjoring.farge_hex).hex}
           onVelg={hex => settFarge(fargePickerEl.id, hex)}
           onNullstill={() => nullstillFarge(fargePickerEl.id)}
           onClose={() => setFargePickerForId(null)}
@@ -342,7 +348,9 @@ function KjoringRad({
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: el.id })
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }
   const funn = finnFargekjoring(ctx, el)
-  const farge = effektivFarge(ctx, el)
+  const raaFarge = effektivFargeRaa(ctx, el)
+  const tradfarge = effektivTradfarge(ctx, el)
+  const farge = tradfarge?.hex ?? raaFarge
 
   return (
     <li
@@ -377,8 +385,11 @@ function KjoringRad({
           <div className="flex-1 min-w-0">
             <p className="text-sm text-stone-700 truncate">{funn.pm.navn}</p>
             <p className="text-xs text-stone-400">
-              {farge}{el.fargeOverrideHex ? ' (endret)' : ''} · {funn.kjoring.antall_blokker} del{funn.kjoring.antall_blokker === 1 ? '' : 'er'}
+              {farge}{tradfarge ? ` · ${tradfarge.navn}` : ''}{el.fargeOverrideHex ? ' (endret)' : ''} · {funn.kjoring.antall_blokker} del{funn.kjoring.antall_blokker === 1 ? '' : 'er'}
             </p>
+            {raaFarge !== undefined && raaFarge !== farge && (
+              <p className="text-[11px] text-stone-400">Kildefila har {raaFarge} — maskinen syr {farge}.</p>
+            )}
           </div>
           <span className="text-xs text-stone-500 flex-shrink-0">{funn.kjoring.antall_sting} sting</span>
         </>
@@ -446,7 +457,7 @@ function byggAvspSegmenter(
     if (!funn) continue
     const { pm, data, kjoring } = funn
     if (!data.bbox) continue
-    const farge = effektivFarge(ctx, el) ?? kjoring.farge_hex
+    const farge = effektivTradfarge(ctx, el)?.hex ?? kjoring.farge_hex
     const pts: [number, number][] = []
     for (let i = kjoring.fra_index; i <= kjoring.til_index; i++) {
       const b = data.stingblokker[i]
@@ -675,7 +686,7 @@ function ForhåndsvisModal({
             .map(mid => {
               const el = sekvens.find(e => e.id === mid) as SekvensKjoring | undefined
               if (!el) return null
-              return finnFargekjoring(ctx, el)?.pm.navn ?? effektivFarge(ctx, el) ?? null
+              return finnFargekjoring(ctx, el)?.pm.navn ?? effektivTradfarge(ctx, el)?.hex ?? null
             })
             .filter((n): n is string => n !== null),
         ),

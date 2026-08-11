@@ -6,7 +6,7 @@ import { hentAllePaginert } from '@/lib/supabasePaginering'
 import { describeError, type ErrorDetails } from '@/lib/error-details'
 import { ErrorDetailsView } from '@/components/ErrorDetailsView'
 import { roterLokalePunkter, plassertBbox, kombinerBbox } from './geometri'
-import { synkroniserSekvens } from './sekvens'
+import { synkroniserSekvens, byggFargePerBlokk, type SekvensKontekst } from './sekvens'
 import { byggMiniatyrSvg } from './miniatyr'
 import { SekvensPanel } from './SekvensPanel'
 import { EksportPanel } from './EksportPanel'
@@ -324,7 +324,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
       // Miniatyren regnes ut HER, ved lagring — aldri når komposisjonslista bare vises. Bruker
       // resolved slik den står akkurat nå (motiver som ikke er tolket ferdig ennå mangler
       // rett og slett fra miniatyren, i stedet for å blokkere selve lagringen).
-      const miniatyrSvg = byggMiniatyrSvg(motiver, resolved)
+      const miniatyrSvg = byggMiniatyrSvg(motiver, resolved, sekvens)
       const body = { data: { navn, motiver, sekvens, miniatyrSvg } }
       const res = id
         ? await fetch(`/api/broderi-komposisjon/${id}`, {
@@ -362,6 +362,13 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
     const el = sekvens.find(e => e.id === aktivKjoringId)
     return el?.type === 'kjoring' ? el : null
   }, [aktivKjoringId, sekvens])
+
+  // Fargeoverstyringer fra sekvensen, per stingblokk per plassert motiv — den samme kilden
+  // lerretet under og miniatyren (byggMiniatyrSvg, ved lagring) leser fra, så alle flater er
+  // enige om fargen på en kjøring. Rein utledning fra (sekvens, ctx); rører ikke roterteBlokker
+  // sin egen useMemo i PlassertMotivGruppe, som fortsatt bare regner geometri.
+  const ctx: SekvensKontekst = useMemo(() => ({ motiver, resolved }), [motiver, resolved])
+  const fargePerBlokk = useMemo(() => byggFargePerBlokk(sekvens, ctx), [sekvens, ctx])
 
   return (
     <div className="w-full max-w-3xl mx-auto px-4 sm:px-6 py-3 pb-24">
@@ -426,6 +433,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
                 valgt={pm.id === valgtId}
                 utenforRamme={utenforRammeIder.includes(pm.id)}
                 aktivKjoring={aktivKjoring}
+                fargePerBlokk={fargePerBlokk[pm.id] ?? []}
                 onPointerDown={e => onPointerDownMotiv(e, pm)}
               />
             )
@@ -574,13 +582,14 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
 
 // ── Ett plassert motiv, rendret som roterte + forskjøvede stingbaner ──────────────
 
-function PlassertMotivGruppe({ pm, data, bbox, valgt, utenforRamme, aktivKjoring, onPointerDown }: {
+function PlassertMotivGruppe({ pm, data, bbox, valgt, utenforRamme, aktivKjoring, fargePerBlokk, onPointerDown }: {
   pm: PlassertMotiv
   data: BroderiMotivData
   bbox: BroderiBbox
   valgt: boolean
   utenforRamme: boolean
   aktivKjoring: SekvensKjoring | null
+  fargePerBlokk: (string | undefined)[]
   onPointerDown: (e: ReactPointerEvent) => void
 }) {
   const roterteBlokker = useMemo(
@@ -628,7 +637,7 @@ function PlassertMotivGruppe({ pm, data, bbox, valgt, utenforRamme, aktivKjoring
             key={i}
             points={b.punkter.map(([x, y]) => `${x / 10},${y / 10}`).join(' ')}
             fill="none"
-            stroke={b.farge_hex}
+            stroke={fargePerBlokk[i] ?? b.farge_hex}
             strokeWidth={strokeWidth}
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -913,6 +922,33 @@ function vmMaalTekst(vm: VirtuelMotiv, bboxCache: Map<string, BboxMm | null>): s
   return `${fmtMm(minst)} – ${fmtMm(størst)}`
 }
 
+// Størst størrelse som passer i rammen, som standardvalg ved flervalg — samme "passer"-regel
+// som resten av velgeren (< RAMME_GRENSE_MM i begge retninger). Passer ingen, brukes den med
+// MINST STØRSTE DIMENSJON (bredde eller høyde, den som er størst av de to) — det er den
+// dimensjonen som avgjør om motivet kommer inn i rammen, ikke arealet, så "minst ille" måles
+// på den, ikke på areal. Er ingenting målt ennå, brukes ganske enkelt den første — samme som
+// ved enkeltvalg kan et umålt motiv fortsatt legges til, målet løses uansett først når det
+// faktisk skal tegnes (sikreMotivData i selve komposisjonseditoren). Har raden ingen størrelser
+// i det hele tatt, er det ingenting å velge — returnerer undefined, og kallstedet
+// (leggTilValgte) må filtrere disse bort.
+function velgStandardStorrelse(vm: VirtuelMotiv, bboxCache: Map<string, BboxMm | null>): VirtuelStorrelse | undefined {
+  const medMaal = vm.sizes
+    .map(s => ({ s, b: bboxCache.get(`${s.embroideryId}:${s.sizeId}`) }))
+    .filter((x): x is { s: VirtuelStorrelse; b: BboxMm } => x.b != null)
+  const somPasser = medMaal.filter(x => x.b.widthMm < RAMME_GRENSE_MM && x.b.heightMm < RAMME_GRENSE_MM)
+  if (somPasser.length > 0) {
+    return somPasser.reduce((best, cur) =>
+      cur.b.widthMm * cur.b.heightMm > best.b.widthMm * best.b.heightMm ? cur : best
+    ).s
+  }
+  if (medMaal.length > 0) {
+    return medMaal.reduce((best, cur) =>
+      Math.max(cur.b.widthMm, cur.b.heightMm) < Math.max(best.b.widthMm, best.b.heightMm) ? cur : best
+    ).s
+  }
+  return vm.sizes[0]
+}
+
 // Topp-nivå (ikke nestet i MotivPicker) med rene props i stedet for closures over lokal
 // state — resten av MotivPickers underkomponenter (Topptekst, ParseBunnlinje, osv.) er
 // definert nestet inni MotivPicker og bygges derfor på nytt for hver rendring; det er et
@@ -959,6 +995,7 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
   const [progress, setProgress] = useState<string | null>(null)
   const [lasterFeil, setLasterFeil] = useState<string | null>(null)
   const [lasterVersjon, setLasterVersjon] = useState(0) // increment to retry
+  const [manglerMiniatyrKolonne, setManglerMiniatyrKolonne] = useState(false)
   const avbrytRef = useRef(false)
 
   useEffect(() => { return () => { avbrytRef.current = true } }, [])
@@ -980,6 +1017,7 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
   useEffect(() => {
     let cancelled = false
     type Rad = { embroidery_id: string; size_id: string; bredde_tiendedel_mm: number | null; hoyde_tiendedel_mm: number | null; miniatyr_svg: string | null }
+    type RadUtenMiniatyr = { embroidery_id: string; size_id: string; bredde_tiendedel_mm: number | null; hoyde_tiendedel_mm: number | null }
     async function lastAlleRader(): Promise<Map<string, BboxMm | null> | null> {
       const { data: rader, error } = await hentAllePaginert<Rad>(
         (fra, til) => supabase.from('broderi_motiv')
@@ -988,15 +1026,35 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
           .range(fra, til),
         ['id'],
       )
+      let finalRader: Array<Rad | RadUtenMiniatyr>
       if (error) {
-        if (!cancelled) setLasterFeil(`Kunne ikke laste mål-data: ${error.message}`)
-        return null
+        if (error.code === '42703' && error.message.includes('miniatyr_svg')) {
+          // Migration 008 not run — load without miniatyr_svg and show banner instead of blocking.
+          if (!cancelled) setManglerMiniatyrKolonne(true)
+          const { data: rader2, error: error2 } = await hentAllePaginert<RadUtenMiniatyr>(
+            (fra, til) => supabase.from('broderi_motiv')
+              .select('embroidery_id, size_id, bredde_tiendedel_mm, hoyde_tiendedel_mm')
+              .order('id', { ascending: true })
+              .range(fra, til),
+            ['id'],
+          )
+          if (error2) {
+            if (!cancelled) setLasterFeil(`Kunne ikke laste mål-data: ${error2.message}`)
+            return null
+          }
+          finalRader = rader2
+        } else {
+          if (!cancelled) setLasterFeil(`Kunne ikke laste mål-data: ${error.message}`)
+          return null
+        }
+      } else {
+        finalRader = rader
       }
       const map = new Map<string, BboxMm | null>()
-      for (const row of rader) {
+      for (const row of finalRader) {
         map.set(`${row.embroidery_id}:${row.size_id}`,
           row.bredde_tiendedel_mm != null && row.hoyde_tiendedel_mm != null
-            ? { widthMm: row.bredde_tiendedel_mm / 10, heightMm: row.hoyde_tiendedel_mm / 10, miniatyrSvg: row.miniatyr_svg ?? null }
+            ? { widthMm: row.bredde_tiendedel_mm / 10, heightMm: row.hoyde_tiendedel_mm / 10, miniatyrSvg: ('miniatyr_svg' in row ? row.miniatyr_svg : null) ?? null }
             : null)
       }
       return map
@@ -1314,23 +1372,6 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
     })
   }
 
-  // Størst størrelse som passer i rammen, som standardvalg ved flervalg — samme "passer"-regel
-  // som resten av velgeren (< RAMME_GRENSE_MM i begge retninger). Passer ingen, brukes den minst
-  // for store (minst ille), og er ingenting målt ennå, brukes ganske enkelt den første — samme
-  // som ved enkeltvalg kan et umålt motiv fortsatt legges til, målet løses uansett først når det
-  // faktisk skal tegnes (sikreMotivData i selve komposisjonseditoren).
-  function velgStandardStorrelse(vm: VirtuelMotiv): VirtuelStorrelse {
-    const medMaal = vm.sizes
-      .map(s => ({ s, b: bboxCache.get(`${s.embroideryId}:${s.sizeId}`) }))
-      .filter((x): x is { s: VirtuelStorrelse; b: BboxMm } => x.b != null)
-    const somPasser = medMaal.filter(x => x.b.widthMm < RAMME_GRENSE_MM && x.b.heightMm < RAMME_GRENSE_MM)
-    const kandidater = somPasser.length > 0 ? somPasser : medMaal
-    if (kandidater.length === 0) return vm.sizes[0]
-    return kandidater.reduce((best, cur) =>
-      cur.b.widthMm * cur.b.heightMm > best.b.widthMm * best.b.heightMm ? cur : best
-    ).s
-  }
-
   // Enkelt rutenett med luft mellom — ikke stablet i samme punkt som enkelt-tilleggets
   // kaskade. Cellestørrelsen er satt fra den STØRSTE kjente utstrekningen blant de valgte
   // standardstørrelsene (pluss margin), så motiver med ulik størrelse ikke overlapper — når
@@ -1356,7 +1397,11 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
       .filter((vm): vm is VirtuelMotiv => !!vm)
     if (utvalg.length === 0) return
 
-    const valg = utvalg.map(vm => ({ vm, s: velgStandardStorrelse(vm) }))
+    const valg = utvalg
+      .map(vm => ({ vm, s: velgStandardStorrelse(vm, bboxCache) }))
+      .filter((x): x is { vm: VirtuelMotiv; s: VirtuelStorrelse } => x.s !== undefined)
+    if (valg.length === 0) return
+
     const størsteDimMm = Math.max(
       30,
       ...valg.map(({ s }) => {
@@ -1937,6 +1982,13 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
             </div>
 
             <div className="overflow-y-auto flex-1 min-h-0">
+              {cacheLastet && manglerMiniatyrKolonne && !lasterFeil && (
+                <div className="mx-3 mt-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700">
+                  Miniatyrbilder mangler — kjør{' '}
+                  <code className="font-mono bg-amber-100 px-1 rounded">008_broderi_motiv_miniatyr.sql</code>{' '}
+                  i Supabase SQL editor.
+                </div>
+              )}
               {lasterFeil ? (
                 <div className="p-5 text-center">
                   <p className="text-sm text-red-600 mb-3">{lasterFeil}</p>

@@ -100,20 +100,39 @@ export async function POST(req: NextRequest) {
       ? byggMotivMiniatyrSvg(bbox, parsed.stingblokker as ParsedBlokk[])
       : null
 
-    const { data: saved, error: upsertErr } = await supabaseAdmin
+    const upsertBase = {
+      embroidery_id: embroideryId,
+      size_id: sizeId,
+      navn: `${motif.data.navn} – ${size.sizeLabel}`,
+      fil_sti: size.pesUrl,
+      data: parsed,
+      bredde_tiendedel_mm: breddeTiendedelMm,
+      hoyde_tiendedel_mm: hoydeTiendedelMm,
+    }
+
+    let { data: saved, error: upsertErr } = await supabaseAdmin
       .from('broderi_motiv')
-      .upsert({
-        embroidery_id: embroideryId,
-        size_id: sizeId,
-        navn: `${motif.data.navn} – ${size.sizeLabel}`,
-        fil_sti: size.pesUrl,
-        data: parsed,
-        bredde_tiendedel_mm: breddeTiendedelMm,
-        hoyde_tiendedel_mm: hoydeTiendedelMm,
-        miniatyr_svg: miniatyrSvg,
-      }, { onConflict: 'embroidery_id,size_id' })
+      .upsert({ ...upsertBase, miniatyr_svg: miniatyrSvg }, { onConflict: 'embroidery_id,size_id' })
       .select('id, data, created_at, miniatyr_svg')
       .maybeSingle()
+
+    if (upsertErr?.code === '42703' && upsertErr.message.includes('miniatyr_svg')) {
+      // Migration 008 not run yet — retry without the missing column so parsing still works.
+      const { data: saved2, error: upsertErr2 } = await supabaseAdmin
+        .from('broderi_motiv')
+        .upsert(upsertBase, { onConflict: 'embroidery_id,size_id' })
+        .select('id, data, created_at')
+        .maybeSingle()
+      if (upsertErr2) {
+        console.error('[broderi-motiv/parse] fallback upsert feilet', embroideryId, sizeId, upsertErr2)
+        return NextResponse.json({ error: `Klarte ikke lagre parsede data: ${upsertErr2.message}` }, { status: 500 })
+      }
+      if (!saved2) {
+        return NextResponse.json({ error: `Upsert mot broderi_motiv returnerte ingen rad for embroidery_id=${embroideryId}, size_id=${sizeId}` }, { status: 500 })
+      }
+      return NextResponse.json(saved2)
+    }
+
     if (upsertErr) {
       console.error('[broderi-motiv/parse] upsert mot broderi_motiv feilet', embroideryId, sizeId, upsertErr)
       if (upsertErr.code === '42P01') {
