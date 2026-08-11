@@ -121,6 +121,7 @@ function isSizeFolder(s: string): boolean {
   if (SIZE_WORDS_ORDERED.includes(lower)) return true
   if (SIZE_ABBREVS.includes(lower)) return true
   if (/^\d+x\d+$/i.test(s)) return true
+  if (/^str\d+$/i.test(s)) return true  // str1, str2, str3 (størrelse/storlek)
   return false
 }
 
@@ -143,6 +144,8 @@ function sizeOrder(label: string): number {
   if (cmLbl) return 50 + parseFloat(cmLbl[1])
   const mmLbl = lower.match(/^(\d+(?:\.\d+)?)mm$/)
   if (mmLbl) return 55 + parseFloat(mmLbl[1])
+  const strNum = lower.match(/^str(\d+)$/)
+  if (strNum) return 60 + parseInt(strNum[1])
   return 99
 }
 
@@ -192,7 +195,33 @@ function normaliseSizeLabel(raw: string): string {
   const lower = raw.toLowerCase()
   if (SIZE_WORDS_ORDERED.includes(lower)) return lower.charAt(0).toUpperCase() + lower.slice(1)
   if (SIZE_ABBREVS.includes(lower)) return raw.toUpperCase()
+  const strNum = lower.match(/^str(\d+)$/)
+  if (strNum) return `Str ${strNum[1]}`
   return raw
+}
+
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length
+  const dp = Array.from({ length: m + 1 }, (_, i) =>
+    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+  )
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1] : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1])
+  return dp[m][n]
+}
+
+function closestSizeWord(s: string): string | null {
+  const lower = s.toLowerCase()
+  if (SIZE_WORDS_ORDERED.includes(lower)) return lower
+  if (lower.length < 4) return null
+  let best: string | null = null, bestDist = 3
+  for (const sw of SIZE_WORDS_ORDERED) {
+    if (Math.abs(sw.length - lower.length) > 2) continue
+    const d = levenshtein(lower, sw)
+    if (d < bestDist) { bestDist = d; best = sw }
+  }
+  return best
 }
 
 // Returns 'capital' | 'small' | 'numbers' | null based on which category folder appears in a path.
@@ -303,7 +332,11 @@ function parsePesPath(relativePath: string): { motifName: string; sizeLabel: str
     }
     const snM = rest.match(/^size(\d+)$/i)
     if (snM) return { motifName, sizeLabel: `Size${snM[1]}` }
+    const strM2 = rest.match(/^str(\d+)$/i)
+    if (strM2) return { motifName, sizeLabel: normaliseSizeLabel(rest) }
     if (/^\d+$/.test(rest)) return { motifName, sizeLabel: rest }
+    const fuzzy2 = rest.length >= 4 ? closestSizeWord(rest) : null
+    if (fuzzy2) return { motifName, sizeLabel: normaliseSizeLabel(fuzzy2) }
     return { motifName, sizeLabel: rest || 'Standard' }
   }
 
@@ -312,7 +345,7 @@ function parsePesPath(relativePath: string): { motifName: string; sizeLabel: str
   const flatMotifName = splitCamelCase(nameNoExt).trim()
 
   const sizeN = nameNoExt.match(/^(.+?)(Size\d+)$/i)
-  if (sizeN) return { motifName: flatMotifName, sizeLabel: sizeN[2] }
+  if (sizeN) return { motifName: splitCamelCase(sizeN[1]).trim() || flatMotifName, sizeLabel: sizeN[2] }
 
   const nxn = nameNoExt.match(/^(.+?)(\d+x\d+)$/i)
   if (nxn) return { motifName: flatMotifName, sizeLabel: nxn[2] }
@@ -326,9 +359,21 @@ function parsePesPath(relativePath: string): { motifName: string; sizeLabel: str
   const sml = nameNoExt.match(/^(.+?)[ _]([SML]|X[SL]|XXL|XXS)$/i)
   if (sml) return { motifName: flatMotifName, sizeLabel: sml[2].toUpperCase() }
 
+  // str1 / str2 / str3 (størrelse/storlek)
+  const strM = nameNoExt.match(/^(.+?)[ _](str\d+)$/i)
+  if (strM) return { motifName: splitCamelCase(strM[1]).trim() || flatMotifName, sizeLabel: normaliseSizeLabel(strM[2]) }
+
   for (const sw of SIZE_WORDS_ORDERED) {
-    if (nameNoExt.match(new RegExp(`^(.+?)[ _]${sw}$`, 'i')))
-      return { motifName: flatMotifName, sizeLabel: normaliseSizeLabel(sw) }
+    const swm = nameNoExt.match(new RegExp(`^(.+?)[ _]${sw}$`, 'i'))
+    if (swm) return { motifName: splitCamelCase(swm[1]).trim() || flatMotifName, sizeLabel: normaliseSizeLabel(sw) }
+  }
+
+  // Typo-tolerant SIZE_WORD match on the last underscore/space segment (e.g. "smallst" → "Small")
+  const lastSeg = nameNoExt.split(/[ _]/).pop() ?? ''
+  const fuzzy = closestSizeWord(lastSeg)
+  if (fuzzy) {
+    const motifPart = nameNoExt.slice(0, nameNoExt.length - lastSeg.length).replace(/[ _]+$/, '')
+    return { motifName: splitCamelCase(motifPart).trim() || flatMotifName, sizeLabel: normaliseSizeLabel(fuzzy) }
   }
 
   return { motifName: flatMotifName, sizeLabel: 'Standard' }

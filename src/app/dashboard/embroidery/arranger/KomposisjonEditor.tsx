@@ -12,14 +12,13 @@ import { SekvensPanel } from './SekvensPanel'
 import { EksportPanel } from './EksportPanel'
 import { StingSimulator } from './StingSimulator'
 import {
-  type Embroidery, type EmbroiderySize, type EmbroideryData, type BroderiMotivData, type BroderiBbox,
+  type Embroidery, type EmbroiderySize, type BroderiMotivData, type BroderiBbox,
   type BroderiKomposisjon, type PlassertMotiv, type SekvensElement, type SekvensKjoring, type EmbroideryBundle,
   type VirtuelMotiv, type VirtuelStorrelse,
   getCoverImage, getBundleCoverImage, getKats, getKatsMedArv,
 } from './types'
 import { utledTomme, trekktUtKarakter } from './tomme'
 import { buildFontData, layoutTekst, type FontData, type TextLayout } from './fontUtils'
-import { KATEGORIER } from '../page'
 
 const RAMME_MM = 100
 const RAMME_HALV_TIENDEDEL_MM = (RAMME_MM / 2) * 10 // 500 — ±50 mm sentrert på origo
@@ -955,7 +954,6 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
   const [cacheLastet, setCacheLastet] = useState(false)
   const [globalCounts, setGlobalCounts] = useState<{ passer: number; passerIkke: number } | null>(null)
   const [bundlerMap, setBundlerMap] = useState<Map<string, EmbroideryBundle>>(new Map())
-  const [kategoriOverstyringer, setKategoriOverstyringer] = useState<Map<string, string>>(new Map())
   const [parserAlle, setParserAlle] = useState(false)
   const [parseFremgang, setParseFremgang] = useState<ParseFremgang | null>(null)
   const [progress, setProgress] = useState<string | null>(null)
@@ -1092,11 +1090,7 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
 
       for (const [identitet, items] of identitetGrupper) {
         const firstM = items[0].m
-        const overstyring = kategoriOverstyringer.get(firstM.id)
-        const motivData = overstyring !== undefined
-          ? { ...firstM.data, kategori: overstyring, kategorier: overstyring ? [overstyring] : [] }
-          : firstM.data
-        const { kats, arvet } = getKatsMedArv(motivData, bundle.data)
+        const { kats, arvet } = getKatsMedArv(firstM.data, bundle.data)
         const karakter = trekktUtKarakter(identitet)
         const noenHarTomme = items.some(item => item.tomme !== null)
         res.push({
@@ -1118,11 +1112,7 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
     }
 
     for (const m of standalone) {
-      const overstyring = kategoriOverstyringer.get(m.id)
-      const motivData = overstyring !== undefined
-        ? { ...m.data, kategori: overstyring, kategorier: overstyring ? [overstyring] : [] }
-        : m.data
-      const { kats, arvet } = getKatsMedArv(motivData)
+      const { kats, arvet } = getKatsMedArv(m.data)
       res.push({
         key: m.id,
         bundleId: null,
@@ -1140,7 +1130,7 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
     }
 
     return res
-  }, [biblioteket, bundlerMap, kategoriOverstyringer])
+  }, [biblioteket, bundlerMap])
 
   const alfabetBundles = useMemo(() => {
     const bundleVMsLocal = new Map<string, VirtuelMotiv[]>()
@@ -1249,14 +1239,6 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
     }
     return Array.from(ids)
   }, [biblioteket, bundlerMap])
-
-  function settKategoriOverstyring(embroideryId: string, motivData: EmbroideryData, ny: string) {
-    setKategoriOverstyringer(prev => new Map(prev).set(embroideryId, ny))
-    supabase.from('embroidery')
-      .update({ data: { ...motivData, kategori: ny, kategorier: ny ? [ny] : [] } })
-      .eq('id', embroideryId)
-      .then(({ error }) => { if (error) console.error('[MotivPicker] Klarte ikke lagre kategori', error) })
-  }
 
   function navnForValgtStorrelse(vm: VirtuelMotiv, s: VirtuelStorrelse): string {
     const displaySize = vmSizeLabel(s)
@@ -1545,171 +1527,91 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
     )
   }
 
-  function KategoriBrikke({ kats, arvet, onEndret }: {
-    kats: string[]
-    arvet: boolean
-    onEndret: (ny: string) => void
-  }) {
-    const [redigerer, setRedigerer] = useState(false)
-    if (redigerer) {
-      return (
-        <select autoFocus defaultValue={kats[0] ?? ''}
-          onClick={e => e.stopPropagation()}
-          onChange={e => { onEndret(e.target.value); setRedigerer(false) }}
-          onBlur={() => setRedigerer(false)}
-          className="text-xs border border-stone-300 rounded-lg px-1.5 py-1 bg-white flex-shrink-0">
-          <option value="">Uten kategori</option>
-          {KATEGORIER.map(k => <option key={k} value={k}>{k}</option>)}
-        </select>
-      )
-    }
-    return (
-      <button
-        onClick={e => { e.stopPropagation(); setRedigerer(true) }}
-        title={kats.length === 0 ? 'Sett kategori' : arvet ? 'Arvet fra bundle' : 'Klikk for å endre'}
-        className={`text-xs px-2 py-1 rounded-lg border flex-shrink-0 whitespace-nowrap transition-colors ${
-          kats.length === 0 ? 'text-stone-300 border-stone-200 hover:border-stone-400'
-          : arvet ? 'text-stone-500 border-dashed border-stone-300 hover:border-stone-400'
-          : 'text-stone-600 border-stone-200 hover:border-stone-400'
-        }`}>
-        {kats[0] ?? 'Uten kategori'}{arvet && kats.length > 0 ? ' (arvet)' : ''}
-      </button>
-    )
-  }
-
-  function StatusBadge({ vm }: { vm: VirtuelMotiv }) {
-    const s = vmStatus(vm, bboxCache)
-    const antallPasser = vm.sizes.filter(sz => {
-      const b = bboxCache.get(`${sz.embroideryId}:${sz.sizeId}`)
-      return b !== undefined && b !== null && b.widthMm < RAMME_GRENSE_MM && b.heightMm < RAMME_GRENSE_MM
-    }).length
-    if (s === 'passer') return <span className="text-xs text-stone-500 flex-shrink-0">{antallPasser}/{vm.sizes.length} passer</span>
-    if (s === 'passerIkke') return <span className="text-xs text-red-400 flex-shrink-0">For stor</span>
-    return <span className="text-xs text-amber-600 flex-shrink-0">Ikke målt</span>
-  }
-
-  function BundleRad({ bundleId, fraKat }: { bundleId: string; fraKat?: string | null }) {
+  function BundleKort({ bundleId, fraKat }: { bundleId: string; fraKat?: string | null }) {
     const bundle = bundlerMap.get(bundleId)!
     const cover = getBundleCoverImage(bundle.data)
     const vms = bundleVMs.get(bundleId) ?? []
     const erFont = getKats(bundle.data).some(k => k.toLowerCase() === 'font')
     const erAlf = !erFont && alfabetBundles.has(bundleId)
-    const { kats, arvet } = getKatsMedArv({ kategori: undefined }, bundle.data)
     const antallPasser = vms.filter(vm => vmStatus(vm, bboxCache) === 'passer').length
     const stat = bundleStat(bundleId)
-    const handleClick = erFont
-      ? () => setView({ type: 'tekst', bundleId, fraKat })
-      : erAlf
-        ? () => setView({ type: 'tegn', bundleId, fraKat })
-        : () => setView({ type: 'bundle-innhold', bundleId, fraKat })
+    function handleClick() {
+      if (erFont) setView({ type: 'tekst', bundleId, fraKat })
+      else if (erAlf) setView({ type: 'tegn', bundleId, fraKat })
+      else setView({ type: 'bundle-innhold', bundleId, fraKat })
+    }
     return (
-      <li>
-        <div className="w-full flex items-center gap-3 px-5 py-2.5 hover:bg-stone-50 transition-colors">
-          <button onClick={handleClick} className="flex items-center gap-3 flex-1 min-w-0 text-left">
-            <div className="w-10 h-10 rounded-lg overflow-hidden bg-stone-100 flex-shrink-0 relative">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              {cover && <img src={cover} alt={bundle.data.navn} className="w-full h-full object-cover" />}
-              {erFont && (
-                <div className="absolute inset-0 flex items-center justify-center bg-stone-800/60">
-                  <span className="text-white font-serif font-bold text-sm">T</span>
-                </div>
-              )}
+      <article onClick={handleClick}
+        className="rounded-xl border border-stone-200 bg-white shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden">
+        <div className="relative aspect-[5/4] bg-stone-50 overflow-hidden">
+          {cover
+            // eslint-disable-next-line @next/next/no-img-element
+            ? <img src={cover} alt={bundle.data.navn} className="w-full h-full object-contain" />
+            : <div className="w-full h-full flex items-center justify-center">
+                <svg className="w-10 h-10 text-stone-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1}
+                    d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                </svg>
+              </div>
+          }
+          {erFont && (
+            <div className="absolute inset-0 flex items-center justify-center bg-stone-800/60">
+              <span className="text-white font-serif font-bold text-2xl">T</span>
             </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm text-stone-800 truncate">{bundle.data.navn}</p>
-              <p className="text-xs text-stone-400 truncate">
-                {erFont ? 'Font' : erAlf ? `${vms.length} tegn` : `${vms.length} motiver`}
-                {!erFont && ' · '}
-                {!erFont && (stat === 'passer'
-                  ? <span className="text-stone-500">{antallPasser}/{vms.length} passer</span>
-                  : stat === 'ikkeMalt'
-                    ? <span className="text-amber-600">Ikke målt</span>
-                    : <span className="text-red-400">For stor</span>)}
-              </p>
-            </div>
-          </button>
-          <KategoriBrikke kats={kats.filter(k => k.toLowerCase() !== 'font')} arvet={arvet} onEndret={() => {}} />
+          )}
+          <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 to-transparent px-3 py-2.5">
+            <p className="text-sm font-serif font-semibold text-white truncate">{bundle.data.navn || <span className="italic font-light opacity-70">Uten navn</span>}</p>
+            <p className="text-xs text-white/70">{erFont || erAlf ? `${vms.length} tegn` : `${vms.length} motiver`}</p>
+          </div>
         </div>
-      </li>
+        <div className="px-3 py-1.5">
+          <span className={`text-xs ${stat === 'passer' ? 'text-stone-500' : stat === 'ikkeMalt' ? 'text-amber-600' : 'text-red-400'}`}>
+            {erFont ? 'Font' : stat === 'passer' ? `${antallPasser}/${vms.length} passer` : stat === 'ikkeMalt' ? 'Ikke målt' : 'For stor'}
+          </span>
+        </div>
+      </article>
     )
   }
 
-  function VirtuelMotivRad({ vm, onClick, valgbar, valgt, onToggleValgt }: {
-    vm: VirtuelMotiv
-    onClick: () => void
-    valgbar?: boolean
-    valgt?: boolean
-    onToggleValgt?: () => void
-  }) {
-    const firstM = biblioteket.find(m => m.id === vm.sizes[0]?.embroideryId)
+  function MotivKort({ vm, valgt, onToggle }: { vm: VirtuelMotiv; valgt: boolean; onToggle: () => void }) {
     const maal = vmMaalTekst(vm, bboxCache)
     const forsteMiniatyr = vm.sizes
       .map(s => bboxCache.get(`${s.embroideryId}:${s.sizeId}`)?.miniatyrSvg)
       .find(svg => !!svg) ?? null
+    const stat = vmStatus(vm, bboxCache)
     return (
-      <li>
-        <div className="w-full flex items-center gap-3 px-5 py-2.5 hover:bg-stone-50 transition-colors">
-          {valgbar && (
-            <input type="checkbox" checked={!!valgt} onChange={onToggleValgt}
-              onClick={e => e.stopPropagation()}
-              className="w-4 h-4 rounded accent-[#C9A57A] flex-shrink-0" />
-          )}
-          <button onClick={onClick} className="flex items-center gap-3 flex-1 min-w-0 text-left">
-            <div className="w-10 h-10 rounded-lg overflow-hidden bg-stone-100 flex-shrink-0">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              {forsteMiniatyr
-                ? <img src={`data:image/svg+xml;utf8,${encodeURIComponent(forsteMiniatyr)}`} alt={vm.navn} className="w-full h-full object-contain p-0.5" />
-                : vm.coverImage
-                  ? <img src={vm.coverImage} alt={vm.navn} className="w-full h-full object-cover" />
-                  : null}
+      <article onClick={onToggle}
+        className={`rounded-xl border shadow-sm cursor-pointer overflow-hidden transition-all ${
+          valgt ? 'border-stone-700 ring-2 ring-stone-700/20 bg-stone-50' : 'border-stone-200 bg-white hover:shadow-md'
+        }`}>
+        <div className="relative aspect-[5/4] bg-stone-50 overflow-hidden">
+          {forsteMiniatyr
+            // eslint-disable-next-line @next/next/no-img-element
+            ? <img src={`data:image/svg+xml;utf8,${encodeURIComponent(forsteMiniatyr)}`} alt={vm.navn} className="w-full h-full object-contain p-1" />
+            : vm.coverImage
+              // eslint-disable-next-line @next/next/no-img-element
+              ? <img src={vm.coverImage} alt={vm.navn} className="w-full h-full object-contain" />
+              : <div className="w-full h-full flex items-center justify-center text-stone-200">
+                  <svg className="w-10 h-10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" />
+                  </svg>
+                </div>
+          }
+          {valgt && (
+            <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-stone-800 border-2 border-white flex items-center justify-center">
+              <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+              </svg>
             </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm text-stone-800 truncate">{vm.navn}</p>
-              <p className="text-xs text-stone-400 truncate">
-                {vm.bundleId && bundlerMap.get(vm.bundleId)?.data.navn
-                  ? `${bundlerMap.get(vm.bundleId)!.data.navn} · `
-                  : ''}
-                {vm.sizes.length === 1
-                  ? (maal ?? 'Ikke målt')
-                  : `${vm.sizes.length} størrelser${maal ? ` · ${maal}` : ''}`}
-              </p>
-            </div>
-          </button>
-          <StatusBadge vm={vm} />
-          {!vm.bundleId && firstM && (
-            <KategoriBrikke kats={vm.kats} arvet={vm.katArvet}
-              onEndret={ny => settKategoriOverstyring(vm.sizes[0].embroideryId, firstM.data, ny)} />
           )}
         </div>
-      </li>
-    )
-  }
-
-  function ListeSeksjon({ tittel, bundleIds, vms, prevView, fraKat }: {
-    tittel?: string
-    bundleIds: string[]
-    vms: VirtuelMotiv[]
-    prevView?: PickerView
-    fraKat?: string | null
-  }) {
-    if (bundleIds.length === 0 && vms.length === 0) return null
-    const effectivePrevView: PickerView = prevView ?? { type: 'kategorier' }
-    return (
-      <>
-        {tittel && (
-          <div className="px-5 py-2 bg-stone-50 sticky top-0 z-10 border-y border-stone-100">
-            <span className="text-xs font-semibold text-stone-500 uppercase tracking-wide">{tittel}</span>
-          </div>
-        )}
-        <ul className="divide-y divide-stone-100">
-          {bundleIds.map(bid => <BundleRad key={bid} bundleId={bid} fraKat={fraKat} />)}
-          {vms.map(vm => (
-            <VirtuelMotivRad key={vm.key} vm={vm}
-              onClick={() => velgVM(vm, effectivePrevView)}
-              valgbar valgt={valgteVM.has(vm.key)} onToggleValgt={() => toggleValgt(vm.key)} />
-          ))}
-        </ul>
-      </>
+        <div className="px-2.5 py-2">
+          <p className="text-sm text-stone-800 truncate leading-tight">{vm.navn}</p>
+          <p className={`text-xs truncate mt-0.5 ${stat === 'passer' ? 'text-stone-400' : stat === 'ikkeMalt' ? 'text-amber-600' : 'text-red-400'}`}>
+            {vm.sizes.length === 1 ? (maal ?? 'Ikke målt') : `${vm.sizes.length} størrelser${maal ? ` · ${maal}` : ''}`}
+          </p>
+        </div>
+      </article>
     )
   }
 
@@ -1889,30 +1791,26 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
             <>
               <Topptekst tittel={bundlerMap.get(view.bundleId)?.data.navn ?? ''}
                 onTilbake={() => setView(view.fraKat !== undefined ? { type: 'kategori', kat: view.fraKat } : { type: 'kategorier' })} />
-              <div className="overflow-y-auto flex-1 min-h-0">
+              <div className="overflow-y-auto flex-1 min-h-0 p-3">
                 {filtered.length === 0 ? (
                   <p className="text-sm text-stone-400 text-center py-12">Ingen motiver.</p>
                 ) : (
                   <>
-                    <ul className="divide-y divide-stone-100">
+                    <div className="grid grid-cols-2 gap-3">
                       {passerListe.map(vm => (
-                        <VirtuelMotivRad key={vm.key} vm={vm}
-                          onClick={() => velgVM(vm, view)}
-                          valgbar valgt={valgteVM.has(vm.key)} onToggleValgt={() => toggleValgt(vm.key)} />
+                        <MotivKort key={vm.key} vm={vm}
+                          valgt={valgteVM.has(vm.key)} onToggle={() => toggleValgt(vm.key)} />
                       ))}
-                    </ul>
+                    </div>
                     {ikkeMåltListe.length > 0 && (
                       <>
-                        <div className="px-5 py-2 bg-stone-50 sticky top-0 z-10 border-y border-stone-100">
-                          <span className="text-xs font-semibold text-stone-500 uppercase tracking-wide">Ikke målt ennå</span>
-                        </div>
-                        <ul className="divide-y divide-stone-100">
+                        <p className="text-xs font-semibold text-stone-400 uppercase tracking-wide mt-4 mb-2">Ikke målt ennå</p>
+                        <div className="grid grid-cols-2 gap-3">
                           {ikkeMåltListe.map(vm => (
-                            <VirtuelMotivRad key={vm.key} vm={vm}
-                              onClick={() => velgVM(vm, view)}
-                              valgbar valgt={valgteVM.has(vm.key)} onToggleValgt={() => toggleValgt(vm.key)} />
+                            <MotivKort key={vm.key} vm={vm}
+                              valgt={valgteVM.has(vm.key)} onToggle={() => toggleValgt(vm.key)} />
                           ))}
-                        </ul>
+                        </div>
                       </>
                     )}
                     {antallSkjult > 0 && (
@@ -2028,17 +1926,38 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
                     return <p className="text-sm text-stone-400 text-center py-12">Ingen treff.</p>
                   }
                   return (
-                    <>
-                      <ListeSeksjon bundleIds={bPasser} vms={vPasser} />
+                    <div className="p-3 space-y-3">
+                      {bPasser.length > 0 && (
+                        <div className="grid grid-cols-2 gap-3">
+                          {bPasser.map(bid => <BundleKort key={bid} bundleId={bid} />)}
+                        </div>
+                      )}
+                      {vPasser.length > 0 && (
+                        <div className="grid grid-cols-2 gap-3">
+                          {vPasser.map(vm => (
+                            <MotivKort key={vm.key} vm={vm}
+                              valgt={valgteVM.has(vm.key)} onToggle={() => toggleValgt(vm.key)} />
+                          ))}
+                        </div>
+                      )}
                       {(bIkkeMalt.length > 0 || vIkkeMalt.length > 0) && (
-                        <ListeSeksjon tittel="Ikke målt ennå — kan passe" bundleIds={bIkkeMalt} vms={vIkkeMalt} />
+                        <>
+                          <p className="text-xs font-semibold text-stone-400 uppercase tracking-wide pt-1">Ikke målt ennå</p>
+                          <div className="grid grid-cols-2 gap-3">
+                            {bIkkeMalt.map(bid => <BundleKort key={bid} bundleId={bid} />)}
+                            {vIkkeMalt.map(vm => (
+                              <MotivKort key={vm.key} vm={vm}
+                                valgt={valgteVM.has(vm.key)} onToggle={() => toggleValgt(vm.key)} />
+                            ))}
+                          </div>
+                        </>
                       )}
                       {filterPaaRamme && antallSkjult > 0 && (
                         <p className="text-xs text-stone-400 text-center py-3">
                           {antallSkjult} {antallSkjult === 1 ? 'bundle/motiv' : 'bundles/motiver'} skjult — alle størrelser bekreftet for store
                         </p>
                       )}
-                    </>
+                    </div>
                   )
                 })()
               ) : view.type === 'kategorier' ? (
@@ -2097,26 +2016,44 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
                     return <p className="text-sm text-stone-400 text-center py-12">Ingen motiver i denne kategorien.</p>
                   }
                   return (
-                    <>
-                      <ul className="divide-y divide-stone-100">
-                        {passerListe.map(bid => <BundleRad key={bid} bundleId={bid} fraKat={currentView.kat} />)}
-                        {passerVMs.map(vm => (
-                          <VirtuelMotivRad key={vm.key} vm={vm}
-                            onClick={() => velgVM(vm, currentView)}
-                            valgbar valgt={valgteVM.has(vm.key)} onToggleValgt={() => toggleValgt(vm.key)} />
-                        ))}
-                      </ul>
+                    <div className="p-3 space-y-3">
+                      {passerListe.length > 0 && (
+                        <div className="grid grid-cols-2 gap-3">
+                          {passerListe.map(bid => <BundleKort key={bid} bundleId={bid} fraKat={currentView.kat} />)}
+                        </div>
+                      )}
+                      {passerVMs.length > 0 && (
+                        <div className="grid grid-cols-2 gap-3">
+                          {passerVMs.map(vm => (
+                            <MotivKort key={vm.key} vm={vm}
+                              valgt={valgteVM.has(vm.key)} onToggle={() => toggleValgt(vm.key)} />
+                          ))}
+                        </div>
+                      )}
                       {(ikkeMåltListe.length > 0 || ikkeMåltVMs.length > 0) && (
-                        <ListeSeksjon tittel="Ikke målt ennå — kan passe"
-                          bundleIds={ikkeMåltListe} vms={ikkeMåltVMs}
-                          prevView={currentView} fraKat={currentView.kat} />
+                        <>
+                          <p className="text-xs font-semibold text-stone-400 uppercase tracking-wide pt-1">Ikke målt ennå</p>
+                          {ikkeMåltListe.length > 0 && (
+                            <div className="grid grid-cols-2 gap-3">
+                              {ikkeMåltListe.map(bid => <BundleKort key={bid} bundleId={bid} fraKat={currentView.kat} />)}
+                            </div>
+                          )}
+                          {ikkeMåltVMs.length > 0 && (
+                            <div className="grid grid-cols-2 gap-3">
+                              {ikkeMåltVMs.map(vm => (
+                                <MotivKort key={vm.key} vm={vm}
+                                  valgt={valgteVM.has(vm.key)} onToggle={() => toggleValgt(vm.key)} />
+                              ))}
+                            </div>
+                          )}
+                        </>
                       )}
                       {filterPaaRamme && antallSkjult > 0 && (
                         <p className="text-xs text-stone-400 text-center py-3">
                           {antallSkjult} motiv{antallSkjult === 1 ? '' : 'er'} skjult — alle størrelser bekreftet for store
                         </p>
                       )}
-                    </>
+                    </div>
                   )
                 })()
               )}
