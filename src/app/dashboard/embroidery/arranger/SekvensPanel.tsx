@@ -401,7 +401,6 @@ function ForhåndsvisModal({
       }
     }
     return union.size > 0 ? union : null
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [forslag, jRaster, rasterCache, sekvens, ctx])
 
   return (

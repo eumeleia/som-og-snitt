@@ -6,7 +6,7 @@ import { hentAllePaginert } from '@/lib/supabasePaginering'
 import { describeError, type ErrorDetails } from '@/lib/error-details'
 import { ErrorDetailsView } from '@/components/ErrorDetailsView'
 import { roterLokalePunkter, plassertBbox, kombinerBbox } from './geometri'
-import { synkroniserSekvens, finnFargekjoring } from './sekvens'
+import { synkroniserSekvens } from './sekvens'
 import { byggMiniatyrSvg } from './miniatyr'
 import { SekvensPanel } from './SekvensPanel'
 import { EksportPanel } from './EksportPanel'
@@ -1375,7 +1375,6 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
       else skjult++
     }
     return { passerListe: passer, ikkeMåltListe: ikkeMalt, antallSkjult: skjult }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [standaloneVMs, bboxCache, filterPaaRamme, searchQ])
 
   const antallSkjultTotalt = synligeBundles.antallSkjult + synligeStandalone.antallSkjult
