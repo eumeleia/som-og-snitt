@@ -81,8 +81,10 @@ export const KATEGORIER = [
   'Høytider', 'Rammer', 'Figurer', 'Bunad', 'Baby', 'Bokstaver', 'Monogram', 'Annet', 'font',
 ]
 
-// Returns the categories for a motif/bundle, handling both old string and new array format
-function getKats(data: EmbroideryData | EmbroideryBundleData): string[] {
+// Returns the categories for a motif/bundle, handling both old string and new array format.
+// Typed structurally (not EmbroideryData | EmbroideryBundleData) so EmbroideryCard stays
+// callable with the arranger page's own, narrower Embroidery type (kategori is optional there).
+function getKats(data: { kategori?: string; kategorier?: string[] }): string[] {
   if (data.kategorier && data.kategorier.length > 0) return data.kategorier
   if (data.kategori) return [data.kategori]
   return []
@@ -1367,8 +1369,26 @@ function UploadModal({ onDone, onClose }: {
 }
 
 // ── Embroidery Card ────────────────────────────────────────────────────────────
+// item er typet strukturelt (ikke den nominelle Embroidery ovenfor) med bare feltene kortet
+// faktisk leser, slik at arranger-siden kan gjenbruke akkurat dette kortet med sin egen,
+// smalere Embroidery-type ("speiler kun feltene arrangeringsverktøyet trenger") i stedet for
+// å bygge en ny, lignende kortstil der.
+export interface KortMotiv {
+  id: string
+  data: {
+    navn: string
+    sizes: { id: string }[]
+    coverImage: string
+    bmpPreview: string
+    customImage: string
+    useCustomImage: boolean
+    kategori?: string
+    kategorier?: string[]
+    rating?: number
+  }
+}
 
-function EmbroideryCard({
+export function EmbroideryCard({
   item,
   onEdit,
   onDelete,
@@ -1376,9 +1396,9 @@ function EmbroideryCard({
   selected = false,
   onToggleSelect,
 }: {
-  item: Embroidery
+  item: KortMotiv
   onEdit: () => void
-  onDelete: () => void
+  onDelete?: () => void
   selectionMode?: boolean
   selected?: boolean
   onToggleSelect?: () => void
@@ -1446,7 +1466,7 @@ function EmbroideryCard({
             </span>
           )}
         </div>
-        {!selectionMode && (
+        {!selectionMode && onDelete && (
           <button
             onClick={e => { e.stopPropagation(); onDelete() }}
             className="flex-shrink-0 p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors"

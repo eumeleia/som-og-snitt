@@ -26,8 +26,20 @@ export function SekvensPanel({ sekvens, onChange, motiver, resolved }: {
 
   const ctx: SekvensKontekst = useMemo(() => ({ motiver, resolved }), [motiver, resolved])
 
+  // Sting-rutenettet for en kjøring avhenger bare av motivets egen geometri (motiver/resolved),
+  // aldri av rekkefølgen i sekvensen — denne cachen lever derfor så lenge DE er urørt, og
+  // bygges på nytt bare når motiver/resolved faktisk endrer seg (nytt motiv, flyttet, rotert),
+  // ikke ved hver omrokkering i sekvenspanelet. Depsen er bevisst IKKE lest inni factory-en
+  // (den bare oppretter et tomt Map) — de er en ren cache-nøkkel, ikke data useMemo skal
+  // resirkulere, så exhaustive-deps sin advarsel gjelder ikke det den er ment for her.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const rasterCache = useMemo(() => new Map<string, Set<string> | null>(), [motiver, resolved])
+
   const omtredninger = useMemo(() => tellOmtredninger(sekvens, ctx), [sekvens, ctx])
-  const { forslag, flereEnnVist } = useMemo(() => finnSammenslaingsforslag(sekvens, ctx), [sekvens, ctx])
+  const { forslag, flereEnnVist } = useMemo(
+    () => finnSammenslaingsforslag(sekvens, ctx, rasterCache),
+    [sekvens, ctx, rasterCache],
+  )
   const faseStatus = useMemo(() => sjekkFasesortering(ctx), [ctx])
 
   const sensors = useSensors(
@@ -130,8 +142,14 @@ export function SekvensPanel({ sekvens, onChange, motiver, resolved }: {
                 </p>
               )}
               {f.endrerLagrekkefolge && (
-                <p className="text-xs text-amber-800 mt-1.5">
-                  ⚠ Endrer lagrekkefølgen — overlapper geometrisk med {f.overlappendeFarger.length} farge{f.overlappendeFarger.length === 1 ? '' : 'r'} som ligger mellom.
+                <p className="text-xs text-amber-800 mt-1.5 flex items-center gap-1 flex-wrap">
+                  <span>⚠ Der stingene faktisk overlapper, legger</span>
+                  {f.overlappendeFarger.map(h => (
+                    <span key={h} className="inline-block w-3 h-3 rounded-sm border border-stone-300 flex-shrink-0" style={{ backgroundColor: h }} />
+                  ))}
+                  <span>seg over</span>
+                  <span className="inline-block w-3 h-3 rounded-sm border border-stone-300 flex-shrink-0" style={{ backgroundColor: f.farge }} />
+                  <span>i stedet for under, som i dag — f.eks. kan en kontur ende opp under fyllet.</span>
                 </p>
               )}
             </div>

@@ -7,6 +7,7 @@ import { describeError, type ErrorDetails } from '@/lib/error-details'
 import { ErrorDetailsView } from '@/components/ErrorDetailsView'
 import { roterLokalePunkter, plassertBbox, kombinerBbox } from './geometri'
 import { synkroniserSekvens } from './sekvens'
+import { byggMiniatyrSvg } from './miniatyr'
 import { SekvensPanel } from './SekvensPanel'
 import { EksportPanel } from './EksportPanel'
 import {
@@ -265,12 +266,23 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
   }
 
   // ── Lagre ────────────────────────────────────────────────────────────────────
+  // lagretNavnRef holder navnet slik det sto ved siste vellykkede lagring — brukes av
+  // navnefeltets onBlur til å avgjøre om det er noe å lagre. Uten denne var "Lagre" den
+  // ENESTE veien til å lagre et nytt navn: skrev man et navn og navigerte bort (f.eks.
+  // tilbake-knappen) uten å klikke "Lagre" selv, ble navnet aldri sendt til serveren —
+  // ikke fordi lagre()/PUT-ruta var ødelagt, men fordi ingenting kalte lagre() i det
+  // hele tatt for navnefeltet alene.
+  const lagretNavnRef = useRef(navn)
 
   async function lagre() {
     setSaveStatus('saving')
     setSaveErrorDetails(null)
     try {
-      const body = { data: { navn, motiver, sekvens } }
+      // Miniatyren regnes ut HER, ved lagring — aldri når komposisjonslista bare vises. Bruker
+      // resolved slik den står akkurat nå (motiver som ikke er tolket ferdig ennå mangler
+      // rett og slett fra miniatyren, i stedet for å blokkere selve lagringen).
+      const miniatyrSvg = byggMiniatyrSvg(motiver, resolved)
+      const body = { data: { navn, motiver, sekvens, miniatyrSvg } }
       const res = id
         ? await fetch(`/api/broderi-komposisjon/${id}`, {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -281,12 +293,22 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
       const responseBody = await res.json()
       if (!res.ok) throw new Error(responseBody.error ?? 'Klarte ikke lagre')
       if (!id) setId(responseBody.id)
+      lagretNavnRef.current = navn
       setSaveStatus('saved')
       setTimeout(() => setSaveStatus('idle'), 1500)
     } catch (err) {
       setSaveErrorDetails(describeError(err))
       setSaveStatus('error')
     }
+  }
+
+  // Lagrer automatisk når navnefeltet forlates, IKKE bare på trykk av "Lagre" — samme
+  // lagre()-kall (motiver/sekvens følger med, siden data er én sammenhengende jsonb),
+  // bare utløst av et annet event. Sjekker mot lagretNavnRef, ikke bare "har det endret
+  // seg siden forrige tegn", for å unngå et unødvendig kall når feltet bare klikkes i og
+  // ut av uten redigering.
+  function onNavnBlur() {
+    if (navn !== lagretNavnRef.current) lagre()
   }
 
   const valgtMotiv = motiver.find(pm => pm.id === valgtId) ?? null
@@ -302,6 +324,8 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
         <input
           value={navn}
           onChange={e => setNavn(e.target.value)}
+          onBlur={onNavnBlur}
+          onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
           className="font-serif text-xl text-stone-700 flex-1 min-w-0 bg-transparent border-b border-transparent hover:border-stone-200 focus:border-stone-300 focus:outline-none transition-colors"
         />
         <button
@@ -771,6 +795,53 @@ function vmStatus(vm: VirtuelMotiv, bboxCache: Map<string, BboxMm | null>): 'pas
   return 'passerIkke'
 }
 
+function fmtMm(b: BboxMm): string {
+  return `${b.widthMm.toFixed(1)} × ${b.heightMm.toFixed(1)} mm`
+}
+
+// Målteksten som vises i motivraden — direkte mål for et enkelt-størrelses-motiv, minste og
+// største (etter areal, w×h hver for seg — aldri en blandet min-bredde/maks-høyde) for et
+// motiv med flere størrelser. Returnerer null hvis ingen av størrelsene er målt ennå.
+function vmMaalTekst(vm: VirtuelMotiv, bboxCache: Map<string, BboxMm | null>): string | null {
+  const malt = vm.sizes
+    .map(s => bboxCache.get(`${s.embroideryId}:${s.sizeId}`))
+    .filter((b): b is BboxMm => b != null)
+  if (malt.length === 0) return null
+  if (vm.sizes.length === 1) return fmtMm(malt[0])
+  const sortert = [...malt].sort((a, b) => a.widthMm * a.heightMm - b.widthMm * b.heightMm)
+  const minst = sortert[0]
+  const størst = sortert[sortert.length - 1]
+  if (minst === størst) return fmtMm(minst)
+  return `${fmtMm(minst)} – ${fmtMm(størst)}`
+}
+
+// Topp-nivå (ikke nestet i MotivPicker) med rene props i stedet for closures over lokal
+// state — resten av MotivPickers underkomponenter (Topptekst, ParseBunnlinje, osv.) er
+// definert nestet inni MotivPicker og bygges derfor på nytt for hver rendring; det er et
+// eksisterende mønster i denne fila (ikke noe innført her), men denne komponenten trengte
+// ikke closures over lokal state, så den er skrevet som en vanlig topp-nivå-komponent i stedet.
+function ValgtBunnlinje({ antall, onFjernValg, onLeggTilValgte }: {
+  antall: number
+  onFjernValg: () => void
+  onLeggTilValgte: () => void
+}) {
+  if (antall === 0) return null
+  return (
+    <div className="px-5 py-2.5 border-t border-stone-100 flex-shrink-0 flex items-center justify-between gap-3 bg-stone-50">
+      <span className="text-xs text-stone-500">{antall} valgt</span>
+      <div className="flex gap-2">
+        <button onClick={onFjernValg}
+          className="text-xs text-stone-400 hover:text-stone-600 transition-colors">
+          Fjern valg
+        </button>
+        <button onClick={onLeggTilValgte}
+          className="px-3 py-1.5 text-xs text-white bg-stone-800 rounded-lg hover:bg-stone-700 transition-colors">
+          {`Legg til ${antall} ${antall === 1 ? 'motiv' : 'motiver'}`}
+        </button>
+      </div>
+    </div>
+  )
+}
 
 function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
   biblioteket: Embroidery[]
@@ -1060,13 +1131,16 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
       .then(({ error }) => { if (error) console.error('[MotivPicker] Klarte ikke lagre kategori', error) })
   }
 
-  function velgStorrelse(vm: VirtuelMotiv, s: VirtuelStorrelse) {
+  function navnForValgtStorrelse(vm: VirtuelMotiv, s: VirtuelStorrelse): string {
     const displaySize = vmSizeLabel(s)
     const bundleNavn = vm.bundleId ? bundlerMap.get(vm.bundleId)?.data.navn : null
-    const navn = vm.karakter
+    return vm.karakter
       ? `${vm.karakter.tegn}${bundleNavn ? ' (' + bundleNavn + ')' : ''} – ${displaySize}`
       : `${vm.navn} – ${displaySize}`
-    onVelg(s.embroideryId, s.sizeId, navn)
+  }
+
+  function velgStorrelse(vm: VirtuelMotiv, s: VirtuelStorrelse) {
+    onVelg(s.embroideryId, s.sizeId, navnForValgtStorrelse(vm, s))
   }
 
   function velgVM(vm: VirtuelMotiv, prevView: PickerView) {
@@ -1076,6 +1150,95 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
     })
     if (passende.length === 1) { velgStorrelse(vm, passende[0]); return }
     setView({ type: 'storrelse', vm, prevView })
+  }
+
+  // ── Flervalg ─────────────────────────────────────────────────────────────────
+  // Nedskopet til vanlige bundle-/enkeltmotiv-lister (bundle-innhold og toppnivå-lista) — ikke
+  // alfabetgrid ('tegn') eller tekstverktøyet ('tekst'), som allerede har egne, helt andre måter
+  // å velge på. Innenfor det skopet virker flervalg IDENTISK uansett hvordan bundlen er bygget
+  // opp (Spiderverse/Mini Flowers, se punkt 3-undersøkelsen) — det opererer bare på hvilken liste
+  // med VirtuelMotiv-er som allerede vises, uavhengig av hvorfor akkurat de radene ble slik.
+  const [valgteVM, setValgteVM] = useState<Set<string>>(new Set())
+
+  // Nullstiller valget når view endres — justert UNDER selve rendringen med en state-variabel
+  // (React sin egen anbefalte måte å nullstille state ved en endring), ikke i en useEffect
+  // (en ekstra rendrings-runde for noe som skjer på hver navigasjon) og ikke via en ref (som
+  // ikke skal leses/skrives under selve rendringen).
+  const [forrigeView, setForrigeView] = useState(view)
+  if (forrigeView !== view) {
+    setForrigeView(view)
+    if (valgteVM.size > 0) setValgteVM(new Set())
+  }
+
+  function toggleValgt(key: string) {
+    setValgteVM(prev => {
+      const nytt = new Set(prev)
+      if (nytt.has(key)) nytt.delete(key); else nytt.add(key)
+      return nytt
+    })
+  }
+
+  // Størst størrelse som passer i rammen, som standardvalg ved flervalg — samme "passer"-regel
+  // som resten av velgeren (< RAMME_GRENSE_MM i begge retninger). Passer ingen, brukes den minst
+  // for store (minst ille), og er ingenting målt ennå, brukes ganske enkelt den første — samme
+  // som ved enkeltvalg kan et umålt motiv fortsatt legges til, målet løses uansett først når det
+  // faktisk skal tegnes (sikreMotivData i selve komposisjonseditoren).
+  function velgStandardStorrelse(vm: VirtuelMotiv): VirtuelStorrelse {
+    const medMaal = vm.sizes
+      .map(s => ({ s, b: bboxCache.get(`${s.embroideryId}:${s.sizeId}`) }))
+      .filter((x): x is { s: VirtuelStorrelse; b: BboxMm } => x.b != null)
+    const somPasser = medMaal.filter(x => x.b.widthMm < RAMME_GRENSE_MM && x.b.heightMm < RAMME_GRENSE_MM)
+    const kandidater = somPasser.length > 0 ? somPasser : medMaal
+    if (kandidater.length === 0) return vm.sizes[0]
+    return kandidater.reduce((best, cur) =>
+      cur.b.widthMm * cur.b.heightMm > best.b.widthMm * best.b.heightMm ? cur : best
+    ).s
+  }
+
+  // Enkelt rutenett med luft mellom — ikke stablet i samme punkt som enkelt-tilleggets
+  // kaskade. Cellestørrelsen er satt fra den STØRSTE kjente utstrekningen blant de valgte
+  // standardstørrelsene (pluss margin), så motiver med ulik størrelse ikke overlapper — når
+  // ingen er målt ennå, brukes en fornuftig fast avstand.
+  function beregnRutenettPosisjoner(n: number, celleTiendedelMm: number): Array<{ x: number; y: number }> {
+    const cols = Math.ceil(Math.sqrt(n))
+    const rows = Math.ceil(n / cols)
+    const pos: Array<{ x: number; y: number }> = []
+    for (let i = 0; i < n; i++) {
+      const rad = Math.floor(i / cols)
+      const kol = i % cols
+      pos.push({
+        x: Math.round((kol - (cols - 1) / 2) * celleTiendedelMm),
+        y: Math.round((rad - (rows - 1) / 2) * celleTiendedelMm),
+      })
+    }
+    return pos
+  }
+
+  function leggTilValgte() {
+    const utvalg = Array.from(valgteVM)
+      .map(key => virtuelleMotiver.find(vm => vm.key === key))
+      .filter((vm): vm is VirtuelMotiv => !!vm)
+    if (utvalg.length === 0) return
+
+    const valg = utvalg.map(vm => ({ vm, s: velgStandardStorrelse(vm) }))
+    const størsteDimMm = Math.max(
+      30,
+      ...valg.map(({ s }) => {
+        const b = bboxCache.get(`${s.embroideryId}:${s.sizeId}`)
+        return b ? Math.max(b.widthMm, b.heightMm) : 0
+      }),
+    )
+    const celleTiendedelMm = Math.round(størsteDimMm * 1.25 * 10)
+    const posisjoner = beregnRutenettPosisjoner(valg.length, celleTiendedelMm)
+
+    onVelgFlere(valg.map(({ vm, s }, i) => ({
+      embroideryId: s.embroideryId,
+      sizeId: s.sizeId,
+      navn: navnForValgtStorrelse(vm, s),
+      x: posisjoner[i].x,
+      y: posisjoner[i].y,
+    })))
+    setValgteVM(new Set())
   }
 
   async function parseAlle() {
@@ -1314,11 +1477,23 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
     )
   }
 
-  function VirtuelMotivRad({ vm, onClick }: { vm: VirtuelMotiv; onClick: () => void }) {
+  function VirtuelMotivRad({ vm, onClick, valgbar, valgt, onToggleValgt }: {
+    vm: VirtuelMotiv
+    onClick: () => void
+    valgbar?: boolean
+    valgt?: boolean
+    onToggleValgt?: () => void
+  }) {
     const firstM = biblioteket.find(m => m.id === vm.sizes[0]?.embroideryId)
+    const maal = vmMaalTekst(vm, bboxCache)
     return (
       <li>
         <div className="w-full flex items-center gap-3 px-5 py-2.5 hover:bg-stone-50 transition-colors">
+          {valgbar && (
+            <input type="checkbox" checked={!!valgt} onChange={onToggleValgt}
+              onClick={e => e.stopPropagation()}
+              className="w-4 h-4 rounded accent-[#C9A57A] flex-shrink-0" />
+          )}
           <button onClick={onClick} className="flex items-center gap-3 flex-1 min-w-0 text-left">
             <div className="w-10 h-10 rounded-lg overflow-hidden bg-stone-100 flex-shrink-0">
               {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -1327,7 +1502,9 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
             <div className="flex-1 min-w-0">
               <p className="text-sm text-stone-800 truncate">{vm.navn}</p>
               <p className="text-xs text-stone-400 truncate">
-                {vm.sizes.length} {vm.sizes.length === 1 ? 'størrelse' : 'størrelser'}
+                {vm.sizes.length === 1
+                  ? (maal ?? 'Ikke målt')
+                  : `${vm.sizes.length} størrelser${maal ? ` · ${maal}` : ''}`}
               </p>
             </div>
           </button>
@@ -1358,7 +1535,8 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
           {bundleIds.map(bid => <BundleRad key={bid} bundleId={bid} />)}
           {vms.map(vm => (
             <VirtuelMotivRad key={vm.key} vm={vm}
-              onClick={() => velgVM(vm, { type: 'liste' })} />
+              onClick={() => velgVM(vm, { type: 'liste' })}
+              valgbar valgt={valgteVM.has(vm.key)} onToggleValgt={() => toggleValgt(vm.key)} />
           ))}
         </ul>
       </>
@@ -1499,7 +1677,8 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
                     <ul className="divide-y divide-stone-100">
                       {passerListe.map(vm => (
                         <VirtuelMotivRad key={vm.key} vm={vm}
-                          onClick={() => velgVM(vm, view)} />
+                          onClick={() => velgVM(vm, view)}
+                          valgbar valgt={valgteVM.has(vm.key)} onToggleValgt={() => toggleValgt(vm.key)} />
                       ))}
                     </ul>
                     {ikkeMåltListe.length > 0 && (
@@ -1510,7 +1689,8 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
                         <ul className="divide-y divide-stone-100">
                           {ikkeMåltListe.map(vm => (
                             <VirtuelMotivRad key={vm.key} vm={vm}
-                              onClick={() => velgVM(vm, view)} />
+                              onClick={() => velgVM(vm, view)}
+                              valgbar valgt={valgteVM.has(vm.key)} onToggleValgt={() => toggleValgt(vm.key)} />
                           ))}
                         </ul>
                       </>
@@ -1523,6 +1703,8 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
                   </>
                 )}
               </div>
+              <ValgtBunnlinje antall={valgteVM.size}
+                onFjernValg={() => setValgteVM(new Set())} onLeggTilValgte={leggTilValgte} />
               <ParseBunnlinje />
             </>
           )
@@ -1611,6 +1793,8 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
               )}
             </div>
 
+            <ValgtBunnlinje antall={valgteVM.size}
+              onFjernValg={() => setValgteVM(new Set())} onLeggTilValgte={leggTilValgte} />
             <ParseBunnlinje />
           </>
         )}

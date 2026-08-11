@@ -8,8 +8,9 @@ import { hentAllePaginert } from '@/lib/supabasePaginering'
 import { describeError, type ErrorDetails } from '@/lib/error-details'
 import { ErrorDetailsView } from '@/components/ErrorDetailsView'
 import { KomposisjonEditor } from './KomposisjonEditor'
+import { EmbroideryCard } from '../page'
 import {
-  type Embroidery, type BroderiMotivData, type BroderiKomposisjon, getCoverImage,
+  type Embroidery, type BroderiMotivData, type BroderiKomposisjon,
 } from './types'
 
 const RAMME_MM = 100
@@ -179,44 +180,13 @@ export default function ArrangerPage() {
               ) : 'Ingen treff'}
             </p>
           ) : (
-            <ul className="divide-y divide-stone-100 bg-white rounded-2xl border border-stone-200 shadow-sm overflow-hidden">
-              {filtered.map(m => {
-                const cover = getCoverImage(m.data)
-                return (
-                  <li key={m.id}>
-                    <button
-                      onClick={() => setSelected(m)}
-                      className="w-full flex items-center gap-3 p-3 hover:bg-stone-50 transition-colors text-left"
-                    >
-                      <div className="w-14 h-14 rounded-lg overflow-hidden bg-stone-100 flex-shrink-0">
-                        {cover ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={cover} alt={m.data.navn} className="w-full h-full object-cover" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center">
-                            <svg className="w-6 h-6 text-stone-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414A1 1 0 0119 9.414V19a2 2 0 01-2 2z" />
-                            </svg>
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium text-stone-800 text-sm truncate">
-                          {m.data.navn || <span className="text-stone-400 italic font-normal">Uten navn</span>}
-                        </p>
-                        <p className="text-xs text-stone-400 mt-0.5">
-                          {m.data.sizes?.length ?? 0} størrelse{(m.data.sizes?.length ?? 0) === 1 ? '' : 'r'}
-                        </p>
-                      </div>
-                      <svg className="w-4 h-4 text-stone-300 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                      </svg>
-                    </button>
-                  </li>
-                )
-              })}
-            </ul>
+            // Samme kortkomponent og rutenett som hovedbiblioteket (/dashboard/embroidery) —
+            // ikke en egen, lignende kortstil bygget for arrangeringssiden alene.
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-5">
+              {filtered.map(m => (
+                <EmbroideryCard key={m.id} item={m} onEdit={() => setSelected(m)} />
+              ))}
+            </div>
           )}
         </>
       ) : (
@@ -240,13 +210,32 @@ export default function ArrangerPage() {
             <ul className="divide-y divide-stone-100 bg-white rounded-2xl border border-stone-200 shadow-sm overflow-hidden">
               {komposisjoner.map(k => (
                 <li key={k.id} className="flex items-center gap-3 p-3 hover:bg-stone-50 transition-colors">
-                  <button onClick={() => setAktivKomposisjon(k)} className="flex-1 min-w-0 text-left">
-                    <p className="font-medium text-stone-800 text-sm truncate">
-                      {k.data.navn || <span className="text-stone-400 italic font-normal">Uten navn</span>}
-                    </p>
-                    <p className="text-xs text-stone-400 mt-0.5">
-                      {k.data.motiver?.length ?? 0} motiv{(k.data.motiver?.length ?? 0) === 1 ? '' : 'er'}
-                    </p>
+                  <button onClick={() => setAktivKomposisjon(k)} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+                    <div className="w-12 h-12 rounded-lg overflow-hidden bg-stone-100 flex-shrink-0 flex items-center justify-center">
+                      {k.data.miniatyrSvg ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={`data:image/svg+xml;utf8,${encodeURIComponent(k.data.miniatyrSvg)}`}
+                          alt={k.data.navn}
+                          className="w-full h-full object-contain"
+                        />
+                      ) : (
+                        // Eksisterende komposisjoner (lagret før miniatyren fantes) har ingen
+                        // — vises uten i stedet for å regne den ut her, se miniatyr.ts.
+                        <svg className="w-5 h-5 text-stone-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414A1 1 0 0119 9.414V19a2 2 0 01-2 2z" />
+                        </svg>
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-stone-800 text-sm truncate">
+                        {k.data.navn || <span className="text-stone-400 italic font-normal">Uten navn</span>}
+                      </p>
+                      <p className="text-xs text-stone-400 mt-0.5">
+                        {k.data.motiver?.length ?? 0} motiv{(k.data.motiver?.length ?? 0) === 1 ? '' : 'er'}
+                      </p>
+                    </div>
                   </button>
                   {deleteKompId === k.id ? (
                     <div className="flex items-center gap-1 flex-shrink-0">

@@ -98,3 +98,24 @@ export function kombinerBbox(bokser: BroderiBbox[]): BroderiBbox | null {
 export function bokserOverlapper(a: BroderiBbox, b: BroderiBbox): boolean {
   return !(a.max_x < b.min_x || b.max_x < a.min_x || a.max_y < b.min_y || b.max_y < a.min_y)
 }
+
+// Rasteriserer et sett stingpunkter (allerede plassert på lerretet, i 1/10 mm) til hvilke
+// celler i et rutenett de faller i — celleTiendedelMm er cellesiden i 1/10 mm (10 ≈ 1 mm).
+// Brukes til en PRESIS overlapptest: to omsluttende bounding-bokser kan krysse hverandre
+// uten at et enkelt sting fra de to formene faktisk møtes (f.eks. to L-former som griper inn
+// i hverandres "hjørne" uten å røre), så selve bbox-en er for grov til å avgjøre ekte kollisjon.
+export function rasterCeller(punkter: [number, number][], celleTiendedelMm: number): Set<string> {
+  const celler = new Set<string>()
+  for (const [x, y] of punkter) {
+    celler.add(`${Math.floor(x / celleTiendedelMm)},${Math.floor(y / celleTiendedelMm)}`)
+  }
+  return celler
+}
+
+// Sant hvis minst én celle finnes i begge settene. Løper over det minste settet — begge
+// veier gir samme svar, men rekkefølgen påvirker hvor mange oppslag som gjøres.
+export function cellerKolliderer(a: Set<string>, b: Set<string>): boolean {
+  const [minst, størst] = a.size <= b.size ? [a, b] : [b, a]
+  for (const celle of minst) if (størst.has(celle)) return true
+  return false
+}

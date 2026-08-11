@@ -135,6 +135,10 @@ export interface BroderiKomposisjonData {
   navn: string
   motiver: PlassertMotiv[]
   sekvens: SekvensElement[]
+  // Generert av byggMiniatyrSvg (miniatyr.ts) ved LAGRING, aldri utledet ved listevisning —
+  // det ville krevd stingdata for hvert motiv i hver komposisjon. Eksisterende komposisjoner
+  // (lagret før dette feltet fantes) har den ikke; lista viser dem uten til neste lagring.
+  miniatyrSvg?: string
 }
 
 export interface BroderiKomposisjon {

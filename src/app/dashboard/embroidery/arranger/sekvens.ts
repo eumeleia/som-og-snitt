@@ -1,4 +1,6 @@
-import { plassertUnderBbox, kombinerBbox, bokserOverlapper } from './geometri'
+import {
+  plassertUnderBbox, kombinerBbox, bokserOverlapper, plassertPunkter, rasterCeller, cellerKolliderer,
+} from './geometri'
 import type {
   BroderiBbox, BroderiMotivData, PlassertMotiv, SekvensElement, SekvensKjoring,
 } from './types'
@@ -58,6 +60,43 @@ export function plassertFargekjoringBbox(ctx: SekvensKontekst, el: SekvensKjorin
   return plassertUnderBbox(underBbox, motivBbox, pm.rotasjonGrader, pm.posisjonXTiendedelMm, pm.posisjonYTiendedelMm)
 }
 
+const OVERLAPP_CELLE_TIENDEDEL_MM = 10 // ≈ 1 mm per celle
+
+// De FAKTISKE plasserte stingpunktene for én fargekjøring (ikke bare dens bbox) — brukes av
+// den rasteriserte overlapptesten. plassertFargekjoringBbox er fortsatt riktig verktøy der en
+// rask, grov boks er nok (den brukes andre steder); selve advarselen under trenger noe
+// presist, siden to bokser kan krysse hverandre uten at et sting fra formene faktisk møtes.
+function plassertFargekjoringPunkter(ctx: SekvensKontekst, el: SekvensKjoring): [number, number][] | undefined {
+  const funn = finnFargekjoring(ctx, el)
+  if (!funn) return undefined
+  const { pm, data, kjoring } = funn
+  const motivBbox = data.bbox
+  if (!motivBbox) return undefined
+  const lokalePunkter: [number, number][] = []
+  for (let i = kjoring.fra_index; i <= kjoring.til_index; i++) {
+    const blokk = data.stingblokker[i]
+    if (blokk) lokalePunkter.push(...blokk.sting)
+  }
+  if (lokalePunkter.length === 0) return undefined
+  return plassertPunkter(lokalePunkter, motivBbox, pm.rotasjonGrader, pm.posisjonXTiendedelMm, pm.posisjonYTiendedelMm)
+}
+
+// Rutenettet for en kjøring kan koste å bygge (opptil tusenvis av sting) og avhenger BARE av
+// motivets egen geometri (faktiske stingpunkter, posisjon, rotasjon) — ALDRI av rekkefølgen i
+// sekvensen. cache er derfor gyldig på tvers av enhver omrokkering, og skal bare nullstilles av
+// kalleren når selve motivene (ctx) endres — se rasterCache i SekvensPanel.tsx.
+export function plassertFargekjoringRaster(
+  ctx: SekvensKontekst, el: SekvensKjoring, cache: Map<string, Set<string> | null>,
+): Set<string> | undefined {
+  const key = `${el.plassertMotivId}:${el.fargekjoringIndex}`
+  const cached = cache.get(key)
+  if (cached !== undefined) return cached ?? undefined
+  const punkter = plassertFargekjoringPunkter(ctx, el)
+  const raster = punkter ? rasterCeller(punkter, OVERLAPP_CELLE_TIENDEDEL_MM) : null
+  cache.set(key, raster)
+  return raster ?? undefined
+}
+
 // Antall omtredninger = antall kjøringer etter at TILSTØTENDE kjøringer med samme
 // effektive farge er slått sammen. En pause bryter alltid sammenslåingen, selv ved
 // samme farge — maskinen stopper uansett, det er nettopp det pausen er til for.
@@ -101,6 +140,7 @@ const MAKS_FORSLAG = 8
 export function finnSammenslaingsforslag(
   sekvens: SekvensElement[],
   ctx: SekvensKontekst,
+  rasterCache: Map<string, Set<string> | null> = new Map(),
 ): { forslag: SammenslaingForslag[]; flereEnnVist: number } {
   const kjoringer = sekvens
     .map((el, idx) => ({ el, idx }))
@@ -138,16 +178,28 @@ export function finnSammenslaingsforslag(
         new Set(mellomKjoringer.map(el => effektivFarge(ctx, el)).filter((f): f is string => !!f)),
       )
 
-      const iBbox = plassertFargekjoringBbox(ctx, iEl.el)
+      // Sammenslåingen flytter ALDRI i — bare j, til rett etter i. Rekkefølgen mellom i og
+      // hvert mellom-element er derfor UENDRET av flyttingen (i lå før dem, og ligger fortsatt
+      // før dem) — det er bare j sin rekkefølge relativt til dem som kan bytte side (j lå etter
+      // dem, ligger nå før). Bare overlapp med j sitt sting-rutenett er derfor en reell
+      // lagrekkefølge-risiko; overlapp med i alene endrer ingenting og skal ikke varsles.
       const jBbox = plassertFargekjoringBbox(ctx, jEl.el)
       const overlappendeFarger: string[] = []
-      for (const mEl of mellomKjoringer) {
-        const mFarge = effektivFarge(ctx, mEl)
-        if (!mFarge || mFarge === fargeI) continue
-        const mBbox = plassertFargekjoringBbox(ctx, mEl)
-        if (!mBbox) continue
-        const overlapper = (iBbox && bokserOverlapper(mBbox, iBbox)) || (jBbox && bokserOverlapper(mBbox, jBbox))
-        if (overlapper && !overlappendeFarger.includes(mFarge)) overlappendeFarger.push(mFarge)
+      if (jBbox) {
+        for (const mEl of mellomKjoringer) {
+          const mFarge = effektivFarge(ctx, mEl)
+          if (!mFarge || mFarge === fargeI) continue
+          const mBbox = plassertFargekjoringBbox(ctx, mEl)
+          // Bbox-krysset er en billig FORHÅNDSSJEKK, ikke selve avgjørelsen — to bokser kan
+          // krysse hverandre uten at et enkelt sting fra de to formene faktisk møtes. Bare når
+          // boksene i det hele tatt krysser, er det verdt å bygge de (dyrere) sting-rutenettene
+          // og sjekke en presis cellekollisjon.
+          if (!mBbox || !bokserOverlapper(mBbox, jBbox)) continue
+          const jRaster = plassertFargekjoringRaster(ctx, jEl.el, rasterCache)
+          const mRaster = plassertFargekjoringRaster(ctx, mEl, rasterCache)
+          const kolliderer = jRaster && mRaster && cellerKolliderer(jRaster, mRaster)
+          if (kolliderer && !overlappendeFarger.includes(mFarge)) overlappendeFarger.push(mFarge)
+        }
       }
 
       alle.push({
