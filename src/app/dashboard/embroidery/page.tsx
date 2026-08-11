@@ -1025,26 +1025,58 @@ function UploadModal({ onDone, onClose }: {
             }
           }
 
-          const embData: EmbroideryData = {
-            navn: motifName,
-            designer: '',
-            kategori: '',
-            coverImage,
-            bmpPreview,
-            customImage: '',
-            useCustomImage: false,
-            sizes: embSizes,
-            notater: '',
-          }
+          // If the files have significantly different aspect ratios they are variants
+          // (different designs), not sizes (same design at different scales).
+          const sizesWithBounds = embSizes.filter(s => s.widthMm && s.heightMm)
+          const erVarianter = (() => {
+            if (sizesWithBounds.length < 2) return false
+            const ratios = sizesWithBounds.map(s => s.widthMm! / s.heightMm!)
+            const avg = ratios.reduce((a, b) => a + b) / ratios.length
+            const variasjon = (Math.max(...ratios) - Math.min(...ratios)) / avg
+            return variasjon > 0.03
+          })()
 
-          const { data: rows, error: insErr } = await supabase
-            .from('embroidery')
-            .insert({ data: embData })
-            .select()
-          if (insErr) {
-            console.error('[Embroidery] DB insert-feil:', insErr)
-          } else if (rows?.[0]) {
-            batchResults.push(rows[0] as Embroidery)
+          if (erVarianter) {
+            for (const embSize of embSizes) {
+              const splitNavn = embSize.pesFilename.replace(/\.pes$/i, '').replace(/[_-]+/g, ' ').trim()
+              const splitData: EmbroideryData = {
+                navn: splitNavn,
+                designer: '', kategori: '',
+                coverImage, bmpPreview,
+                customImage: '', useCustomImage: false,
+                sizes: [embSize],
+                notater: '',
+              }
+              const { data: rows, error: insErr } = await supabase
+                .from('embroidery').insert({ data: splitData }).select()
+              if (insErr) {
+                console.error('[Embroidery] DB insert-feil (variant):', insErr)
+              } else if (rows?.[0]) {
+                batchResults.push(rows[0] as Embroidery)
+              }
+            }
+          } else {
+            const embData: EmbroideryData = {
+              navn: motifName,
+              designer: '',
+              kategori: '',
+              coverImage,
+              bmpPreview,
+              customImage: '',
+              useCustomImage: false,
+              sizes: embSizes,
+              notater: '',
+            }
+
+            const { data: rows, error: insErr } = await supabase
+              .from('embroidery')
+              .insert({ data: embData })
+              .select()
+            if (insErr) {
+              console.error('[Embroidery] DB insert-feil:', insErr)
+            } else if (rows?.[0]) {
+              batchResults.push(rows[0] as Embroidery)
+            }
           }
         }
 

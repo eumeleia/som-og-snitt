@@ -818,7 +818,7 @@ function TextVerktoy({ bundleNavn, vms, biblioteket, onLeggTil, onBack }: {
 
 const RAMME_GRENSE_MM = 98
 
-type BboxMm = { widthMm: number; heightMm: number }
+type BboxMm = { widthMm: number; heightMm: number; miniatyrSvg: string | null }
 type ParseFremgang = { done: number; total: number; errors: number }
 
 type PickerView =
@@ -911,6 +911,7 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
   const [kategoriOverstyringer, setKategoriOverstyringer] = useState<Map<string, string>>(new Map())
   const [parserAlle, setParserAlle] = useState(false)
   const [parseFremgang, setParseFremgang] = useState<ParseFremgang | null>(null)
+  const [progress, setProgress] = useState<string | null>(null)
   const avbrytRef = useRef(false)
 
   useEffect(() => { return () => { avbrytRef.current = true } }, [])
@@ -931,11 +932,11 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
   // samme hjelpefunksjon som biblioteklistene bruker, så pagineringslogikken finnes ett sted.
   useEffect(() => {
     let cancelled = false
-    type Rad = { embroidery_id: string; size_id: string; bredde_tiendedel_mm: number | null; hoyde_tiendedel_mm: number | null }
+    type Rad = { embroidery_id: string; size_id: string; bredde_tiendedel_mm: number | null; hoyde_tiendedel_mm: number | null; miniatyr_svg: string | null }
     async function lastAlleRader(): Promise<Map<string, BboxMm | null> | null> {
       const { data: rader, error } = await hentAllePaginert<Rad>(
         (fra, til) => supabase.from('broderi_motiv')
-          .select('embroidery_id, size_id, bredde_tiendedel_mm, hoyde_tiendedel_mm')
+          .select('embroidery_id, size_id, bredde_tiendedel_mm, hoyde_tiendedel_mm, miniatyr_svg')
           .order('id', { ascending: true })
           .range(fra, til),
         ['id'],
@@ -945,7 +946,7 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
       for (const row of rader) {
         map.set(`${row.embroidery_id}:${row.size_id}`,
           row.bredde_tiendedel_mm != null && row.hoyde_tiendedel_mm != null
-            ? { widthMm: row.bredde_tiendedel_mm / 10, heightMm: row.hoyde_tiendedel_mm / 10 }
+            ? { widthMm: row.bredde_tiendedel_mm / 10, heightMm: row.hoyde_tiendedel_mm / 10, miniatyrSvg: row.miniatyr_svg ?? null }
             : null)
       }
       return map
@@ -1043,11 +1044,12 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
           : firstM.data
         const { kats, arvet } = getKatsMedArv(motivData, bundle.data)
         const karakter = trekktUtKarakter(identitet)
+        const noenHarTomme = items.some(item => item.tomme !== null)
         res.push({
           key: `${bundleId}:${identitet}`,
           bundleId,
           identitet,
-          navn: karakter ? karakter.tegn : (firstM.data.navn || identitet),
+          navn: karakter ? karakter.tegn : (noenHarTomme ? (firstM.data.navn || identitet) : identitet),
           coverImage: getCoverImage(firstM.data),
           kats, katArvet: arvet,
           karakter: karakter ?? undefined,
@@ -1313,6 +1315,7 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
             setBboxCache(prev => new Map(prev).set(key, {
               widthMm: (bbox.max_x - bbox.min_x) / 10,
               heightMm: (bbox.max_y - bbox.min_y) / 10,
+              miniatyrSvg: (body.miniatyr_svg as string | null | undefined) ?? null,
             }))
             ok = true
           } else {
@@ -1397,6 +1400,9 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
   }
 
   function ParseBunnlinje() {
+    const antallUtenMiniatyr = cacheLastet
+      ? Array.from(bboxCache.values()).filter(b => b !== null && b.miniatyrSvg === null).length
+      : 0
     return (
       <div className="px-5 py-3 border-t border-stone-100 flex-shrink-0">
         {parseFremgang && (
@@ -1413,6 +1419,9 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
                 style={{ width: `${(parseFremgang.done / parseFremgang.total) * 100}%` }} />
             </div>
           </div>
+        )}
+        {progress && (
+          <p className="text-xs text-stone-500 mb-2">{progress}</p>
         )}
         <div className="flex gap-2">
           {parserAlle ? (
@@ -1431,6 +1440,23 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
               {`Parse ${antallStorrelserIkkeMalt} ${antallStorrelserIkkeMalt === 1 ? 'størrelse' : 'størrelser'}`}
             </button>
           ) : null}
+          {cacheLastet && antallUtenMiniatyr > 0 && (
+            <button
+              onClick={async () => {
+                setProgress('Genererer miniatyrer...')
+                try {
+                  const res = await fetch('/api/broderi-motiv/generer-miniatyrer', { method: 'POST' })
+                  const body = await res.json()
+                  if (res.ok) setProgress(`${body.oppdatert} miniatyrer generert på ${(body.tidMs / 1000).toFixed(1)} sek`)
+                  else setProgress(`Feil: ${body.error}`)
+                } catch (err) {
+                  setProgress(`Feil: ${err instanceof Error ? err.message : 'Ukjent feil'}`)
+                }
+              }}
+              className="flex-1 py-2 text-xs text-stone-500 border border-stone-200 rounded-lg hover:border-stone-400 transition-colors">
+              Generer miniatyrer
+            </button>
+          )}
           <button onClick={onClose} className="flex-1 py-2 text-sm text-stone-400 hover:text-stone-600 transition-colors">
             Avbryt
           </button>
@@ -1537,6 +1563,9 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
   }) {
     const firstM = biblioteket.find(m => m.id === vm.sizes[0]?.embroideryId)
     const maal = vmMaalTekst(vm, bboxCache)
+    const forsteMiniatyr = vm.sizes
+      .map(s => bboxCache.get(`${s.embroideryId}:${s.sizeId}`)?.miniatyrSvg)
+      .find(svg => !!svg) ?? null
     return (
       <li>
         <div className="w-full flex items-center gap-3 px-5 py-2.5 hover:bg-stone-50 transition-colors">
@@ -1548,7 +1577,11 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
           <button onClick={onClick} className="flex items-center gap-3 flex-1 min-w-0 text-left">
             <div className="w-10 h-10 rounded-lg overflow-hidden bg-stone-100 flex-shrink-0">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              {vm.coverImage && <img src={vm.coverImage} alt={vm.navn} className="w-full h-full object-cover" />}
+              {forsteMiniatyr
+                ? <img src={`data:image/svg+xml;utf8,${encodeURIComponent(forsteMiniatyr)}`} alt={vm.navn} className="w-full h-full object-contain p-0.5" />
+                : vm.coverImage
+                  ? <img src={vm.coverImage} alt={vm.navn} className="w-full h-full object-cover" />
+                  : null}
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-sm text-stone-800 truncate">{vm.navn}</p>
@@ -1641,6 +1674,25 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
           })
           const ingenPasser = cacheLastet && passende.length === 0
             && vm.sizes.every(s => bboxCache.has(`${s.embroideryId}:${s.sizeId}`))
+          const sorterteSizes = [...vm.sizes].sort((a, b) => {
+            const aCache = bboxCache.get(`${a.embroideryId}:${a.sizeId}`)
+            const bCache = bboxCache.get(`${b.embroideryId}:${b.sizeId}`)
+            if (aCache && bCache) return (aCache.widthMm * aCache.heightMm) - (bCache.widthMm * bCache.heightMm)
+            if (aCache) return -1
+            if (bCache) return 1
+            return 0
+          })
+          // Variant-deteksjon: vis "Del opp"-knapp bare når alle størrelser er fra SAMME embroidery-rad
+          // og har merkbart ulike sideforhold.
+          const harEnBareEmbroideryId = new Set(vm.sizes.map(s => s.embroideryId)).size === 1
+          const avMaalForSplit = vm.sizes.map(s => bboxCache.get(`${s.embroideryId}:${s.sizeId}`)).filter((b): b is BboxMm => b != null)
+          const visDelOppKnapp = (() => {
+            if (!harEnBareEmbroideryId || avMaalForSplit.length < 2) return false
+            const ratios = avMaalForSplit.map(b => b.widthMm / b.heightMm)
+            const avg = ratios.reduce((a, b) => a + b) / ratios.length
+            const variasjon = (Math.max(...ratios) - Math.min(...ratios)) / avg
+            return variasjon > 0.03
+          })()
           return (
             <>
               <Topptekst tittel={vm.navn} onTilbake={() => setView(prevView)} />
@@ -1651,16 +1703,25 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
                   </p>
                 )}
                 <div className="flex flex-wrap gap-2">
-                  {vm.sizes.map((s, i) => {
+                  {sorterteSizes.map((s, i) => {
                     const b = bboxCache.get(`${s.embroideryId}:${s.sizeId}`)
                     const overGrense = b !== undefined && b !== null
                       && (b.widthMm >= RAMME_GRENSE_MM || b.heightMm >= RAMME_GRENSE_MM)
                     const dims = b !== undefined && b !== null
                       ? `${b.widthMm.toFixed(1)} × ${b.heightMm.toFixed(1)} mm`
                       : 'Ikke målt'
+                    const miniatyrSvg = b?.miniatyrSvg ?? null
                     return (
                       <button key={i} onClick={() => velgStorrelse(vm, s)}
                         className="flex flex-col items-start px-3 py-2 rounded-lg border border-stone-200 text-left hover:border-stone-400 transition-colors">
+                        {miniatyrSvg && (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={`data:image/svg+xml;utf8,${encodeURIComponent(miniatyrSvg)}`}
+                            alt=""
+                            className="w-8 h-8 mb-1 object-contain"
+                          />
+                        )}
                         <span className="text-sm text-stone-700">{vmSizeLabel(s)}</span>
                         <span className={`text-xs ${overGrense ? 'text-red-500' : b !== undefined && b !== null ? 'text-stone-500' : 'text-stone-300 italic'}`}>
                           {dims}
@@ -1669,6 +1730,28 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
                     )
                   })}
                 </div>
+                {visDelOppKnapp && (
+                  <button
+                    onClick={async () => {
+                      if (!confirm(`Del "${vm.navn}" i ${vm.sizes.length} separate motiver?`)) return
+                      const embroideryId = vm.sizes[0].embroideryId
+                      const sizeIds = vm.sizes.map(s => s.sizeId)
+                      const res = await fetch('/api/embroidery/del-opp', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ embroideryId, sizeIds }),
+                      })
+                      if (res.ok) {
+                        window.location.reload()
+                      } else {
+                        const body = await res.json()
+                        alert(`Feil: ${body.error}`)
+                      }
+                    }}
+                    className="mt-2 px-3 py-1.5 rounded-lg border border-amber-300 bg-amber-50 text-amber-800 text-xs hover:bg-amber-100 transition-colors"
+                  >
+                    ⚠ Del opp i {vm.sizes.length} separate motiver
+                  </button>
+                )}
               </div>
               <div className="px-5 py-3 border-t border-stone-100 flex-shrink-0">
                 <button onClick={() => setView(prevView)}
