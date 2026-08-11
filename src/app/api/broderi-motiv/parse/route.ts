@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { byggMotivMiniatyrSvg, type MiniatyrBbox, type MiniatyrBlokk } from '@/lib/pesMiniatyr'
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -13,39 +14,8 @@ interface EmbroiderySize {
   pesFilename: string
 }
 
-interface ParsedBlokk {
-  farge_hex: string
-  sting: [number, number][]
-}
-
-interface ParsedBbox {
-  min_x: number; min_y: number; max_x: number; max_y: number
-}
-
-const MAKS_PUNKT_PER_BLOKK = 40
-
-function nedsampledPunkter(sting: [number, number][]): [number, number][] {
-  if (sting.length <= MAKS_PUNKT_PER_BLOKK) return sting
-  const steg = Math.ceil(sting.length / MAKS_PUNKT_PER_BLOKK)
-  const ut: [number, number][] = []
-  for (let i = 0; i < sting.length; i += steg) ut.push(sting[i])
-  const siste = sting[sting.length - 1]
-  if (ut[ut.length - 1] !== siste) ut.push(siste)
-  return ut
-}
-
-function byggMotivMiniatyrSvg(bbox: ParsedBbox, blokker: ParsedBlokk[]): string {
-  const pad = Math.max(bbox.max_x - bbox.min_x, bbox.max_y - bbox.min_y) * 0.05
-  const vx = (bbox.min_x - pad) / 10
-  const vy = (bbox.min_y - pad) / 10
-  const vw = (bbox.max_x - bbox.min_x + 2 * pad) / 10
-  const vh = (bbox.max_y - bbox.min_y + 2 * pad) / 10
-  const lines = blokker.map(b => {
-    const pts = nedsampledPunkter(b.sting).map(([x, y]) => `${(x / 10).toFixed(1)},${(y / 10).toFixed(1)}`).join(' ')
-    return `<polyline points="${pts}" fill="none" stroke="${b.farge_hex}" stroke-width="0.5" stroke-linecap="round" stroke-linejoin="round"/>`
-  }).join('')
-  return `<svg viewBox="${vx.toFixed(1)} ${vy.toFixed(1)} ${vw.toFixed(1)} ${vh.toFixed(1)}" xmlns="http://www.w3.org/2000/svg">${lines}</svg>`
-}
+type ParsedBlokk = MiniatyrBlokk
+type ParsedBbox = MiniatyrBbox
 
 export async function POST(req: NextRequest) {
   try {

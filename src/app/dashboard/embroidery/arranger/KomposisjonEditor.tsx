@@ -1188,16 +1188,28 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
     ? Math.max(0, alleStoerr.length - globalCounts.passer - globalCounts.passerIkke)
     : 0
 
-  // Per-kategori data for forsiderutene: antall VMs, antall som passer, thumbnails
+  // Per-kategori data for forsiderutene: antall VMs, antall som passer, thumbnails.
+  // Thumbnails er ALLTID ekte forsidebilder når de finnes — bundlenes egne (samme bilde som
+  // biblioteket viser, hentet med getBundleCoverImage) for bundlede motiver, deretter løse
+  // motivers egne forsidebilder (vm.coverImage, IKKE miniatyr_svg) for de som ikke er i noen
+  // bundle. miniatyr_svg (den forenklede stingopptegningen) er kun en siste utvei, brukt bare
+  // hvis en kategori ikke har ETT ENKELT ekte bilde å vise — se punkt 2 i samme runde for at
+  // selve opptegningen også er forbedret der den faktisk brukes.
   const kategoriData = useMemo(() => {
     // Build map: kat (null = "Uten kategori") → VirtuelMotiv[]
     const katToVms = new Map<string | null, VirtuelMotiv[]>()
+    const katToBundleIds = new Map<string | null, Set<string>>()
     for (const vm of virtuelleMotiver) {
       const kats = vm.kats.length > 0 ? vm.kats : [null]
       for (const kat of kats) {
         const arr = katToVms.get(kat) ?? []
         arr.push(vm)
         katToVms.set(kat, arr)
+        if (vm.bundleId) {
+          const set = katToBundleIds.get(kat) ?? new Set<string>()
+          set.add(vm.bundleId)
+          katToBundleIds.set(kat, set)
+        }
       }
     }
     // Build sorted list of categories (known ones first in KATEGORIER order, then "Uten kategori")
@@ -1215,22 +1227,37 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
     return alleKats.map(kat => {
       const vms = katToVms.get(kat) ?? []
       let passerCount = 0
-      const thumbnails: string[] = []
       for (const vm of vms) {
-        const s = vmStatus(vm, bboxCache)
-        if (s === 'passer') passerCount++
-        // Collect thumbnails: prefer miniatyrSvg, fallback to coverImage
-        if (thumbnails.length < 4) {
+        if (vmStatus(vm, bboxCache) === 'passer') passerCount++
+      }
+
+      const thumbnails: string[] = []
+      for (const bundleId of katToBundleIds.get(kat) ?? []) {
+        if (thumbnails.length >= 4) break
+        const cover = bundlerMap.get(bundleId) ? getBundleCoverImage(bundlerMap.get(bundleId)!.data) : null
+        if (cover) thumbnails.push(cover)
+      }
+      if (thumbnails.length < 4) {
+        for (const vm of vms) {
+          if (thumbnails.length >= 4) break
+          if (vm.bundleId) continue // dekket av bundelens eget forsidebilde over
+          if (vm.coverImage) thumbnails.push(vm.coverImage)
+        }
+      }
+      if (thumbnails.length === 0) {
+        // Ingen ekte forsidebilde funnet noe sted i kategorien — siste utvei, per motiv.
+        for (const vm of vms) {
+          if (thumbnails.length >= 4) break
           const svg = vm.sizes
             .map(sz => bboxCache.get(`${sz.embroideryId}:${sz.sizeId}`)?.miniatyrSvg)
             .find(x => !!x)
           if (svg) thumbnails.push(svg)
-          else if (thumbnails.length === 0 && vm.coverImage) thumbnails.push(vm.coverImage) // only as last resort, skip if we already have some SVGs
         }
       }
+
       return { kat, total: vms.length, passerCount, thumbnails }
     })
-  }, [virtuelleMotiver, bboxCache])
+  }, [virtuelleMotiver, bboxCache, bundlerMap])
 
   const alleBundleIds = useMemo(() => {
     const ids = new Set<string>()
@@ -1461,6 +1488,37 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
     )
   }
 
+  // Ruta behandler maks 300 rader per kall (unngår tidsavbrudd på en serverløs funksjon som
+  // regenererer ~3000 rader). Kaller den derfor på nytt til `ferdig`, med `sisteId` som en
+  // stabil kursor (IKKE offset — se kommentaren i selve ruta for hvorfor offset mot et
+  // filter som krymper for hver skriving hopper over rader).
+  async function kjorMiniatyrJobb(tving: boolean) {
+    setProgress(tving ? 'Fornyer alle miniatyrer…' : 'Genererer miniatyrer…')
+    let totalOppdatert = 0
+    let sisteId: string | undefined
+    try {
+      while (true) {
+        const res = await fetch('/api/broderi-motiv/generer-miniatyrer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tving, etterId: sisteId }),
+        })
+        const body = await res.json()
+        if (!res.ok) { setProgress(`Feil: ${body.error}`); return }
+        totalOppdatert += body.oppdatert
+        sisteId = body.sisteId
+        setProgress(tving
+          ? `Fornyer alle miniatyrer… ${totalOppdatert} gjort så langt`
+          : `Genererer miniatyrer… ${totalOppdatert} gjort så langt`)
+        if (body.ferdig) break
+      }
+      setProgress(`${totalOppdatert} miniatyrer ${tving ? 'fornyet' : 'generert'}`)
+      setLasterVersjon(v => v + 1) // hent bboxCache på nytt så de nye miniatyrene vises
+    } catch (err) {
+      setProgress(`Feil: ${err instanceof Error ? err.message : 'Ukjent feil'}`)
+    }
+  }
+
   function ParseBunnlinje() {
     const antallUtenMiniatyr = cacheLastet
       ? Array.from(bboxCache.values()).filter(b => b !== null && b.miniatyrSvg === null).length
@@ -1503,18 +1561,7 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
             </button>
           ) : null}
           {cacheLastet && antallUtenMiniatyr > 0 && (
-            <button
-              onClick={async () => {
-                setProgress('Genererer miniatyrer...')
-                try {
-                  const res = await fetch('/api/broderi-motiv/generer-miniatyrer', { method: 'POST' })
-                  const body = await res.json()
-                  if (res.ok) setProgress(`${body.oppdatert} miniatyrer generert på ${(body.tidMs / 1000).toFixed(1)} sek`)
-                  else setProgress(`Feil: ${body.error}`)
-                } catch (err) {
-                  setProgress(`Feil: ${err instanceof Error ? err.message : 'Ukjent feil'}`)
-                }
-              }}
+            <button onClick={() => kjorMiniatyrJobb(false)}
               className="flex-1 py-2 text-xs text-stone-500 border border-stone-200 rounded-lg hover:border-stone-400 transition-colors">
               Generer miniatyrer
             </button>
@@ -1523,6 +1570,15 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
             Avbryt
           </button>
         </div>
+        {cacheLastet && (
+          // Eksisterende miniatyrer (fra før strektykkelse/punktbudsjett ble forbedret) blir
+          // ikke rørt av knappen over — den fyller bare HULL. Denne kjører alle på nytt med
+          // den forbedrede tegningen, uavhengig av om de allerede har en (dårligere) miniatyr.
+          <button onClick={() => kjorMiniatyrJobb(true)}
+            className="w-full mt-1.5 py-1 text-[11px] text-stone-400 hover:text-stone-600 transition-colors">
+            Forny alle miniatyrer (bedre kvalitet på eksisterende)
+          </button>
+        )}
       </div>
     )
   }
