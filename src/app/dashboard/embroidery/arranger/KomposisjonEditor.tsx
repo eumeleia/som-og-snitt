@@ -782,6 +782,7 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
   const [filterPaaRamme, setFilterPaaRamme] = useState(true)
   const [bboxCache, setBboxCache] = useState<Map<string, BboxMm | null>>(new Map())
   const [cacheLastet, setCacheLastet] = useState(false)
+  const [globalCounts, setGlobalCounts] = useState<{ passer: number; passerIkke: number } | null>(null)
   const [bundlerMap, setBundlerMap] = useState<Map<string, EmbroideryBundle>>(new Map())
   const [kategoriOverstyringer, setKategoriOverstyringer] = useState<Map<string, string>>(new Map())
   const [parserAlle, setParserAlle] = useState(false)
@@ -790,31 +791,54 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
 
   useEffect(() => { return () => { avbrytRef.current = true } }, [])
 
+  // Henter mål ÉN gang, ikke paginert — data-kolonnen (som også har alle stingkoordinatene,
+  // stundom over 10 000 punkter per rad) røres aldri her. Postgres må dekomprimere hele
+  // TOAST-verdien for å hente ut selv et lite underfelt som data->bbox, uansett hvor lite
+  // som faktisk sendes over — det var den ekte kostnaden, ikke antall rader. Etter migration
+  // 007 er bredde/høyde egne, ikke-TOASTede kolonner, så et fullt oppslag over alle radene
+  // er billig og trenger ingen løkke. De tre globale tallene kommer fra egne
+  // telle-spørringer (count/head, ingen radverdier sendes), ikke fra å telle her.
   useEffect(() => {
     let cancelled = false
-    async function lastBboxCache() {
+    async function last() {
+      const radPromise = supabase
+        .from('broderi_motiv')
+        .select('embroidery_id, size_id, bredde_tiendedel_mm, hoyde_tiendedel_mm')
+        .range(0, 9999)
+
+      const passerPromise = supabase
+        .from('broderi_motiv')
+        .select('id', { count: 'exact', head: true })
+        .lt('bredde_tiendedel_mm', RAMME_GRENSE_MM * 10)
+        .lt('hoyde_tiendedel_mm', RAMME_GRENSE_MM * 10)
+
+      const passerIkkePromise = supabase
+        .from('broderi_motiv')
+        .select('id', { count: 'exact', head: true })
+        .not('bredde_tiendedel_mm', 'is', null)
+        .not('hoyde_tiendedel_mm', 'is', null)
+        .or(`bredde_tiendedel_mm.gte.${RAMME_GRENSE_MM * 10},hoyde_tiendedel_mm.gte.${RAMME_GRENSE_MM * 10}`)
+
+      const [radRes, passerRes, passerIkkeRes] = await Promise.all([radPromise, passerPromise, passerIkkePromise])
+      if (cancelled) return
+
+      if (radRes.error) console.error('[MotivPicker] mål-oppslag feilet', radRes.error)
+      if (passerRes.error) console.error('[MotivPicker] passer-telling feilet', passerRes.error)
+      if (passerIkkeRes.error) console.error('[MotivPicker] passer-ikke-telling feilet', passerIkkeRes.error)
+
       const map = new Map<string, BboxMm | null>()
-      const pageSize = 200
-      let offset = 0
-      while (!cancelled) {
-        const { data, error } = await supabase
-          .from('broderi_motiv')
-          .select('embroidery_id, size_id, data->bbox')
-          .range(offset, offset + pageSize - 1)
-        if (error) { console.error('[MotivPicker] bbox-cache-feil', error); break }
-        if (!data || data.length === 0) break
-        for (const row of (data as Array<{ embroidery_id: string; size_id: string; bbox: BroderiBbox | null }>)) {
-          map.set(`${row.embroidery_id}:${row.size_id}`, row.bbox
-            ? { widthMm: (row.bbox.max_x - row.bbox.min_x) / 10, heightMm: (row.bbox.max_y - row.bbox.min_y) / 10 }
+      type Rad = { embroidery_id: string; size_id: string; bredde_tiendedel_mm: number | null; hoyde_tiendedel_mm: number | null }
+      for (const row of ((radRes.data ?? []) as Rad[])) {
+        map.set(`${row.embroidery_id}:${row.size_id}`,
+          row.bredde_tiendedel_mm != null && row.hoyde_tiendedel_mm != null
+            ? { widthMm: row.bredde_tiendedel_mm / 10, heightMm: row.hoyde_tiendedel_mm / 10 }
             : null)
-        }
-        if (!cancelled) setBboxCache(new Map(map))
-        if (data.length < pageSize) break
-        offset += pageSize
       }
-      if (!cancelled) setCacheLastet(true)
+      setBboxCache(map)
+      setGlobalCounts({ passer: passerRes.count ?? 0, passerIkke: passerIkkeRes.count ?? 0 })
+      setCacheLastet(true)
     }
-    lastBboxCache()
+    last()
     return () => { cancelled = true }
   }, [])
 
@@ -948,20 +972,24 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
     }))),
     [biblioteket])
 
+  // Nøyaktig hvilke par som mangler et forsøk — brukes bare til å BYGGE parse-køen (de
+  // faktiske embroideryId/sizeId-parene som skal sendes til /api/broderi-motiv/parse), ikke
+  // til å vise et tall. Et permanent feilet forsøk (finnes som rad, men uten mål) skal ikke
+  // kø-es opp igjen, bare det som aldri har fått en rad.
   const ikkeForsokt = useMemo(() =>
     alleStoerr.filter(({ key }) => !bboxCache.has(key)),
     [alleStoerr, bboxCache])
 
-  const { antallPasserGlobalt, antallPasserIkkeGlobalt, antallIkkeMåltGlobalt } = useMemo(() => {
-    let passer = 0, passerIkke = 0, ikkeMalt = 0
-    for (const vm of virtuelleMotiver) {
-      const s = vmStatus(vm, bboxCache)
-      if (s === 'passer') passer++
-      else if (s === 'passerIkke') passerIkke++
-      else ikkeMalt++
-    }
-    return { antallPasserGlobalt: passer, antallPasserIkkeGlobalt: passerIkke, antallIkkeMåltGlobalt: ikkeMalt }
-  }, [virtuelleMotiver, bboxCache])
+  // De tre tallene i toppteksten kommer fra count-spørringene i lasteeffekten over — aldri
+  // fra å telle virtuelle motiver eller rader i nettleseren. "Ikke målt" er det som blir
+  // igjen av det biblioteket faktisk har (alleStoerr, allerede kjent og gratis) etter at
+  // begge telte gruppene er trukket fra, og dekker både "aldri forsøkt" og "forsøkt og
+  // feilet" — begge betyr "vet ikke om det passer".
+  const antallPasserGlobalt = globalCounts?.passer ?? 0
+  const antallPasserIkkeGlobalt = globalCounts?.passerIkke ?? 0
+  const antallIkkeMåltGlobalt = globalCounts
+    ? Math.max(0, alleStoerr.length - globalCounts.passer - globalCounts.passerIkke)
+    : 0
 
   const alleBundleIds = useMemo(() => {
     const ids = new Set<string>()
@@ -1125,10 +1153,13 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
               className="flex-1 py-2 text-xs text-red-500 border border-red-200 rounded-lg hover:border-red-400 transition-colors">
               Avbryt parsing
             </button>
-          ) : ikkeForsokt.length > 0 ? (
+          ) : cacheLastet && antallIkkeMåltGlobalt > 0 ? (
+            // Tallet på knappen er det samme telle-baserte "ikke målt"-tallet som toppteksten
+            // viser — ikke en halvlastet cache. Vises aldri før tallene er kjent (cacheLastet),
+            // og forsvinner helt når ingen umålte er igjen, i stedet for å vise "Parse 0".
             <button onClick={parseAlle}
               className="flex-1 py-2 text-xs text-stone-500 border border-stone-200 rounded-lg hover:border-stone-400 transition-colors">
-              {`Parse ${ikkeForsokt.length} ${ikkeForsokt.length === 1 ? 'størrelse' : 'størrelser'}`}
+              {`Parse ${antallIkkeMåltGlobalt} ${antallIkkeMåltGlobalt === 1 ? 'størrelse' : 'størrelser'}`}
             </button>
           ) : null}
           <button onClick={onClose} className="flex-1 py-2 text-sm text-stone-400 hover:text-stone-600 transition-colors">

@@ -84,6 +84,14 @@ export async function POST(req: NextRequest) {
     }
     const parsed = await parseRes.json()
 
+    // bredde/hoyde_tiendedel_mm er avledet av parsed.bbox, satt her i SAMME skriving som
+    // data-jsonb-en — de kan da aldri komme i utakt med hverandre. Kolonnene finnes for at
+    // motivvelgeren skal kunne filtrere/telle på mål uten å røre data (som også har alle
+    // stingkoordinatene, og er treg å lese i bulk — se migration 007).
+    const bbox = parsed?.bbox as { min_x: number; min_y: number; max_x: number; max_y: number } | null | undefined
+    const breddeTiendedelMm = bbox ? bbox.max_x - bbox.min_x : null
+    const hoydeTiendedelMm = bbox ? bbox.max_y - bbox.min_y : null
+
     const { data: saved, error: upsertErr } = await supabaseAdmin
       .from('broderi_motiv')
       .upsert({
@@ -92,6 +100,8 @@ export async function POST(req: NextRequest) {
         navn: `${motif.data.navn} – ${size.sizeLabel}`,
         fil_sti: size.pesUrl,
         data: parsed,
+        bredde_tiendedel_mm: breddeTiendedelMm,
+        hoyde_tiendedel_mm: hoydeTiendedelMm,
       }, { onConflict: 'embroidery_id,size_id' })
       .select('id, data, created_at')
       .maybeSingle()
