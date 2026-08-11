@@ -791,20 +791,49 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
 
   useEffect(() => { return () => { avbrytRef.current = true } }, [])
 
-  // Henter mål ÉN gang, ikke paginert — data-kolonnen (som også har alle stingkoordinatene,
+  // Henter mål-kolonnene for ALLE rader — data-kolonnen (som også har alle stingkoordinatene,
   // stundom over 10 000 punkter per rad) røres aldri her. Postgres må dekomprimere hele
   // TOAST-verdien for å hente ut selv et lite underfelt som data->bbox, uansett hvor lite
   // som faktisk sendes over — det var den ekte kostnaden, ikke antall rader. Etter migration
-  // 007 er bredde/høyde egne, ikke-TOASTede kolonner, så et fullt oppslag over alle radene
-  // er billig og trenger ingen løkke. De tre globale tallene kommer fra egne
-  // telle-spørringer (count/head, ingen radverdier sendes), ikke fra å telle her.
+  // 007 er bredde/høyde egne, ikke-TOASTede kolonner, så et par tusen rader med noen få
+  // heltall hver er billig å hente og regne på i klienten.
+  //
+  // MEN: PostgREST/Supabase svarer maks 1000 rader per spørring uansett .range(), stille —
+  // ingen feil, bare et halvfullt resultat. Uten paginering ble bboxCache derfor aldri
+  // komplett (2994 rader > 1000), og uten en fast `order by` var det TILFELDIG hvilke 1000
+  // rader som kom med hver gang, så det var IKKE data-feil som fikk per-bundle-tallene til å
+  // endre seg mellom hver lasting. Løsning: hent i sider av 1000 med et deterministisk
+  // `order by id` til en side kommer tilbake mindre enn full, og bygg ett komplett map lokalt
+  // FØR noe settes i state — ingen delvis cache skal noensinne kunne vises.
   useEffect(() => {
     let cancelled = false
+    type Rad = { embroidery_id: string; size_id: string; bredde_tiendedel_mm: number | null; hoyde_tiendedel_mm: number | null }
+    async function lastAlleRader(): Promise<Map<string, BboxMm | null> | null> {
+      const map = new Map<string, BboxMm | null>()
+      const pageSize = 1000
+      let offset = 0
+      while (!cancelled) {
+        const { data, error } = await supabase
+          .from('broderi_motiv')
+          .select('embroidery_id, size_id, bredde_tiendedel_mm, hoyde_tiendedel_mm')
+          .order('id', { ascending: true })
+          .range(offset, offset + pageSize - 1)
+        if (error) { console.error('[MotivPicker] mål-oppslag feilet', error); return null }
+        for (const row of ((data ?? []) as Rad[])) {
+          map.set(`${row.embroidery_id}:${row.size_id}`,
+            row.bredde_tiendedel_mm != null && row.hoyde_tiendedel_mm != null
+              ? { widthMm: row.bredde_tiendedel_mm / 10, heightMm: row.hoyde_tiendedel_mm / 10 }
+              : null)
+        }
+        if (!data || data.length < pageSize) break
+        offset += pageSize
+      }
+      return map
+    }
     async function last() {
-      const radPromise = supabase
+      const totalPromise = supabase
         .from('broderi_motiv')
-        .select('embroidery_id, size_id, bredde_tiendedel_mm, hoyde_tiendedel_mm')
-        .range(0, 9999)
+        .select('id', { count: 'exact', head: true })
 
       const passerPromise = supabase
         .from('broderi_motiv')
@@ -819,21 +848,24 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
         .not('hoyde_tiendedel_mm', 'is', null)
         .or(`bredde_tiendedel_mm.gte.${RAMME_GRENSE_MM * 10},hoyde_tiendedel_mm.gte.${RAMME_GRENSE_MM * 10}`)
 
-      const [radRes, passerRes, passerIkkeRes] = await Promise.all([radPromise, passerPromise, passerIkkePromise])
-      if (cancelled) return
+      const [map, totalRes, passerRes, passerIkkeRes] = await Promise.all([
+        lastAlleRader(), totalPromise, passerPromise, passerIkkePromise,
+      ])
+      if (cancelled || map === null) return
 
-      if (radRes.error) console.error('[MotivPicker] mål-oppslag feilet', radRes.error)
+      if (totalRes.error) console.error('[MotivPicker] totaltelling feilet', totalRes.error)
       if (passerRes.error) console.error('[MotivPicker] passer-telling feilet', passerRes.error)
       if (passerIkkeRes.error) console.error('[MotivPicker] passer-ikke-telling feilet', passerIkkeRes.error)
 
-      const map = new Map<string, BboxMm | null>()
-      type Rad = { embroidery_id: string; size_id: string; bredde_tiendedel_mm: number | null; hoyde_tiendedel_mm: number | null }
-      for (const row of ((radRes.data ?? []) as Rad[])) {
-        map.set(`${row.embroidery_id}:${row.size_id}`,
-          row.bredde_tiendedel_mm != null && row.hoyde_tiendedel_mm != null
-            ? { widthMm: row.bredde_tiendedel_mm / 10, heightMm: row.hoyde_tiendedel_mm / 10 }
-            : null)
+      // Overskriften (count-spørringer mot basen) og lista (bboxCache) er to uavhengige
+      // kilder til samme sannhet — er de uenige er det alltid en feil i lastingen, ikke i
+      // dataene. Tegn aldri en liste som motsier tallene; logg tydelig i stedet.
+      if (totalRes.count != null && totalRes.count !== map.size) {
+        console.error('[MotivPicker] bboxCache stemmer ikke med basen', {
+          cacheStorrelse: map.size, baseAntallRader: totalRes.count,
+        })
       }
+
       setBboxCache(map)
       setGlobalCounts({ passer: passerRes.count ?? 0, passerIkke: passerIkkeRes.count ?? 0 })
       setCacheLastet(true)
