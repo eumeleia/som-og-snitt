@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   DndContext, closestCenter, PointerSensor, TouchSensor,
   useSensor, useSensors, type DragEndEvent,
@@ -15,7 +15,7 @@ import {
   finnSammenslaingsforslag, sjekkFasesortering, fasesorter, nyPause,
   plassertFargekjoringRaster, type SekvensKontekst, type SammenslaingForslag,
 } from './sekvens'
-import { roterLokalePunkter } from './geometri'
+import { plassertPunkter } from './geometri'
 import type { BroderiMotivData, PlassertMotiv, SekvensElement, SekvensKjoring } from './types'
 
 export function SekvensPanel({
@@ -370,6 +370,119 @@ function PauseRad({ el, onSlett }: { el: SekvensElement; onSlett: () => void }) 
   )
 }
 
+// ── ForhåndsvisModal helpers ──────────────────────────────────────────────────
+
+const MODAL_CANVAS_PX = 280
+const MODAL_STING_PER_SEK = 5000
+const MODAL_PAD = 50 // tenths of mm padding around the zoom area
+
+interface AvspSegment {
+  elId: string
+  farge: string
+  berørt: boolean
+  stingFra: number
+  stingTil: number
+  punkter: [number, number][]
+}
+
+function byggAvspSegmenter(
+  seq: SekvensElement[],
+  ctx: SekvensKontekst,
+  berørteIder: Set<string>,
+): AvspSegment[] {
+  const out: AvspSegment[] = []
+  let cum = 0
+  for (const el of seq) {
+    if (el.type === 'pause') continue
+    const funn = finnFargekjoring(ctx, el)
+    if (!funn) continue
+    const { pm, data, kjoring } = funn
+    if (!data.bbox) continue
+    const farge = effektivFarge(ctx, el) ?? kjoring.farge_hex
+    const pts: [number, number][] = []
+    for (let i = kjoring.fra_index; i <= kjoring.til_index; i++) {
+      const b = data.stingblokker[i]
+      if (!b || b.sting.length === 0) continue
+      const abs = plassertPunkter(b.sting, data.bbox, pm.rotasjonGrader, pm.posisjonXTiendedelMm, pm.posisjonYTiendedelMm)
+      for (const p of abs) pts.push(p)
+    }
+    if (pts.length === 0) continue
+    out.push({
+      elId: el.id, farge,
+      berørt: berørteIder.has(el.id),
+      stingFra: cum, stingTil: cum + pts.length,
+      punkter: pts,
+    })
+    cum += pts.length
+  }
+  return out
+}
+
+function tegnModalCanvas(
+  canvas: HTMLCanvasElement,
+  segments: AvspSegment[],
+  pos: number,
+  vp: { cx: number; cy: number; halv: number },
+  kollisjonsRaster: Set<string> | null,
+) {
+  const ctx2d = canvas.getContext('2d')
+  if (!ctx2d) return
+  const SCALE = MODAL_CANVAS_PX / (vp.halv * 2)
+  const OX = MODAL_CANVAS_PX / 2
+  const OY = MODAL_CANVAS_PX / 2
+  const toC = (x: number, y: number): [number, number] => [
+    (x - vp.cx) * SCALE + OX,
+    (y - vp.cy) * SCALE + OY,
+  ]
+
+  ctx2d.clearRect(0, 0, MODAL_CANVAS_PX, MODAL_CANVAS_PX)
+  ctx2d.fillStyle = '#fafaf9'
+  ctx2d.fillRect(0, 0, MODAL_CANVAS_PX, MODAL_CANVAS_PX)
+
+  // Hoop outline
+  ctx2d.strokeStyle = '#C9A57A'
+  ctx2d.lineWidth = 0.5
+  ctx2d.setLineDash([3, 3])
+  const [hx0, hy0] = toC(-500, -500)
+  const [hx1, hy1] = toC(500, 500)
+  ctx2d.strokeRect(hx0, hy0, hx1 - hx0, hy1 - hy0)
+  ctx2d.setLineDash([])
+
+  const curPos = Math.floor(pos)
+  for (const seg of segments) {
+    if (seg.stingFra >= curPos) break
+    const take = seg.stingTil <= curPos
+      ? seg.punkter
+      : seg.punkter.slice(0, curPos - seg.stingFra)
+    if (take.length < 2) continue
+    ctx2d.globalAlpha = seg.berørt ? 1 : 0.1
+    ctx2d.strokeStyle = seg.farge
+    ctx2d.lineWidth = seg.berørt ? 1 : 0.6
+    ctx2d.lineJoin = 'round'
+    ctx2d.lineCap = 'round'
+    ctx2d.beginPath()
+    const [x0, y0] = toC(take[0][0], take[0][1])
+    ctx2d.moveTo(x0, y0)
+    for (let i = 1; i < take.length; i++) {
+      const [xi, yi] = toC(take[i][0], take[i][1])
+      ctx2d.lineTo(xi, yi)
+    }
+    ctx2d.stroke()
+  }
+  ctx2d.globalAlpha = 1
+
+  // Collision cells drawn on top of stitches
+  if (kollisjonsRaster) {
+    const cellPx = Math.max(2, Math.ceil(SCALE * 10))
+    ctx2d.fillStyle = 'rgba(220,38,38,0.6)'
+    for (const celle of kollisjonsRaster) {
+      const [col, row] = celle.split(',').map(Number)
+      const [px, py] = toC(col * 10, row * 10)
+      ctx2d.fillRect(px, py, cellPx, cellPx)
+    }
+  }
+}
+
 function ForhåndsvisModal({
   forslag, sekvens, ctx, rasterCache, kjoringsNummer, onClose,
 }: {
@@ -380,10 +493,29 @@ function ForhåndsvisModal({
   kjoringsNummer: Map<string, number>
   onClose: () => void
 }) {
-  const [visning, setVisning] = useState<'for' | 'etter'>('for')
-
   const iNr = kjoringsNummer.get(forslag.iId) ?? '?'
   const jNr = kjoringsNummer.get(forslag.jId) ?? '?'
+
+  const berørteIder = useMemo(
+    () => new Set([forslag.iId, forslag.jId, ...forslag.mellomKjoringIder]),
+    [forslag],
+  )
+
+  const sekvensEtter = useMemo(
+    () => flyttElementEtter(sekvens, forslag.jId, forslag.iId),
+    [sekvens, forslag],
+  )
+
+  const segmenterFør = useMemo(
+    () => byggAvspSegmenter(sekvens, ctx, berørteIder),
+    [sekvens, ctx, berørteIder],
+  )
+  const segmenterEtter = useMemo(
+    () => byggAvspSegmenter(sekvensEtter, ctx, berørteIder),
+    [sekvensEtter, ctx, berørteIder],
+  )
+
+  const totalSting = segmenterFør.length > 0 ? segmenterFør[segmenterFør.length - 1].stingTil : 0
 
   const jEl = sekvens.find(el => el.id === forslag.jId) as SekvensKjoring | undefined
   const jRaster = jEl ? plassertFargekjoringRaster(ctx, jEl, rasterCache) : undefined
@@ -403,12 +535,120 @@ function ForhåndsvisModal({
     return union.size > 0 ? union : null
   }, [forslag, jRaster, rasterCache, sekvens, ctx])
 
+  const [visHelhet, setVisHelhet] = useState(false)
+
+  const zoomViewport = useMemo(() => {
+    if (kollisjonsRaster && kollisjonsRaster.size > 0) {
+      let minCol = Infinity, maxCol = -Infinity, minRow = Infinity, maxRow = -Infinity
+      for (const celle of kollisjonsRaster) {
+        const [c, r] = celle.split(',').map(Number)
+        if (c < minCol) minCol = c
+        if (c > maxCol) maxCol = c
+        if (r < minRow) minRow = r
+        if (r > maxRow) maxRow = r
+      }
+      const minX = minCol * 10 - MODAL_PAD
+      const maxX = (maxCol + 1) * 10 + MODAL_PAD
+      const minY = minRow * 10 - MODAL_PAD
+      const maxY = (maxRow + 1) * 10 + MODAL_PAD
+      const cx = (minX + maxX) / 2
+      const cy = (minY + maxY) / 2
+      const halv = Math.max((maxX - minX) / 2, (maxY - minY) / 2)
+      return { cx, cy, halv }
+    }
+    // Fallback: bbox of affected segments
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+    for (const seg of segmenterFør) {
+      if (!seg.berørt) continue
+      for (const [x, y] of seg.punkter) {
+        if (x < minX) minX = x
+        if (x > maxX) maxX = x
+        if (y < minY) minY = y
+        if (y > maxY) maxY = y
+      }
+    }
+    if (!isFinite(minX)) return { cx: 0, cy: 0, halv: 600 }
+    const cx = (minX + maxX) / 2
+    const cy = (minY + maxY) / 2
+    const halv = Math.max((maxX - minX) / 2, (maxY - minY) / 2) + MODAL_PAD
+    return { cx, cy, halv }
+  }, [kollisjonsRaster, segmenterFør])
+
+  const viewport = useMemo(
+    () => visHelhet ? { cx: 0, cy: 0, halv: 600 } : zoomViewport,
+    [visHelhet, zoomViewport],
+  )
+
+  const [pos, setPos] = useState(0)
+  const [spiller, setSpiller] = useState(false)
+  const rafRef = useRef<number | null>(null)
+  const lastTimeRef = useRef<number | null>(null)
+  const canvasForRef = useRef<HTMLCanvasElement>(null)
+  const canvasEtterRef = useRef<HTMLCanvasElement>(null)
+
+  useEffect(() => {
+    if (!spiller) {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current)
+      return
+    }
+    lastTimeRef.current = null
+    function frame(t: number) {
+      const dt = lastTimeRef.current ? (t - lastTimeRef.current) / 1000 : 0
+      lastTimeRef.current = t
+      setPos(p => {
+        const neste = p + dt * MODAL_STING_PER_SEK
+        if (neste >= totalSting) { setSpiller(false); return totalSting }
+        return neste
+      })
+      rafRef.current = requestAnimationFrame(frame)
+    }
+    rafRef.current = requestAnimationFrame(frame)
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current) }
+  }, [spiller, totalSting])
+
+  useEffect(() => {
+    if (canvasForRef.current)
+      tegnModalCanvas(canvasForRef.current, segmenterFør, pos, viewport, kollisjonsRaster)
+    if (canvasEtterRef.current)
+      tegnModalCanvas(canvasEtterRef.current, segmenterEtter, pos, viewport, kollisjonsRaster)
+  }, [pos, segmenterFør, segmenterEtter, viewport, kollisjonsRaster])
+
+  // Plain-language description
+  const jFunn = jEl ? finnFargekjoring(ctx, jEl) : undefined
+  const jMotivNavn = jFunn?.pm.navn ?? ''
+  const mellomCount = forslag.mellomKjoringIder.length
+
+  const beskrivelse = (() => {
+    const jLabel = jMotivNavn ? ` (${jMotivNavn})` : ''
+    if (forslag.endrerLagrekkefolge && kollisjonsRaster) {
+      const unike = [
+        ...new Set(
+          forslag.mellomKjoringIder
+            .map(mid => {
+              const el = sekvens.find(e => e.id === mid) as SekvensKjoring | undefined
+              if (!el) return null
+              return finnFargekjoring(ctx, el)?.pm.navn ?? effektivFarge(ctx, el) ?? null
+            })
+            .filter((n): n is string => n !== null),
+        ),
+      ].join(' og ')
+      return `Kjøring ${jNr}${jLabel} flyttes FØR ${unike || `kjøring ${iNr}`} i stedet for ETTER. De overlapper i ca. ${kollisjonsRaster.size} mm² — der kan kjøring ${jNr} ende opp under i stedet for over.`
+    }
+    if (forslag.endrerLagrekkefolge) {
+      return `Kjøring ${jNr}${jLabel} flyttes FØR ${mellomCount} kjøring${mellomCount !== 1 ? 'er' : ''} — de kan overlappe der de krysser.`
+    }
+    return `Kjøring ${iNr} og ${jNr} kan slås trygt sammen. Kjøring ${jNr}${jLabel} flyttes FØR ${mellomCount} kjøring${mellomCount !== 1 ? 'er' : ''} uten overlapp med noen av dem.`
+  })()
+
   return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-xl max-w-lg w-full overflow-hidden">
+    <div
+      className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div className="bg-white rounded-2xl shadow-xl max-w-2xl w-full overflow-hidden">
         <div className="px-5 py-4 border-b border-stone-100 flex items-center justify-between">
           <h3 className="font-serif text-lg text-stone-800">
-            Sammenslåing: Kjøring {iNr} → Kjøring {jNr}
+            Kjøring {iNr} + {jNr}: forhåndsvisning
           </h3>
           <button
             onClick={onClose}
@@ -421,93 +661,81 @@ function ForhåndsvisModal({
           </button>
         </div>
 
-        <div className="p-5">
-          <div className="flex gap-2 mb-4">
+        <div className="p-5 space-y-3">
+          <div className="flex items-center gap-2 flex-wrap">
             <button
-              onClick={() => setVisning('for')}
-              className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${visning === 'for' ? 'bg-stone-800 text-white' : 'border border-stone-200 text-stone-600 hover:bg-stone-50'}`}
+              onClick={() => { if (pos >= totalSting) setPos(0); setSpiller(s => !s) }}
+              className="px-3 py-1.5 rounded-lg bg-stone-800 text-white text-sm hover:bg-stone-700 transition-colors"
             >
-              Før
+              {spiller ? 'Stopp' : 'Spill'}
             </button>
             <button
-              onClick={() => setVisning('etter')}
-              className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${visning === 'etter' ? 'bg-stone-800 text-white' : 'border border-stone-200 text-stone-600 hover:bg-stone-50'}`}
+              onClick={() => { setSpiller(false); setPos(0) }}
+              className="px-3 py-1.5 rounded-lg border border-stone-200 text-stone-600 text-sm hover:bg-stone-50 transition-colors"
             >
-              Etter
+              Til start
+            </button>
+            <span className="text-xs text-stone-400">{Math.floor(pos)} / {totalSting} sting</span>
+            <button
+              onClick={() => setVisHelhet(v => !v)}
+              className="ml-auto text-xs px-2.5 py-1.5 rounded-lg border border-stone-200 text-stone-500 hover:bg-stone-50 transition-colors"
+            >
+              {visHelhet ? 'Zoom til overlapp' : 'Vis hel komposisjon'}
             </button>
           </div>
 
-          <div className="rounded-xl border border-stone-200 overflow-hidden bg-stone-50 aspect-square">
-            <svg
-              viewBox="-60 -60 120 120"
-              className="w-full h-full"
-              style={{ background: 'white' }}
-            >
-              {/* Ramme */}
-              <rect x={-50} y={-50} width={100} height={100} fill="none" stroke="#C9A57A" strokeWidth={0.5} strokeDasharray="2 2" />
+          <input
+            type="range"
+            min={0}
+            max={totalSting}
+            step={1}
+            value={Math.floor(pos)}
+            onChange={e => { setSpiller(false); setPos(+e.target.value) }}
+            className="w-full accent-[#C9A57A]"
+          />
 
-              {ctx.motiver.map(pm => {
-                const key = `${pm.embroideryId}:${pm.sizeId}`
-                const data = ctx.resolved[key]
-                if (!data?.bbox) return null
-
-                return (
-                  <g
-                    key={pm.id}
-                    transform={`translate(${pm.posisjonXTiendedelMm / 10} ${pm.posisjonYTiendedelMm / 10})`}
-                  >
-                    {data.stingblokker.map((b, i) => {
-                      const roterte = roterLokalePunkter(b.sting, data.bbox!, pm.rotasjonGrader)
-                      return (
-                        <polyline
-                          key={i}
-                          points={roterte.map(([x, y]) => `${x / 10},${y / 10}`).join(' ')}
-                          fill="none"
-                          stroke={b.farge_hex}
-                          strokeWidth={0.3}
-                        />
-                      )
-                    })}
-                  </g>
-                )
-              })}
-
-              {visning === 'etter' && kollisjonsRaster && Array.from(kollisjonsRaster).map(celle => {
-                const parts = celle.split(',').map(Number)
-                const cx = parts[0]
-                const cy = parts[1]
-                return (
-                  <rect
-                    key={celle}
-                    x={cx}
-                    y={cy}
-                    width={1}
-                    height={1}
-                    fill="rgba(220,38,38,0.4)"
-                  />
-                )
-              })}
-            </svg>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <p className="text-xs font-medium text-stone-500 text-center mb-1.5">Nå</p>
+              <canvas
+                ref={canvasForRef}
+                width={MODAL_CANVAS_PX}
+                height={MODAL_CANVAS_PX}
+                className="w-full aspect-square rounded-xl border border-stone-200"
+              />
+            </div>
+            <div>
+              <p className="text-xs font-medium text-stone-500 text-center mb-1.5">Etter sammenslåing</p>
+              <canvas
+                ref={canvasEtterRef}
+                width={MODAL_CANVAS_PX}
+                height={MODAL_CANVAS_PX}
+                className="w-full aspect-square rounded-xl border border-stone-200"
+              />
+            </div>
           </div>
 
-          {visning === 'etter' && kollisjonsRaster && (
-            <p className="text-xs text-red-700 mt-2">
-              Røde celler viser hvor kjøring {jNr} vil overlappe med mellomliggende kjøringer etter sammenslåingen.
-            </p>
-          )}
-          {visning === 'etter' && !kollisjonsRaster && (
-            <p className="text-xs text-stone-500 mt-2">
-              Ingen presis overlapp funnet mellom kjøring {jNr} og mellomliggende kjøringer.
+          <div className={`rounded-xl px-4 py-3 text-sm leading-snug ${forslag.endrerLagrekkefolge ? 'bg-amber-50 text-amber-900' : 'bg-stone-50 text-stone-700'}`}>
+            {beskrivelse}
+          </div>
+
+          {kollisjonsRaster && (
+            <p className="text-xs text-red-700 flex items-center gap-1.5">
+              <span
+                className="inline-block w-3 h-3 rounded-sm flex-shrink-0"
+                style={{ backgroundColor: 'rgba(220,38,38,0.6)' }}
+              />
+              Røde celler viser overlapp (~{kollisjonsRaster.size} mm²) — begge visninger zoomer inn på dette området.
             </p>
           )}
         </div>
 
-        <div className="px-5 py-3 border-t border-stone-100 flex justify-end gap-2">
+        <div className="px-5 py-3 border-t border-stone-100 flex justify-end">
           <button
             onClick={onClose}
             className="px-4 py-2 text-sm text-stone-500 hover:text-stone-700 transition-colors"
           >
-            Avbryt
+            Lukk
           </button>
         </div>
       </div>
