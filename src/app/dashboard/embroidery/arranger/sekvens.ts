@@ -128,6 +128,7 @@ export interface SammenslaingForslag {
   farge: string
   sparteOmtredninger: number
   fargerMellom: string[]
+  mellomKjoringIder: string[]
   endrerLagrekkefolge: boolean
   overlappendeFarger: string[]
 }
@@ -208,6 +209,7 @@ export function finnSammenslaingsforslag(
         farge: fargeI,
         sparteOmtredninger: spart,
         fargerMellom,
+        mellomKjoringIder: mellomKjoringer.map(el => el.id),
         endrerLagrekkefolge: overlappendeFarger.length > 0,
         overlappendeFarger,
       })

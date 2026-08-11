@@ -6,13 +6,14 @@ import { hentAllePaginert } from '@/lib/supabasePaginering'
 import { describeError, type ErrorDetails } from '@/lib/error-details'
 import { ErrorDetailsView } from '@/components/ErrorDetailsView'
 import { roterLokalePunkter, plassertBbox, kombinerBbox } from './geometri'
-import { synkroniserSekvens } from './sekvens'
+import { synkroniserSekvens, finnFargekjoring } from './sekvens'
 import { byggMiniatyrSvg } from './miniatyr'
 import { SekvensPanel } from './SekvensPanel'
 import { EksportPanel } from './EksportPanel'
+import { StingSimulator } from './StingSimulator'
 import {
   type Embroidery, type EmbroiderySize, type EmbroideryData, type BroderiMotivData, type BroderiBbox,
-  type BroderiKomposisjon, type PlassertMotiv, type SekvensElement, type EmbroideryBundle,
+  type BroderiKomposisjon, type PlassertMotiv, type SekvensElement, type SekvensKjoring, type EmbroideryBundle,
   type VirtuelMotiv, type VirtuelStorrelse,
   getCoverImage, getBundleCoverImage, getKats, getKatsMedArv,
 } from './types'
@@ -70,6 +71,8 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
   const [showPicker, setShowPicker] = useState(false)
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
   const [saveErrorDetails, setSaveErrorDetails] = useState<ErrorDetails | null>(null)
+  const [fokusKjoringId, setFokusKjoringId] = useState<string | null>(null)
+  const [hoverKjoringId, setHoverKjoringId] = useState<string | null>(null)
 
   const [resolved, setResolved] = useState<Record<string, BroderiMotivData>>({})
   const [fetchErrors, setFetchErrors] = useState<Record<string, string>>({})
@@ -313,6 +316,13 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
 
   const valgtMotiv = motiver.find(pm => pm.id === valgtId) ?? null
 
+  const aktivKjoringId = hoverKjoringId ?? fokusKjoringId
+  const aktivKjoring = useMemo((): SekvensKjoring | null => {
+    if (!aktivKjoringId) return null
+    const el = sekvens.find(e => e.id === aktivKjoringId)
+    return el?.type === 'kjoring' ? el : null
+  }, [aktivKjoringId, sekvens])
+
   return (
     <div className="w-full max-w-3xl mx-auto px-4 sm:px-6 py-3 pb-24">
       <div className="flex items-center gap-3 mb-4">
@@ -375,6 +385,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
                 bbox={data.bbox}
                 valgt={pm.id === valgtId}
                 utenforRamme={utenforRammeIder.includes(pm.id)}
+                aktivKjoring={aktivKjoring}
                 onPointerDown={e => onPointerDownMotiv(e, pm)}
               />
             )
@@ -480,7 +491,21 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
       {sekvens.length > 0 && (
         <div className="mt-6">
           <h3 className="font-serif text-lg text-stone-700 mb-3">Sekvens</h3>
-          <SekvensPanel sekvens={sekvens} onChange={setSekvens} motiver={motiver} resolved={resolved} />
+          <SekvensPanel
+            sekvens={sekvens}
+            onChange={setSekvens}
+            motiver={motiver}
+            resolved={resolved}
+            fokusKjoringId={fokusKjoringId}
+            setFokusKjoringId={setFokusKjoringId}
+            onHoverEndret={setHoverKjoringId}
+          />
+        </div>
+      )}
+
+      {sekvens.length > 0 && (
+        <div className="bg-white rounded-2xl border border-stone-200 shadow-sm p-4 mb-4 mt-4">
+          <StingSimulator sekvens={sekvens} motiver={motiver} resolved={resolved} halv={halv} />
         </div>
       )}
 
@@ -504,12 +529,13 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
 
 // ── Ett plassert motiv, rendret som roterte + forskjøvede stingbaner ──────────────
 
-function PlassertMotivGruppe({ pm, data, bbox, valgt, utenforRamme, onPointerDown }: {
+function PlassertMotivGruppe({ pm, data, bbox, valgt, utenforRamme, aktivKjoring, onPointerDown }: {
   pm: PlassertMotiv
   data: BroderiMotivData
   bbox: BroderiBbox
   valgt: boolean
   utenforRamme: boolean
+  aktivKjoring: SekvensKjoring | null
   onPointerDown: (e: ReactPointerEvent) => void
 }) {
   const roterteBlokker = useMemo(
@@ -522,23 +548,49 @@ function PlassertMotivGruppe({ pm, data, bbox, valgt, utenforRamme, onPointerDow
   const halvW = (bbox.max_x - bbox.min_x) / 20
   const halvH = (bbox.max_y - bbox.min_y) / 20
 
+  // Determine per-block opacity/strokeWidth based on aktivKjoring
+  const erAktivtMotiv = aktivKjoring ? aktivKjoring.plassertMotivId === pm.id : false
+  const aktiveIndekser: { fra: number; til: number } | null = useMemo(() => {
+    if (!aktivKjoring || aktivKjoring.plassertMotivId !== pm.id) return null
+    const kjoring = data.fargekjoringer[aktivKjoring.fargekjoringIndex]
+    if (!kjoring) return null
+    return { fra: kjoring.fra_index, til: kjoring.til_index }
+  }, [aktivKjoring, pm.id, data.fargekjoringer])
+
   return (
     <g
       transform={`translate(${pm.posisjonXTiendedelMm / 10} ${pm.posisjonYTiendedelMm / 10})`}
       onPointerDown={onPointerDown}
       style={{ cursor: 'grab' }}
     >
-      {roterteBlokker.map((b, i) => (
-        <polyline
-          key={i}
-          points={b.punkter.map(([x, y]) => `${x / 10},${y / 10}`).join(' ')}
-          fill="none"
-          stroke={b.farge_hex}
-          strokeWidth={0.3}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      ))}
+      {roterteBlokker.map((b, i) => {
+        let opacity = 1
+        let strokeWidth = 0.3
+        if (aktivKjoring) {
+          if (erAktivtMotiv && aktiveIndekser) {
+            if (i >= aktiveIndekser.fra && i <= aktiveIndekser.til) {
+              opacity = 1
+              strokeWidth = 0.45
+            } else {
+              opacity = 0.08
+            }
+          } else {
+            opacity = 0.08
+          }
+        }
+        return (
+          <polyline
+            key={i}
+            points={b.punkter.map(([x, y]) => `${x / 10},${y / 10}`).join(' ')}
+            fill="none"
+            stroke={b.farge_hex}
+            strokeWidth={strokeWidth}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            opacity={opacity}
+          />
+        )
+      })}
       {/* Usynlig, bred hit-boks slik at det er lett å treffe motivet for å velge/dra det */}
       <rect
         x={-halvW} y={-halvH} width={halvW * 2} height={halvH * 2}
