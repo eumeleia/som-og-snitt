@@ -41,6 +41,7 @@ interface InventoryItemData {
   utstyrstype?:  string
   detaljer?:     string
   brukesTil?:    string   // hva utstyret kan brukes til
+  arkivert?:     boolean
 }
 
 interface InventoryItem {
@@ -129,15 +130,17 @@ function Badge({ label, cls }: { label: string; cls: string }) {
 
 // ── InventoryCard ─────────────────────────────────────────────────────────────
 
-function InventoryCard({ item, onEdit, onDelete, selectable, selected, onSelect }: {
+function InventoryCard({ item, onEdit, onDelete, onArchive, selectable, selected, onSelect }: {
   item: InventoryItem
   onEdit: () => void
   onDelete: () => void
+  onArchive?: () => void
   selectable?: boolean
   selected?: boolean
   onSelect?: () => void
 }) {
   const d = item.data
+  const erArkivert = Boolean(d.arkivert)
 
   const subtitleBase = d.kategori === 'Stoff' ? (d.materiale ?? '')
     : d.kategori === 'Tilbehør' ? (d.underkategori ?? '')
@@ -165,7 +168,7 @@ function InventoryCard({ item, onEdit, onDelete, selectable, selected, onSelect 
       onClick={handleClick}
       className={`group bg-white rounded-xl border shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col h-full relative min-w-0 ${
         selected ? 'border-stone-500 ring-2 ring-stone-400' : 'border-stone-200'
-      }`}
+      } ${erArkivert ? 'opacity-60' : ''}`}
     >
       {selectable && (
         <div className={`absolute top-2 left-2 z-10 w-5 h-5 rounded border-2 flex items-center justify-center ${
@@ -209,20 +212,39 @@ function InventoryCard({ item, onEdit, onDelete, selectable, selected, onSelect 
               {forbruksInfo.label}
             </span>
           )}
+          {erArkivert && (
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded border text-xs font-medium bg-stone-100 text-stone-500 border-stone-200">
+              Arkivert
+            </span>
+          )}
         </div>
         <Badge label={d.kategori} cls={KATEGORI_STYLE[d.kategori]} />
       </div>
 
       {!selectable && (
-        <button
-          onClick={e => { e.stopPropagation(); onDelete() }}
-          className="absolute bottom-1 right-1.5 z-10 p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-          </svg>
-        </button>
+        <>
+          {onArchive && (
+            <button
+              onClick={e => { e.stopPropagation(); onArchive() }}
+              className="absolute bottom-1 left-1.5 z-10 p-1.5 rounded-lg hover:bg-amber-50 text-stone-200 hover:text-amber-500 transition-colors"
+              title={erArkivert ? 'Gjenopprett' : 'Arkiver'}
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                  d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+              </svg>
+            </button>
+          )}
+          <button
+            onClick={e => { e.stopPropagation(); onDelete() }}
+            className="absolute bottom-1 right-1.5 z-10 p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+          </button>
+        </>
       )}
     </article>
   )
@@ -723,6 +745,11 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
   const isUtstyr   = d.kategori === 'Utstyr'
   const isThreadItem = isTilbehor && d.underkategori ? THREAD_UNDERKATEGORIER.has(d.underkategori) : false
 
+  const skalForeslåArkivering = !d.arkivert && (
+    (isStoff && (d.forbrukStoff === 'alt' || (!d.mengde?.trim() && d.mengde !== undefined))) ||
+    (isTilbehor && isThreadItem && d.forbruksniva === 'oppbrukt')
+  )
+
   return (
     <div className="min-h-screen" style={{ backgroundColor: '#FAF7F4' }}>
 
@@ -1013,6 +1040,38 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
           onChange={e => upd({ notater: e.target.value })}
           placeholder="Notater, tips, erfaringer…" />
 
+        {/* 10b. Arkiver */}
+        {(isStoff || isTilbehor) && (
+          <div className="mt-8 pt-6 border-t border-stone-100">
+            {skalForeslåArkivering && !d.arkivert && (
+              <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+                <p className="text-sm text-amber-800 mb-3">
+                  {isStoff
+                    ? 'Ser ut som du er ferdig med dette stoffet. Arkiver det?'
+                    : 'Tråden ser ut til å være oppbrukt. Arkiver den?'}
+                  {' '}Det forsvinner fra oversikten, men dukker alltid opp i søk.
+                </p>
+                <button
+                  onClick={() => upd({ arkivert: true })}
+                  className="px-4 py-1.5 text-sm bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors"
+                >
+                  Arkiver
+                </button>
+              </div>
+            )}
+            <button
+              onClick={() => upd({ arkivert: !d.arkivert })}
+              className="flex items-center gap-2 px-4 py-2.5 text-sm text-stone-400 hover:text-stone-600 hover:bg-stone-50 rounded-xl transition-colors border border-stone-200"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                  d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+              </svg>
+              {d.arkivert ? 'Gjenopprett' : `Arkiver ${isStoff ? 'stoff' : 'tilbehør'}`}
+            </button>
+          </div>
+        )}
+
         {/* 10. Slett */}
         {onDelete && (
           <div className="mt-16 pt-8 border-t border-stone-200">
@@ -1062,6 +1121,7 @@ export default function InventoryPage() {
   const [moveMode, setMoveMode]               = useState(false)
   const [selectedIds, setSelectedIds]         = useState<Set<string>>(new Set())
   const [moving, setMoving]                   = useState(false)
+  const [visArkiverte, setVisArkiverte]       = useState(false)
 
   useEffect(() => {
     if (!typeDropdownOpen) return
@@ -1156,6 +1216,14 @@ export default function InventoryPage() {
     }
   }
 
+  async function setArkivert(id: string, arkivert: boolean) {
+    const item = items.find(i => i.id === id)
+    if (!item) return
+    const updatedData = { ...item.data, arkivert }
+    const { error } = await supabase.from('inventory').update({ data: updatedData }).eq('id', id)
+    if (!error) setItems(prev => prev.map(i => i.id === id ? { ...i, data: updatedData } : i))
+  }
+
   const tabItems = items.filter(i => i.data.kategori === tab)
 
   const filterValues = Array.from(new Set(
@@ -1166,9 +1234,12 @@ export default function InventoryPage() {
     ).filter((v): v is string => Boolean(v))
   )).sort()
 
+  const isSearching = Boolean(search.trim())
+
   const filtered = tabItems
     .filter(i => {
-      if (!search.trim()) return true
+      if (i.data.arkivert && !isSearching && !visArkiverte) return false
+      if (!isSearching) return true
       const q = search.toLowerCase()
       const d = i.data
       return (
@@ -1202,6 +1273,7 @@ export default function InventoryPage() {
 
   const showMoveButton = tab === 'Tilbehør' || tab === 'Utstyr'
   const moveDestination: Kategori = tab === 'Tilbehør' ? 'Utstyr' : 'Tilbehør'
+  const antallArkiverte = tabItems.filter(i => i.data.arkivert).length
 
   if (showDetail && currentItem) {
     return (
@@ -1344,6 +1416,18 @@ export default function InventoryPage() {
               Flytt
             </button>
           )}
+          {(tab === 'Stoff' || tab === 'Tilbehør') && antallArkiverte > 0 && (
+            <button
+              onClick={() => setVisArkiverte(v => !v)}
+              className={`px-3 h-9 text-sm rounded-xl border transition-colors ${
+                visArkiverte
+                  ? 'bg-stone-800 text-white border-stone-800'
+                  : 'bg-white text-stone-500 border-stone-200 hover:border-stone-400'
+              }`}
+            >
+              {visArkiverte ? 'Skjul arkiverte' : `Vis arkiverte (${antallArkiverte})`}
+            </button>
+          )}
         </div>
       </div>
 
@@ -1410,6 +1494,7 @@ export default function InventoryPage() {
                           <InventoryCard key={item.id} item={item}
                             onEdit={() => openEdit(item)}
                             onDelete={() => setDeleteId(item.id)}
+                            onArchive={() => setArkivert(item.id, !item.data.arkivert)}
                             selectable={moveMode}
                             selected={selectedIds.has(item.id)}
                             onSelect={() => toggleSelect(item.id)} />
@@ -1461,6 +1546,7 @@ export default function InventoryPage() {
                         <InventoryCard key={item.id} item={item}
                           onEdit={() => openEdit(item)}
                           onDelete={() => setDeleteId(item.id)}
+                          onArchive={() => setArkivert(item.id, !item.data.arkivert)}
                           selectable={moveMode}
                           selected={selectedIds.has(item.id)}
                           onSelect={() => toggleSelect(item.id)} />
@@ -1505,7 +1591,8 @@ export default function InventoryPage() {
                   {matches.map(item => (
                     <InventoryCard key={item.id} item={item}
                       onEdit={() => openEdit(item)}
-                      onDelete={() => setDeleteId(item.id)} />
+                      onDelete={() => setDeleteId(item.id)}
+                      onArchive={() => setArkivert(item.id, !item.data.arkivert)} />
                   ))}
                 </div>
               </div>
@@ -1533,6 +1620,7 @@ export default function InventoryPage() {
               <InventoryCard key={item.id} item={item}
                 onEdit={() => openEdit(item)}
                 onDelete={() => setDeleteId(item.id)}
+                onArchive={() => setArkivert(item.id, !item.data.arkivert)}
                 selectable={moveMode}
                 selected={selectedIds.has(item.id)}
                 onSelect={() => toggleSelect(item.id)} />
