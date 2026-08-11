@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { supabase } from '@/lib/supabase'
+import { hentAllePaginert } from '@/lib/supabasePaginering'
 import { describeError, type ErrorDetails } from '@/lib/error-details'
 import { ErrorDetailsView } from '@/components/ErrorDetailsView'
 import { roterLokalePunkter, plassertBbox, kombinerBbox } from './geometri'
@@ -802,31 +803,27 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
   // ingen feil, bare et halvfullt resultat. Uten paginering ble bboxCache derfor aldri
   // komplett (2994 rader > 1000), og uten en fast `order by` var det TILFELDIG hvilke 1000
   // rader som kom med hver gang, så det var IKKE data-feil som fikk per-bundle-tallene til å
-  // endre seg mellom hver lasting. Løsning: hent i sider av 1000 med et deterministisk
-  // `order by id` til en side kommer tilbake mindre enn full, og bygg ett komplett map lokalt
-  // FØR noe settes i state — ingen delvis cache skal noensinne kunne vises.
+  // endre seg mellom hver lasting. Løsning: `hentAllePaginert` (src/lib/supabasePaginering.ts)
+  // henter i sider av 1000 med en deterministisk sortering til en side kommer kortere enn full —
+  // samme hjelpefunksjon som biblioteklistene bruker, så pagineringslogikken finnes ett sted.
   useEffect(() => {
     let cancelled = false
     type Rad = { embroidery_id: string; size_id: string; bredde_tiendedel_mm: number | null; hoyde_tiendedel_mm: number | null }
     async function lastAlleRader(): Promise<Map<string, BboxMm | null> | null> {
-      const map = new Map<string, BboxMm | null>()
-      const pageSize = 1000
-      let offset = 0
-      while (!cancelled) {
-        const { data, error } = await supabase
-          .from('broderi_motiv')
+      const { data: rader, error } = await hentAllePaginert<Rad>(
+        (fra, til) => supabase.from('broderi_motiv')
           .select('embroidery_id, size_id, bredde_tiendedel_mm, hoyde_tiendedel_mm')
           .order('id', { ascending: true })
-          .range(offset, offset + pageSize - 1)
-        if (error) { console.error('[MotivPicker] mål-oppslag feilet', error); return null }
-        for (const row of ((data ?? []) as Rad[])) {
-          map.set(`${row.embroidery_id}:${row.size_id}`,
-            row.bredde_tiendedel_mm != null && row.hoyde_tiendedel_mm != null
-              ? { widthMm: row.bredde_tiendedel_mm / 10, heightMm: row.hoyde_tiendedel_mm / 10 }
-              : null)
-        }
-        if (!data || data.length < pageSize) break
-        offset += pageSize
+          .range(fra, til),
+        ['id'],
+      )
+      if (error) { console.error('[MotivPicker] mål-oppslag feilet', error); return null }
+      const map = new Map<string, BboxMm | null>()
+      for (const row of rader) {
+        map.set(`${row.embroidery_id}:${row.size_id}`,
+          row.bredde_tiendedel_mm != null && row.hoyde_tiendedel_mm != null
+            ? { widthMm: row.bredde_tiendedel_mm / 10, heightMm: row.hoyde_tiendedel_mm / 10 }
+            : null)
       }
       return map
     }
@@ -1012,16 +1009,40 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
     alleStoerr.filter(({ key }) => !bboxCache.has(key)),
     [alleStoerr, bboxCache])
 
-  // De tre tallene i toppteksten kommer fra count-spørringene i lasteeffekten over — aldri
-  // fra å telle virtuelle motiver eller rader i nettleseren. "Ikke målt" er det som blir
-  // igjen av det biblioteket faktisk har (alleStoerr, allerede kjent og gratis) etter at
-  // begge telte gruppene er trukket fra, og dekker både "aldri forsøkt" og "forsøkt og
-  // feilet" — begge betyr "vet ikke om det passer".
-  const antallPasserGlobalt = globalCounts?.passer ?? 0
-  const antallPasserIkkeGlobalt = globalCounts?.passerIkke ?? 0
-  const antallIkkeMåltGlobalt = globalCounts
+  // globalCounts kommer fra count-spørringene i lasteeffekten over og teller RADER i
+  // broderi_motiv, altså STØRRELSER — én rad per embroidery_id+size_id. "Ikke målt" er det
+  // som blir igjen av det biblioteket faktisk har (alleStoerr, allerede kjent og gratis) etter
+  // at begge telte gruppene er trukket fra, og dekker både "aldri forsøkt" og "forsøkt og
+  // feilet" — begge betyr "vet ikke om det passer". Brukes til parseknappens tall (den sender
+  // faktisk størrelser til /api/broderi-motiv/parse, én om gangen), ikke til toppteksten.
+  const antallStorrelserPasser = globalCounts?.passer ?? 0
+  const antallStorrelserPasserIkke = globalCounts?.passerIkke ?? 0
+  const antallStorrelserIkkeMalt = globalCounts
     ? Math.max(0, alleStoerr.length - globalCounts.passer - globalCounts.passerIkke)
     : 0
+
+  // Avkryssingsboksen sier "motiver", så toppteksten må telle MOTIVER (virtuelle motiver — én
+  // karakter i en fontbundle, ett mønster ellers), ikke størrelser. Et motiv passer hvis minst
+  // én av størrelsene gjør det (samme regel som vmStatus, som allerede brukes per bundle/motiv
+  // andre steder i denne komponenten). Dette er en klient-telling over virtuelleMotiver (kjent
+  // og billig — noen hundre objekter, ikke 2994 databaserader), ikke en ny DB-spørring; den var
+  // uansett aldri mulig å uttrykke i SQL, siden en fontbundles bokstaver kan spenne over flere
+  // embroidery_id-er som ETT virtuelt motiv (se tomme.ts).
+  const motivTeller = useMemo(() => {
+    if (!cacheLastet) return null
+    let passer = 0, passerIkke = 0, ikkeMalt = 0
+    for (const vm of virtuelleMotiver) {
+      const s = vmStatus(vm, bboxCache)
+      if (s === 'passer') passer++
+      else if (s === 'passerIkke') passerIkke++
+      else ikkeMalt++
+    }
+    return { passer, passerIkke, ikkeMalt }
+  }, [virtuelleMotiver, bboxCache, cacheLastet])
+
+  const antallMotiverPasser = motivTeller?.passer ?? 0
+  const antallMotiverPasserIkke = motivTeller?.passerIkke ?? 0
+  const antallMotiverIkkeMalt = motivTeller?.ikkeMalt ?? 0
 
   const alleBundleIds = useMemo(() => {
     const ids = new Set<string>()
@@ -1185,13 +1206,15 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
               className="flex-1 py-2 text-xs text-red-500 border border-red-200 rounded-lg hover:border-red-400 transition-colors">
               Avbryt parsing
             </button>
-          ) : cacheLastet && antallIkkeMåltGlobalt > 0 ? (
-            // Tallet på knappen er det samme telle-baserte "ikke målt"-tallet som toppteksten
-            // viser — ikke en halvlastet cache. Vises aldri før tallene er kjent (cacheLastet),
-            // og forsvinner helt når ingen umålte er igjen, i stedet for å vise "Parse 0".
+          ) : cacheLastet && antallStorrelserIkkeMalt > 0 ? (
+            // Knappen sender faktisk STØRRELSER til /api/broderi-motiv/parse (én embroidery_id+
+            // size_id om gangen), så tallet skal være antall størrelser, ikke motiver — samme
+            // telle-baserte tall som parse-køen (ikkeForsokt) bygges fra, ikke en halvlastet
+            // cache. Vises aldri før tallene er kjent (cacheLastet), og forsvinner helt når
+            // ingen umålte størrelser er igjen, i stedet for å vise "Parse 0".
             <button onClick={parseAlle}
               className="flex-1 py-2 text-xs text-stone-500 border border-stone-200 rounded-lg hover:border-stone-400 transition-colors">
-              {`Parse ${antallIkkeMåltGlobalt} ${antallIkkeMåltGlobalt === 1 ? 'størrelse' : 'størrelser'}`}
+              {`Parse ${antallStorrelserIkkeMalt} ${antallStorrelserIkkeMalt === 1 ? 'størrelse' : 'størrelser'}`}
             </button>
           ) : null}
           <button onClick={onClose} className="flex-1 py-2 text-sm text-stone-400 hover:text-stone-600 transition-colors">
@@ -1540,13 +1563,21 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
                 <span className="text-sm text-stone-600">Bare motiver som passer i rammen (&lt;{RAMME_GRENSE_MM} mm)</span>
               </label>
               {cacheLastet && (
-                <p className="text-xs text-stone-400">
-                  <span className="text-stone-500">{antallPasserGlobalt} passer</span>
-                  {' · '}
-                  <span className="text-stone-500">{antallPasserIkkeGlobalt} passer ikke</span>
-                  {' · '}
-                  <span className="text-amber-600">{antallIkkeMåltGlobalt} ikke målt</span>
-                </p>
+                <>
+                  <p className="text-xs text-stone-400">
+                    <span className="text-stone-500">{antallMotiverPasser} motiver passer</span>
+                    {' · '}
+                    <span className="text-stone-500">{antallMotiverPasserIkke} passer ikke</span>
+                    {' · '}
+                    <span className="text-amber-600">{antallMotiverIkkeMalt} ikke målt</span>
+                  </p>
+                  <p className="text-xs text-stone-300">
+                    {/* Et motiv kan ha flere størrelser — dette tallet er per størrelse, ikke per
+                        motiv, og skal derfor aldri stå uten "størrelser"-ordet ved siden av. */}
+                    størrelser: {antallStorrelserPasser} passer · {antallStorrelserPasserIkke} passer ikke
+                    {' · '}{antallStorrelserIkkeMalt} ikke målt
+                  </p>
+                </>
               )}
             </div>
 

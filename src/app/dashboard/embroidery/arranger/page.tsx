@@ -4,6 +4,7 @@ export const dynamic = 'force-dynamic'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
+import { hentAllePaginert } from '@/lib/supabasePaginering'
 import { describeError, type ErrorDetails } from '@/lib/error-details'
 import { ErrorDetailsView } from '@/components/ErrorDetailsView'
 import { KomposisjonEditor } from './KomposisjonEditor'
@@ -36,14 +37,22 @@ export default function ArrangerPage() {
   const load = useCallback(async () => {
     setLoading(true)
     setLoadError(null)
-    const { data, error } = await supabase
-      .from('embroidery')
-      .select('*')
-      .order('created_at', { ascending: false })
+    // created_at er ikke unik nok alene til å garantere en stabil sidedeling - rader satt inn i
+    // samme transaksjon (f.eks. en zip-opplasting med mange filer) kan dele eksakt samme
+    // created_at, siden Postgres sin now() returnerer transaksjonstidspunktet, ikke kalletidspunktet.
+    // id som sekundær sortering bryter alle slike bånd deterministisk uten å endre visningsrekkefølgen.
+    const { data, error } = await hentAllePaginert<Embroidery>(
+      (fra, til) => supabase.from('embroidery')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: true })
+        .range(fra, til),
+      ['created_at', 'id'],
+    )
     if (error) {
       setLoadError(error.message)
     } else {
-      setMotifs((data ?? []) as Embroidery[])
+      setMotifs(data)
     }
     setLoading(false)
   }, [])
@@ -55,14 +64,18 @@ export default function ArrangerPage() {
   const loadKomposisjoner = useCallback(async () => {
     setKompLoading(true)
     setKompError(null)
-    const { data, error } = await supabase
-      .from('broderi_komposisjon')
-      .select('*')
-      .order('created_at', { ascending: false })
+    const { data, error } = await hentAllePaginert<BroderiKomposisjon>(
+      (fra, til) => supabase.from('broderi_komposisjon')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: true })
+        .range(fra, til),
+      ['created_at', 'id'],
+    )
     if (error) {
       setKompError(error.message)
     } else {
-      setKomposisjoner((data ?? []) as BroderiKomposisjon[])
+      setKomposisjoner(data)
     }
     setKompLoading(false)
   }, [])

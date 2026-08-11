@@ -4,6 +4,7 @@ export const dynamic = 'force-dynamic'
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { supabase } from '@/lib/supabase'
+import { hentAllePaginert } from '@/lib/supabasePaginering'
 import { describeError, type ErrorDetails } from '@/lib/error-details'
 import { ErrorDetailsView } from '@/components/ErrorDetailsView'
 import {
@@ -2587,14 +2588,31 @@ export default function EmbroideryPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
+      // id som sekundær sortering: rader satt inn i samme transaksjon (en zip-opplasting med
+      // mange filer) kan dele eksakt samme created_at (Postgres sin now() er transaksjonstid,
+      // ikke kalletid) - uten en tie-breaker er sidedelingen da ikke deterministisk.
       const [embRes, bundleRes] = await Promise.all([
-        supabase.from('embroidery').select('*').order('created_at', { ascending: false }),
-        supabase.from('embroidery_bundles').select('*').order('created_at', { ascending: false }),
+        hentAllePaginert<Embroidery>(
+          (fra, til) => supabase.from('embroidery')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .order('id', { ascending: true })
+            .range(fra, til),
+          ['created_at', 'id'],
+        ),
+        hentAllePaginert<EmbroideryBundle>(
+          (fra, til) => supabase.from('embroidery_bundles')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .order('id', { ascending: true })
+            .range(fra, til),
+          ['created_at', 'id'],
+        ),
       ])
       if (embRes.error) throw embRes.error
       if (bundleRes.error) throw bundleRes.error
-      setItems((embRes.data as Embroidery[]) || [])
-      setBundles((bundleRes.data as EmbroideryBundle[]) || [])
+      setItems(embRes.data)
+      setBundles(bundleRes.data)
     } catch (err) {
       console.error('embroidery load error:', err)
     } finally {
