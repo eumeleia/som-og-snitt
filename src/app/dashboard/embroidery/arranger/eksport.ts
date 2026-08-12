@@ -43,10 +43,13 @@ export function byggEksportSegmenter(sekvens: SekvensElement[], ctx: SekvensKont
     }
     if (blokker.length === 0) continue
 
-    // Snappet, ikke rå — Python snapper uansett igjen ved skriving (idempotent, se
-    // effektivTradfarge), men å sende den allerede-snappede verdien betyr at
-    // selvsjekkens fasit og det frontend viste FØR eksport er samme farge, uten å
-    // stole på at begge steder snapper identisk ved en tilfeldighet.
+    // IKKE nødvendigvis den snappede PEC-fargen — med en treffende egen tråd (ctx.pecTilEkte,
+    // se minTraadpalett.ts) er dette brukerens EGEN trådhex, ikke palettverdien. To steg, ikke
+    // ett idempotent: (1) Python snapper uansett DENNE hex-en til nærmeste PEC-farge ved
+    // skriving, (2) det gir riktig svar BARE fordi byggPecTilEkteMap nøkler sin ekte-tråd på
+    // nøyaktig snappTilPalett(trad.hex) — samme snap Python selv ville kommet til. Frontend
+    // viste FØR eksport (og selvsjekkens fasit ETTER) stemmer derfor overens fordi begge
+    // ender opp i samme PEC-bøtte, ikke fordi verdien herfra allerede ER den bøtta.
     const fargeHex = effektivTradfarge(ctx, el)?.hex
     if (!fargeHex) return null
 

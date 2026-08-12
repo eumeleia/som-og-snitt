@@ -50,6 +50,15 @@ export function utledTomme(pesFilename: string): TommeResultat | null {
   return null
 }
 
+// Utleder tomme-verdi fra en sizeLabel som ER en ren tommeangivelse, f.eks. BX Floral sin
+// «1.5"», «2"», «3.5"» — hele etiketten må være tallet pluss et rett anførselstegn, intet
+// annet, ellers gjettes det ikke: 12Berries sine «Smallest»/«Small»/«Medium»/«Large»/
+// «Largest» har ingen siffer og treffer aldri dette. Brukes bare når utledTomme(pesFilename)
+// ikke fant noe (BX Floral sine filnavn er bare «A.PES», uten tomme-indikator).
+export function utledTommeFraSizeLabel(sizeLabel: string): string | null {
+  return /^(\d+(?:\.\d+)?)"$/.exec(sizeLabel)?.[1] ?? null
+}
+
 // Gjenkjenner enkelt-tegn fra en motividentitet.
 // Håndterer:
 //   - Direkte enkelt-tegn: "J", "a", "3"

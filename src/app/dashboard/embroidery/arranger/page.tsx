@@ -7,7 +7,8 @@ import { supabase } from '@/lib/supabase'
 import { hentAllePaginert } from '@/lib/supabasePaginering'
 import { describeError, type ErrorDetails } from '@/lib/error-details'
 import { ErrorDetailsView } from '@/components/ErrorDetailsView'
-import { KomposisjonEditor, byggVirtuelleMotiver } from './KomposisjonEditor'
+import { KomposisjonEditor } from './KomposisjonEditor'
+import { byggVirtuelleMotiver } from './motivvalg'
 import { EmbroideryCard, KATEGORIER } from '../page'
 import {
   type Embroidery, type BroderiMotivData, type BroderiKomposisjon,
