@@ -134,6 +134,10 @@ export function EksportPanel({ sekvens, motiver, resolved, navn }: {
         )}
       </div>
 
+      <p className="text-xs text-stone-400">
+        Motivenes innbyrdes avstand bevares, men hele komposisjonen sentreres i rammen ved eksport.
+      </p>
+
       {!klar && sekvens.length > 0 && (
         <p className="text-xs text-stone-400">Venter på at alle motiver skal tolkes ferdig…</p>
       )}
@@ -155,6 +159,10 @@ export function EksportPanel({ sekvens, motiver, resolved, navn }: {
       {status === 'feil' && avvik && (
         <div className="px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
           <p className="font-medium mb-1">Selvsjekk feilet — filen ble ikke lastet ned:</p>
+          <p className="text-xs text-red-600 mb-2">
+            Appen bygger PES-filen og leser den tilbake for å sjekke at hver kjøring faktisk
+            ble som sekvensen ba om. Det stemte ikke under — derfor stoppet nedlastingen.
+          </p>
           <ul className="list-disc list-inside space-y-0.5">
             {avvik.map((a, i) => <li key={i}>{a}</li>)}
           </ul>

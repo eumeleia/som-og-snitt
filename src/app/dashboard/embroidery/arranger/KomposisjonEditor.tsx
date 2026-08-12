@@ -12,7 +12,7 @@ import { SekvensPanel } from './SekvensPanel'
 import { EksportPanel } from './EksportPanel'
 import { StingSimulator } from './StingSimulator'
 import {
-  type Embroidery, type EmbroiderySize, type BroderiMotivData, type BroderiBbox,
+  type Embroidery, type BroderiMotivData, type BroderiBbox,
   type BroderiKomposisjon, type PlassertMotiv, type SekvensElement, type SekvensKjoring, type EmbroideryBundle,
   type VirtuelMotiv, type VirtuelStorrelse,
   getCoverImage, getBundleCoverImage, getKats, getKatsMedArv,
@@ -20,7 +20,11 @@ import {
 import { utledTomme, trekktUtKarakter } from './tomme'
 import { buildFontData, layoutTekst, type FontData, type TextLayout } from './fontUtils'
 
-const RAMME_MM = 100
+// DEN ene rammegrensen — den fysiske 100×100 mm-rammen selv slik Python-eksporten (og
+// selvsjekken der) forstår den. Eksportert slik at lerretet, tekstverktøyet og
+// størrelsesvarselen alle regner mot nøyaktig samme tall, ikke tre uavhengige 100-tall
+// som kunne drevet fra hverandre.
+export const RAMME_MM = 100
 const RAMME_HALV_TIENDEDEL_MM = (RAMME_MM / 2) * 10 // 500 — ±50 mm sentrert på origo
 
 function uid() {
@@ -70,6 +74,11 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
   const [redoStack, setRedoStack] = useState<SekvensElement[][]>([])
   const [valgtId, setValgtId] = useState<string | null>(null)
   const [showPicker, setShowPicker] = useState(false)
+  // Satt av leggTilValgte (via onVelgFlere) når flervalgets rutenett IKKE kunne holde
+  // alle nylig tilføyde motiver innenfor rammen uten overlapp — se beregnRutenettCelle.
+  // Blokkerer aldri tilføyingen selv (motivene legges til uansett); bare et varsel om
+  // at de bør flyttes eller byttes til en mindre størrelse.
+  const [rutenettAdvarsel, setRutenettAdvarsel] = useState(false)
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
   const [saveErrorDetails, setSaveErrorDetails] = useState<ErrorDetails | null>(null)
   const [fokusKjoringId, setFokusKjoringId] = useState<string | null>(null)
@@ -176,10 +185,14 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
     setMotiver(m => [...m, ny])
     setValgtId(nyId)
     setShowPicker(false)
+    setRutenettAdvarsel(false)
     sikreMotivData(embroideryId, sizeId)
   }
 
-  function leggTilMotiverBolk(items: Array<{ embroideryId: string; sizeId: string; navn: string; x: number; y: number }>) {
+  function leggTilMotiverBolk(
+    items: Array<{ embroideryId: string; sizeId: string; navn: string; x: number; y: number }>,
+    rutenettUmulig?: boolean,
+  ) {
     if (items.length === 0) return
     const nye: PlassertMotiv[] = items.map(item => ({
       id: uid(),
@@ -193,6 +206,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
     setMotiver(m => [...m, ...nye])
     setValgtId(null)
     setShowPicker(false)
+    setRutenettAdvarsel(!!rutenettUmulig)
     for (const item of items) sikreMotivData(item.embroideryId, item.sizeId)
   }
 
@@ -235,11 +249,18 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [])
 
-  // ── Bbox for hele komposisjonen og hvilke motiver som stikker utenfor rammen ────
-  // Sjekker den FAKTISKE plasserte (rotert + forskjøvet) bboxen til hvert motiv mot
-  // ±50 mm sentrert på origo — ikke bare størrelsen på den samlede bboxen, som ikke
-  // sier noe om posisjonen (et lite motiv langt utenfor rammen har fortsatt en liten
-  // bbox og ville aldri trigget en størrelsesbasert sjekk).
+  // ── Bbox for hele komposisjonen, og hvilke motiver som stikker utenfor den TEGNEDE
+  // rammen ─────────────────────────────────────────────────────────────────────────
+  // VIKTIG, og noe jeg tidligere tok feil om: Python-eksporten kaller
+  // move_center_to_origin() (index.py:157) og sentrerer HELE komposisjonen før fila
+  // skrives. Posisjonen et motiv har på DETTE lerretet er derfor IKKE det som avgjør om
+  // eksporten lykkes — et motiv kan ligge langt utenfor den tegnede ±50 mm-rammen og
+  // fremdeles gi en helt gyldig fil, så lenge den SAMLEDE bboksen til alle motiver er
+  // ≤100 mm i begge retninger (selvsjekkens faktiske grense, index.py:226-232).
+  // utenforRammeIder under er derfor BARE en posisjonsbasert visningshjelp (et diskret
+  // rødt omriss på lerretet) — den sier ingenting om eksportrisiko. Den ekte
+  // størrelsessjekken er komposisjonForStor lenger ned, som måler combinedBbox mot
+  // RAMME_MM og er det varselbanneret nå faktisk utløses av.
 
   const plasserteBbokser = useMemo(() => {
     const map = new Map<string, BroderiBbox>()
@@ -263,6 +284,13 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
     () => kombinerBbox(Array.from(plasserteBbokser.values())),
     [plasserteBbokser],
   )
+
+  // Den faktiske eksportrisikoen: er den SAMLEDE bboksen til alle plasserte motiver over
+  // RAMME_MM i bredde eller høyde, feiler selvsjekken uansett hvor motivene ligger —
+  // sentreringen ved eksport flytter gruppa, men krymper den aldri.
+  const komposisjonBreddeMm = combinedBbox ? (combinedBbox.max_x - combinedBbox.min_x) / 10 : 0
+  const komposisjonHoydeMm = combinedBbox ? (combinedBbox.max_y - combinedBbox.min_y) / 10 : 0
+  const komposisjonForStor = komposisjonBreddeMm > RAMME_MM || komposisjonHoydeMm > RAMME_MM
 
   const halvRamme = RAMME_MM / 2
   const halv = useMemo(() => {
@@ -400,11 +428,15 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
         </div>
       )}
 
-      {utenforRammeIder.length > 0 && (
+      {komposisjonForStor && (
+        <div className="px-4 py-3 mb-4 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
+          Komposisjonen er {komposisjonBreddeMm.toFixed(1)} × {komposisjonHoydeMm.toFixed(1)} mm — for stor for {RAMME_MM}×{RAMME_MM} mm-rammen. Eksporten vil bli avvist.
+        </div>
+      )}
+
+      {rutenettAdvarsel && (
         <div className="px-4 py-3 mb-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
-          {utenforRammeIder.length} motiv{utenforRammeIder.length === 1 ? '' : 'er'} stikker utenfor
-          100×100 mm-rammen (markert med rødt i lerretet):{' '}
-          {utenforRammeIder.map(id => motiver.find(pm => pm.id === id)?.navn).filter(Boolean).join(', ')}
+          De nylig tilføyde motivene fikk ikke plass side ved side i {RAMME_MM}×{RAMME_MM} mm-rammen — flytt dem, eller bytt til en mindre størrelse.
         </div>
       )}
 
@@ -589,12 +621,11 @@ function PlassertMotivGruppe({ pm, data, bbox, valgt, utenforRamme, aktivKjoring
   valgt: boolean
   utenforRamme: boolean
   aktivKjoring: SekvensKjoring | null
-  fargePerBlokk: (string | undefined)[]
+  fargePerBlokk: string[]
   onPointerDown: (e: ReactPointerEvent) => void
 }) {
   const roterteBlokker = useMemo(
     () => data.stingblokker.map(b => ({
-      farge_hex: b.farge_hex,
       punkter: roterLokalePunkter(b.sting, bbox, pm.rotasjonGrader),
     })),
     [data.stingblokker, bbox, pm.rotasjonGrader],
@@ -637,7 +668,7 @@ function PlassertMotivGruppe({ pm, data, bbox, valgt, utenforRamme, aktivKjoring
             key={i}
             points={b.punkter.map(([x, y]) => `${x / 10},${y / 10}`).join(' ')}
             fill="none"
-            stroke={fargePerBlokk[i] ?? b.farge_hex}
+            stroke={fargePerBlokk[i]}
             strokeWidth={strokeWidth}
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -703,19 +734,19 @@ function TextVerktoy({ bundleNavn, vms, biblioteket, onLeggTil, onBack }: {
   )
 
   const alternativStørrelse: string | null = useMemo(() => {
-    if (!layout || (layout.totalBreddeMm <= 100 && layout.totalHøydeMm <= 100)) return null
+    if (!layout || (layout.totalBreddeMm <= RAMME_MM && layout.totalHøydeMm <= RAMME_MM)) return null
     const rene = tekst.replace(/\s/g, '')
     for (const t of [...tilgjengeligeTommes].reverse()) {
       if (t === tomme) continue
       const fd = buildFontData(vms, t, biblioteket)
       const lay = layoutTekst(rene, fd, { tracking, mellomromFaktor })
-      if (lay.totalBreddeMm <= 100 && lay.totalHøydeMm <= 100) return t
+      if (lay.totalBreddeMm <= RAMME_MM && lay.totalHøydeMm <= RAMME_MM) return t
     }
     return null
   }, [layout, tilgjengeligeTommes, tomme, tekst, vms, biblioteket, tracking, mellomromFaktor])
 
-  const passerBredde = !layout || layout.totalBreddeMm <= 100
-  const passerHøyde = !layout || layout.totalHøydeMm <= 100
+  const passerBredde = !layout || layout.totalBreddeMm <= RAMME_MM
+  const passerHøyde = !layout || layout.totalHøydeMm <= RAMME_MM
   const passerIRamme = passerBredde && passerHøyde
 
   function leggTil() {
@@ -841,8 +872,8 @@ function TextVerktoy({ bundleNavn, vms, biblioteket, onLeggTil, onBack }: {
             {!passerIRamme && (
               <p className="mt-1 text-xs">
                 {alternativStørrelse
-                  ? `Prøv ${alternativStørrelse}" — passer i 100×100 mm`
-                  : 'Ingen størrelse passer i 100×100 mm med denne teksten'}
+                  ? `Prøv ${alternativStørrelse}" — passer i ${RAMME_MM}×${RAMME_MM} mm`
+                  : `Ingen størrelse passer i ${RAMME_MM}×${RAMME_MM} mm med denne teksten`}
               </p>
             )}
           </div>
@@ -870,7 +901,11 @@ function TextVerktoy({ bundleNavn, vms, biblioteket, onLeggTil, onBack }: {
 
 // ── Motiv-velger ─────────────────────────────────────────────────────────────
 
-const RAMME_GRENSE_MM = 98
+// Bevisst 2 mm STRENGERE enn selve rammen (RAMME_MM) — en sikkerhetsmargin i velgerens
+// "passer i rammen"-filter, ikke en egen, uavhengig grense. Uendret verdi (98), bare
+// nå uttrykt i forhold til RAMME_MM slik at de to aldri kan drive fra hverandre ved en
+// senere endring et av stedene.
+const RAMME_GRENSE_MM = RAMME_MM - 2
 
 type BboxMm = { widthMm: number; heightMm: number; miniatyrSvg: string | null }
 type ParseFremgang = { done: number; total: number; errors: number }
@@ -949,6 +984,158 @@ function velgStandardStorrelse(vm: VirtuelMotiv, bboxCache: Map<string, BboxMm |
   return vm.sizes[0]
 }
 
+// Bygger virtuelle motiver fra biblioteket. STANDARD er regelen: én embroidery-rad blir
+// ETT VirtuelMotiv, med radens egne data.sizes urørt. Grupperingen ligger allerede riktig
+// i basen (embroidery/page.tsx setter én rad per motiv med alle dets størrelser) — å
+// utlede identitet fra pesFilename og gruppere på nytt her var selve feilen: det splittet
+// 12Berries (5 størrelser i én rad ble 5 kort) og kollapset BX Floral («A (stor)» og
+// «a (liten)» er to rader med samme filnavn «A.PES», ble ett kort).
+//
+// UNNTAKET er fontrader: en rad der sizes[] i virkeligheten er ULIKE TEGN, ikke ulike
+// størrelser (Seraphine: én rad per tommestørrelse, alle tegn enumerert som "størrelser").
+// Bare DE splittes per tegn og grupperes PÅ TVERS av rader innad i samme bundle, slik at
+// «a» i 2" og «a» i 3" blir ett kort med to størrelser. Deteksjon: utled identitet per
+// størrelse som før (utledTomme sin identitet, ellers filnavnbasen), kjør
+// trekktUtKarakter på hver — MINST TO ulike ikke-null tegn utløser fontrad-grenen. null
+// (ikke gjenkjent som noe tegn) teller aldri som en forskjell, ellers ville f.eks.
+// 12Berries (fem ukarakteriserte størrelsesnavn, alle null) blitt feilklassifisert.
+// Fontrad-deteksjon gjelder kun rader i en bundle — et standalone-motiv kan ikke være det.
+export function byggVirtuelleMotiver(
+  biblioteket: Embroidery[],
+  bundlerMap: Map<string, EmbroideryBundle>,
+): VirtuelMotiv[] {
+  const enkeltrader: VirtuelMotiv[] = []
+
+  for (const m of biblioteket) {
+    const bid = m.data.bundleId
+    const bundle = bid ? bundlerMap.get(bid) : undefined
+    const sizes = m.data.sizes ?? []
+
+    const perStorrelse = sizes.map(s => {
+      const t = utledTomme(s.pesFilename)
+      const identitet = t?.identitet
+        ?? s.pesFilename.replace(/\.pes$/i, '').split(/[\\/]/).pop()
+        ?? s.pesFilename
+      return { s, tomme: t?.tomme ?? null, identitet, karakter: trekktUtKarakter(identitet) }
+    })
+    const ulikeIkkeNullTegn = new Set(
+      perStorrelse.map(p => p.karakter?.tegn).filter((t): t is string => t != null),
+    )
+    const erFontrad = bundle !== undefined && ulikeIkkeNullTegn.size >= 2
+
+    if (erFontrad) {
+      const { kats, arvet } = getKatsMedArv(m.data, bundle.data)
+      for (const p of perStorrelse) {
+        enkeltrader.push({
+          key: `${bid}:${p.identitet}`,
+          bundleId: bid!,
+          identitet: p.identitet,
+          navn: p.karakter ? p.karakter.tegn : (p.tomme !== null ? (m.data.navn || p.identitet) : p.identitet),
+          coverImage: getCoverImage(m.data),
+          kats, katArvet: arvet,
+          karakter: p.karakter ?? undefined,
+          sizes: [{ embroideryId: m.id, sizeId: p.s.id, tommeLabel: p.tomme, sizeLabel: p.s.sizeLabel }],
+        })
+      }
+      continue
+    }
+
+    // STANDARD: ett kort per rad. Prøv karakter fra selve motivnavnet FØR
+    // filnavn-identiteten — det er der «A (stor)» / «a (liten)» står (BX Floral), og
+    // mønsteret finnes i tomme.ts men ble aldri kalt med navn før denne fiksen. Faller
+    // navnet ikke til et tegn, men ALLE størrelsene i raden likevel enes om ETT og samme
+    // tegn (blandet filnavnsstil i samme rad, se page.tsx:264), brukes det tegnet — raden
+    // splittes uansett ikke, den er fortsatt ett kort.
+    const karakterFraNavn = trekktUtKarakter(m.data.navn)
+    const enkeltTegnFraFilnavn = ulikeIkkeNullTegn.size === 1
+      ? perStorrelse.find(p => p.karakter)!.karakter
+      : null
+    const karakter = karakterFraNavn ?? enkeltTegnFraFilnavn
+    const { kats, arvet } = bundle ? getKatsMedArv(m.data, bundle.data) : getKatsMedArv(m.data)
+    enkeltrader.push({
+      key: m.id,
+      bundleId: bid && bundle ? bid : null,
+      identitet: m.id,
+      navn: karakter ? karakter.tegn : (m.data.navn || 'Uten navn'),
+      coverImage: getCoverImage(m.data),
+      kats, katArvet: arvet,
+      karakter: karakter ?? undefined,
+      sizes: sizes.map(s => ({ embroideryId: m.id, sizeId: s.id, tommeLabel: null, sizeLabel: s.sizeLabel })),
+    })
+  }
+
+  // Slå sammen fontrad-VM-er fra SAMME bundle med SAMME tegn-identitet på tvers av rader
+  // (forskjellige tommestørrelser). STANDARD-VM-er sin identitet ER rad-id-en (m.id), unik
+  // per rad og kolliderer derfor aldri — denne sammenslåingen er et rent no-op for dem.
+  const sett = new Map<string, VirtuelMotiv>()
+  const resultat: VirtuelMotiv[] = []
+  for (const vm of enkeltrader) {
+    if (vm.bundleId === null) { resultat.push(vm); continue }
+    const gruppeKey = `${vm.bundleId}:${vm.identitet}`
+    const eksisterende = sett.get(gruppeKey)
+    if (eksisterende) {
+      eksisterende.sizes.push(...vm.sizes)
+    } else {
+      const kopi: VirtuelMotiv = { ...vm, sizes: [...vm.sizes] }
+      sett.set(gruppeKey, kopi)
+      resultat.push(kopi)
+    }
+  }
+  return resultat
+}
+
+// Enkelt rutenett med luft mellom — ikke stablet i samme punkt som enkelt-tilleggets
+// kaskade. Selve posisjonene, ETTER at beregnRutenettCelle (under) har avgjort hvor stor
+// hver celle skal være.
+export function beregnRutenettPosisjoner(n: number, celleTiendedelMm: number): Array<{ x: number; y: number }> {
+  const cols = Math.ceil(Math.sqrt(n))
+  const rows = Math.ceil(n / cols)
+  const pos: Array<{ x: number; y: number }> = []
+  for (let i = 0; i < n; i++) {
+    const rad = Math.floor(i / cols)
+    const kol = i % cols
+    pos.push({
+      x: Math.round((kol - (cols - 1) / 2) * celleTiendedelMm),
+      y: Math.round((rad - (rows - 1) / 2) * celleTiendedelMm),
+    })
+  }
+  return pos
+}
+
+// Cellestørrelsen (avstand mellom cellesentre) rutenettet over trenger, og om det i det
+// hele tatt er MULIG å holde alle n kvadratiske celler (sidelengde storsteDimMm — den
+// STØRSTE kjente utstrekningen blant de valgte standardstørrelsene) innenfor ±halve
+// RAMME_GRENSE_MM samtidig, uten at noen av dem overlapper (celle < storsteDimMm ville
+// vært overlapp, og er derfor aldri tillatt, uansett hvor trangt det blir). Bruker
+// RAMME_GRENSE_MM (98), ikke selve RAMME_MM (100) — to motiver som akkurat fyller cellen
+// ville ellers havnet med ytterkant nøyaktig på rammekanten, uten klaring til foten.
+//
+// INVARIANTEN: er det geometrisk mulig for alle n å ligge innenfor rammen samtidig,
+// strammes cellestørrelsen inn fra den ønskede 1.25×-margin til akkurat det som trengs
+// for å holde ytterste cellekant innenfor rammen — aldri under 1×, som ville vært
+// overlapp. Er det umulig (selv tett i tett, celle = storsteDimMm, ryker rammen),
+// brukes likevel den tetteste cellen (fortsatt ALDRI overlapp) — kalleren viser da en
+// melding i stedet for stille å late som det gikk bra.
+export function beregnRutenettCelle(n: number, storsteDimMm: number): { celleMm: number; umulig: boolean } {
+  const cols = Math.ceil(Math.sqrt(n))
+  const rows = Math.ceil(n / cols)
+
+  // Størst celle DENNE aksen tillater for at ytterste cellekant skal holde seg innenfor
+  // rammen. Uendelig (cellestørrelsen er irrelevant for denne aksen) når aksen bare har
+  // ÉN celle, siden avstanden fra origo da er storsteDimMm/2 uansett celle. Er selv DET
+  // for stort, er aksen umulig uansett cellestørrelse — signalisert med -Infinity, som
+  // garantert taper i Math.min under.
+  function maxCelleForAkse(antallCeller: number): number {
+    if (antallCeller <= 1) return storsteDimMm <= RAMME_GRENSE_MM ? Infinity : -Infinity
+    return (RAMME_GRENSE_MM - storsteDimMm) / (antallCeller - 1)
+  }
+
+  const maxCelle = Math.min(maxCelleForAkse(cols), maxCelleForAkse(rows))
+  const umulig = maxCelle < storsteDimMm
+  const celleMm = umulig ? storsteDimMm : Math.min(storsteDimMm * 1.25, maxCelle)
+  return { celleMm, umulig }
+}
+
 // Topp-nivå (ikke nestet i MotivPicker) med rene props i stedet for closures over lokal
 // state — resten av MotivPickers underkomponenter (Topptekst, ParseBunnlinje, osv.) er
 // definert nestet inni MotivPicker og bygges derfor på nytt for hver rendring; det er et
@@ -980,7 +1167,12 @@ function ValgtBunnlinje({ antall, onFjernValg, onLeggTilValgte }: {
 function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
   biblioteket: Embroidery[]
   onVelg: (embroideryId: string, sizeId: string, navn: string) => void
-  onVelgFlere: (items: Array<{ embroideryId: string; sizeId: string; navn: string; x: number; y: number }>) => void
+  // rutenettUmulig: kun satt av leggTilValgte (flervalg), aldri av tekstverktøyets
+  // onLeggTil — se beregnRutenettCelle for hva den faktisk betyr.
+  onVelgFlere: (
+    items: Array<{ embroideryId: string; sizeId: string; navn: string; x: number; y: number }>,
+    rutenettUmulig?: boolean,
+  ) => void
   onClose: () => void
 }) {
   const [view, setView] = useState<PickerView>({ type: 'kategorier' })
@@ -1113,82 +1305,11 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
     })
   }, [lasterVersjon])
 
-  // Virtuelle motiver: tomme-regelen brukt på biblioteket + bundle-kart.
-  const virtuelleMotiver = useMemo((): VirtuelMotiv[] => {
-    const res: VirtuelMotiv[] = []
-    const bundleGroups = new Map<string, Embroidery[]>()
-    const standalone: Embroidery[] = []
-
-    for (const m of biblioteket) {
-      const bid = m.data.bundleId
-      if (bid && bundlerMap.has(bid)) {
-        const g = bundleGroups.get(bid) ?? []
-        g.push(m)
-        bundleGroups.set(bid, g)
-      } else {
-        standalone.push(m)
-      }
-    }
-
-    for (const [bundleId, motiver] of bundleGroups) {
-      const bundle = bundlerMap.get(bundleId)!
-      const identitetGrupper = new Map<string, Array<{ m: Embroidery; s: EmbroiderySize; tomme: string | null }>>()
-
-      for (const m of motiver) {
-        for (const s of m.data.sizes ?? []) {
-          const res2 = utledTomme(s.pesFilename)
-          const identitet = res2?.identitet
-            ?? s.pesFilename.replace(/\.pes$/i, '').split(/[\\/]/).pop()
-            ?? s.pesFilename
-          const g = identitetGrupper.get(identitet) ?? []
-          g.push({ m, s, tomme: res2?.tomme ?? null })
-          identitetGrupper.set(identitet, g)
-        }
-      }
-
-      for (const [identitet, items] of identitetGrupper) {
-        const firstM = items[0].m
-        const { kats, arvet } = getKatsMedArv(firstM.data, bundle.data)
-        const karakter = trekktUtKarakter(identitet)
-        const noenHarTomme = items.some(item => item.tomme !== null)
-        res.push({
-          key: `${bundleId}:${identitet}`,
-          bundleId,
-          identitet,
-          navn: karakter ? karakter.tegn : (noenHarTomme ? (firstM.data.navn || identitet) : identitet),
-          coverImage: getCoverImage(firstM.data),
-          kats, katArvet: arvet,
-          karakter: karakter ?? undefined,
-          sizes: items.map(({ m, s, tomme }) => ({
-            embroideryId: m.id,
-            sizeId: s.id,
-            tommeLabel: tomme,
-            sizeLabel: s.sizeLabel,
-          })),
-        })
-      }
-    }
-
-    for (const m of standalone) {
-      const { kats, arvet } = getKatsMedArv(m.data)
-      res.push({
-        key: m.id,
-        bundleId: null,
-        identitet: m.id,
-        navn: m.data.navn || 'Uten navn',
-        coverImage: getCoverImage(m.data),
-        kats, katArvet: arvet,
-        sizes: (m.data.sizes ?? []).map(s => ({
-          embroideryId: m.id,
-          sizeId: s.id,
-          tommeLabel: null,
-          sizeLabel: s.sizeLabel,
-        })),
-      })
-    }
-
-    return res
-  }, [biblioteket, bundlerMap])
+  // Virtuelle motiver: se byggVirtuelleMotiver (modulnivå, over MotivPicker) for selve
+  // regelen og hvorfor den ikke lenger utleder gruppering fra filnavn på tvers av rader.
+  const virtuelleMotiver = useMemo(
+    () => byggVirtuelleMotiver(biblioteket, bundlerMap),
+    [biblioteket, bundlerMap])
 
   const alfabetBundles = useMemo(() => {
     const bundleVMsLocal = new Map<string, VirtuelMotiv[]>()
@@ -1253,6 +1374,9 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
   // bundle. miniatyr_svg (den forenklede stingopptegningen) er kun en siste utvei, brukt bare
   // hvis en kategori ikke har ETT ENKELT ekte bilde å vise — se punkt 2 i samme runde for at
   // selve opptegningen også er forbedret der den faktisk brukes.
+  // Samme regel og samme grunn brukes nå bevisst i MotivKort (motivlisten inni en
+  // kategori): begge er stedet der brukeren KJENNER IGJEN og VELGER et motiv blant mange,
+  // ikke der stingdetaljer skal bekreftes — det gjør lerretet, etter plassering.
   const kategoriData = useMemo(() => {
     // Build map: kat (null = "Uten kategori") → VirtuelMotiv[]
     const katToVms = new Map<string | null, VirtuelMotiv[]>()
@@ -1372,25 +1496,6 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
     })
   }
 
-  // Enkelt rutenett med luft mellom — ikke stablet i samme punkt som enkelt-tilleggets
-  // kaskade. Cellestørrelsen er satt fra den STØRSTE kjente utstrekningen blant de valgte
-  // standardstørrelsene (pluss margin), så motiver med ulik størrelse ikke overlapper — når
-  // ingen er målt ennå, brukes en fornuftig fast avstand.
-  function beregnRutenettPosisjoner(n: number, celleTiendedelMm: number): Array<{ x: number; y: number }> {
-    const cols = Math.ceil(Math.sqrt(n))
-    const rows = Math.ceil(n / cols)
-    const pos: Array<{ x: number; y: number }> = []
-    for (let i = 0; i < n; i++) {
-      const rad = Math.floor(i / cols)
-      const kol = i % cols
-      pos.push({
-        x: Math.round((kol - (cols - 1) / 2) * celleTiendedelMm),
-        y: Math.round((rad - (rows - 1) / 2) * celleTiendedelMm),
-      })
-    }
-    return pos
-  }
-
   function leggTilValgte() {
     const utvalg = Array.from(valgteVM)
       .map(key => virtuelleMotiver.find(vm => vm.key === key))
@@ -1409,7 +1514,8 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
         return b ? Math.max(b.widthMm, b.heightMm) : 0
       }),
     )
-    const celleTiendedelMm = Math.round(størsteDimMm * 1.25 * 10)
+    const { celleMm, umulig } = beregnRutenettCelle(valg.length, størsteDimMm)
+    const celleTiendedelMm = Math.round(celleMm * 10)
     const posisjoner = beregnRutenettPosisjoner(valg.length, celleTiendedelMm)
 
     onVelgFlere(valg.map(({ vm, s }, i) => ({
@@ -1418,7 +1524,7 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
       navn: navnForValgtStorrelse(vm, s),
       x: posisjoner[i].x,
       y: posisjoner[i].y,
-    })))
+    })), umulig)
     setValgteVM(new Set())
   }
 
@@ -1674,39 +1780,61 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
     )
   }
 
-  function MotivKort({ vm, valgt, onToggle }: { vm: VirtuelMotiv; valgt: boolean; onToggle: () => void }) {
+  // Klikkflaten er delt i to: bildet/navnet åpner størrelsesvisningen (onVelgVM, altså
+  // velgVM — «passer nøyaktig én, velg den direkte, ellers vis størrelsene»), mens
+  // avkryssingsmerket er flervalg (onToggle). Merket er ALLTID synlig nå (ikke bare når
+  // valgt), som en ekte avkryssingsboks, og stopper propagering så et trykk der ikke også
+  // åpner størrelsesvisningen.
+  function MotivKort({ vm, valgt, onToggle, onVelgVM }: {
+    vm: VirtuelMotiv; valgt: boolean; onToggle: () => void; onVelgVM: () => void
+  }) {
     const maal = vmMaalTekst(vm, bboxCache)
     const forsteMiniatyr = vm.sizes
       .map(s => bboxCache.get(`${s.embroideryId}:${s.sizeId}`)?.miniatyrSvg)
       .find(svg => !!svg) ?? null
     const stat = vmStatus(vm, bboxCache)
     return (
-      <article onClick={onToggle}
-        className={`rounded-xl border shadow-sm cursor-pointer overflow-hidden transition-all ${
+      <article
+        className={`rounded-xl border shadow-sm overflow-hidden transition-all ${
           valgt ? 'border-stone-700 ring-2 ring-stone-700/20 bg-stone-50' : 'border-stone-200 bg-white hover:shadow-md'
         }`}>
-        <div className="relative aspect-[5/4] bg-stone-50 overflow-hidden">
-          {forsteMiniatyr
+        <div onClick={onVelgVM} className="relative aspect-[5/4] bg-stone-50 overflow-hidden cursor-pointer">
+          {/* Ekte forsidebilde FØR miniatyr_svg — samme regel og samme grunn som
+             kategoriflisene (kategoriData over): dette kortet er for å KJENNE IGJEN og
+             VELGE et motiv blant mange, ikke for å bekrefte stingdetaljer. Et ekte foto av
+             det ferdigsydde motivet er lettere å gjenkjenne enn en skjematisk
+             stingopptegning. Den nøyaktige geometrien vises uansett senere, når motivet er
+             plassert på selve lerretet (PlassertMotivGruppe tegner de faktiske
+             stingbanene der). miniatyr_svg er bare en siste utvei når ingen ekte bilde
+             finnes (f.eks. før miniatyrer er generert, eller et løst motiv uten cover). */}
+          {vm.coverImage
             // eslint-disable-next-line @next/next/no-img-element
-            ? <img src={`data:image/svg+xml;utf8,${encodeURIComponent(forsteMiniatyr)}`} alt={vm.navn} className="w-full h-full object-contain p-1" />
-            : vm.coverImage
+            ? <img src={vm.coverImage} alt={vm.navn} className="w-full h-full object-contain" />
+            : forsteMiniatyr
               // eslint-disable-next-line @next/next/no-img-element
-              ? <img src={vm.coverImage} alt={vm.navn} className="w-full h-full object-contain" />
+              ? <img src={`data:image/svg+xml;utf8,${encodeURIComponent(forsteMiniatyr)}`} alt={vm.navn} className="w-full h-full object-contain p-1" />
               : <div className="w-full h-full flex items-center justify-center text-stone-200">
                   <svg className="w-10 h-10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" />
                   </svg>
                 </div>
           }
-          {valgt && (
-            <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-stone-800 border-2 border-white flex items-center justify-center">
+          <button
+            onClick={e => { e.stopPropagation(); onToggle() }}
+            aria-label={valgt ? 'Fjern fra flervalg' : 'Velg for flervalg'}
+            aria-pressed={valgt}
+            className={`absolute top-1.5 right-1.5 w-7 h-7 rounded-full border-2 flex items-center justify-center transition-colors ${
+              valgt ? 'bg-stone-800 border-white' : 'bg-white/90 border-stone-300 hover:border-stone-500'
+            }`}
+          >
+            {valgt && (
               <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
               </svg>
-            </div>
-          )}
+            )}
+          </button>
         </div>
-        <div className="px-2.5 py-2">
+        <div onClick={onVelgVM} className="px-2.5 py-2 cursor-pointer">
           <p className="text-sm text-stone-800 truncate leading-tight">{vm.navn}</p>
           <p className={`text-xs truncate mt-0.5 ${stat === 'passer' ? 'text-stone-400' : stat === 'ikkeMalt' ? 'text-amber-600' : 'text-red-400'}`}>
             {vm.sizes.length === 1 ? (maal ?? 'Ikke målt') : `${vm.sizes.length} størrelser${maal ? ` · ${maal}` : ''}`}
@@ -1900,7 +2028,8 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
                     <div className="grid grid-cols-2 gap-3">
                       {passerListe.map(vm => (
                         <MotivKort key={vm.key} vm={vm}
-                          valgt={valgteVM.has(vm.key)} onToggle={() => toggleValgt(vm.key)} />
+                          valgt={valgteVM.has(vm.key)} onToggle={() => toggleValgt(vm.key)}
+                          onVelgVM={() => velgVM(vm, view)} />
                       ))}
                     </div>
                     {ikkeMåltListe.length > 0 && (
@@ -1909,7 +2038,8 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
                         <div className="grid grid-cols-2 gap-3">
                           {ikkeMåltListe.map(vm => (
                             <MotivKort key={vm.key} vm={vm}
-                              valgt={valgteVM.has(vm.key)} onToggle={() => toggleValgt(vm.key)} />
+                              valgt={valgteVM.has(vm.key)} onToggle={() => toggleValgt(vm.key)}
+                              onVelgVM={() => velgVM(vm, view)} />
                           ))}
                         </div>
                       </>
@@ -2044,7 +2174,8 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
                         <div className="grid grid-cols-2 gap-3">
                           {vPasser.map(vm => (
                             <MotivKort key={vm.key} vm={vm}
-                              valgt={valgteVM.has(vm.key)} onToggle={() => toggleValgt(vm.key)} />
+                              valgt={valgteVM.has(vm.key)} onToggle={() => toggleValgt(vm.key)}
+                              onVelgVM={() => velgVM(vm, view)} />
                           ))}
                         </div>
                       )}
@@ -2055,7 +2186,8 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
                             {bIkkeMalt.map(bid => <BundleKort key={bid} bundleId={bid} />)}
                             {vIkkeMalt.map(vm => (
                               <MotivKort key={vm.key} vm={vm}
-                                valgt={valgteVM.has(vm.key)} onToggle={() => toggleValgt(vm.key)} />
+                                valgt={valgteVM.has(vm.key)} onToggle={() => toggleValgt(vm.key)}
+                                onVelgVM={() => velgVM(vm, view)} />
                             ))}
                           </div>
                         </>
@@ -2134,7 +2266,8 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
                         <div className="grid grid-cols-2 gap-3">
                           {passerVMs.map(vm => (
                             <MotivKort key={vm.key} vm={vm}
-                              valgt={valgteVM.has(vm.key)} onToggle={() => toggleValgt(vm.key)} />
+                              valgt={valgteVM.has(vm.key)} onToggle={() => toggleValgt(vm.key)}
+                              onVelgVM={() => velgVM(vm, currentView)} />
                           ))}
                         </div>
                       )}
@@ -2150,7 +2283,8 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
                             <div className="grid grid-cols-2 gap-3">
                               {ikkeMåltVMs.map(vm => (
                                 <MotivKort key={vm.key} vm={vm}
-                                  valgt={valgteVM.has(vm.key)} onToggle={() => toggleValgt(vm.key)} />
+                                  valgt={valgteVM.has(vm.key)} onToggle={() => toggleValgt(vm.key)}
+                                  onVelgVM={() => velgVM(vm, currentView)} />
                               ))}
                             </div>
                           )}

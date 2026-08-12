@@ -40,8 +40,16 @@ export function SekvensPanel({
   const [fargePickerForId, setFargePickerForId] = useState<string | null>(null)
   const [forhåndsvisForslag, setForhåndsvisForslag] = useState<SammenslaingForslag | null>(null)
   const [dndFeil, setDndFeil] = useState<string | null>(null)
+  // Fasesorter og Tilbakestill sletter ALLE pauser uten varsel ellers — de gamle
+  // pause-posisjonene gir ikke mening etter en fullstendig ombygging av rekkefølgen, så
+  // pausene skal fjernes, men brukeren skal få vite det FØR det skjer (angre-stacken
+  // redder dem, men det står ingen steder i UI-en). Bare et tall (antallPauser > 0)
+  // avgjør om dialogen i det hele tatt vises — inneholder sekvensen ingen pauser, skjer
+  // ingenting ekstra og knappen virker som før.
+  const [bekreftHandling, setBekreftHandling] = useState<'fasesorter' | 'tilbakestill' | null>(null)
 
   const ctx: SekvensKontekst = useMemo(() => ({ motiver, resolved }), [motiver, resolved])
+  const antallPauser = useMemo(() => sekvens.filter(el => el.type === 'pause').length, [sekvens])
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const rasterCache = useMemo(() => new Map<string, Set<string> | null>(), [motiver, resolved])
@@ -109,6 +117,30 @@ export function SekvensPanel({
 
   function slettElement(elId: string) {
     onChange(sekvens.filter(el => el.id !== elId))
+  }
+
+  function utførFasesorter() {
+    onChange(fasesorter(sekvens, ctx))
+  }
+
+  function utførTilbakestill() {
+    onTilbakestill?.()
+  }
+
+  function klikkFasesorter() {
+    if (antallPauser > 0) setBekreftHandling('fasesorter')
+    else utførFasesorter()
+  }
+
+  function klikkTilbakestill() {
+    if (antallPauser > 0) setBekreftHandling('tilbakestill')
+    else utførTilbakestill()
+  }
+
+  function bekreft() {
+    if (bekreftHandling === 'fasesorter') utførFasesorter()
+    else if (bekreftHandling === 'tilbakestill') utførTilbakestill()
+    setBekreftHandling(null)
   }
 
   const fargePickerEl = fargePickerForId
@@ -228,7 +260,7 @@ export function SekvensPanel({
             <button
               disabled={!faseStatus.kan}
               title={faseStatus.kan ? 'Bygg om rekkefølgen: kjøring 1 fra alle motiver, så kjøring 2 fra alle, osv.' : faseStatus.grunn}
-              onClick={() => onChange(fasesorter(sekvens, ctx))}
+              onClick={klikkFasesorter}
               className={`h-8 px-3 rounded-xl border text-xs transition-colors ${
                 faseStatus.kan
                   ? 'bg-white text-stone-600 border-stone-200 hover:border-stone-400'
@@ -242,7 +274,7 @@ export function SekvensPanel({
         </div>
         {onTilbakestill && (
           <button
-            onClick={onTilbakestill}
+            onClick={klikkTilbakestill}
             className="text-xs text-stone-400 hover:text-stone-600 transition-colors underline underline-offset-2"
           >
             Tilbakestill sekvens til motivenes opprinnelige rekkefølge
@@ -326,6 +358,15 @@ export function SekvensPanel({
           rasterCache={rasterCache}
           kjoringsNummer={kjoringsNummer}
           onClose={() => setForhåndsvisForslag(null)}
+        />
+      )}
+
+      {bekreftHandling && (
+        <BekreftSlettPauserModal
+          handling={bekreftHandling}
+          antallPauser={antallPauser}
+          onBekreft={bekreft}
+          onAvbryt={() => setBekreftHandling(null)}
         />
       )}
     </div>
@@ -426,6 +467,55 @@ function PauseRad({ el, onSlett }: { el: SekvensElement; onSlett: () => void }) 
         </svg>
       </button>
     </li>
+  )
+}
+
+// Vises kun når sekvensen inneholder minst én pause OG brukeren har trykket Fasesorter
+// eller Tilbakestill — begge bygger en helt ny liste med bare kjøring-elementer, så alle
+// pauser forsvinner uten spor (angre-stacken redder dem, men det er ikke synlig her).
+// Inneholder sekvensen ingen pauser, kalles denne aldri — se klikkFasesorter/
+// klikkTilbakestill over.
+function BekreftSlettPauserModal({ handling, antallPauser, onBekreft, onAvbryt }: {
+  handling: 'fasesorter' | 'tilbakestill'
+  antallPauser: number
+  onBekreft: () => void
+  onAvbryt: () => void
+}) {
+  const pauseOrd = antallPauser === 1 ? '1 pause' : `${antallPauser} pauser`
+  const handlingNavn = handling === 'fasesorter' ? 'Fasesorter' : 'Tilbakestill sekvens'
+  const forklaring = handling === 'fasesorter'
+    ? 'bygger om rekkefølgen fra bunnen av'
+    : 'setter sekvensen tilbake til motivenes opprinnelige rekkefølge'
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+      onClick={e => { if (e.target === e.currentTarget) onAvbryt() }}
+    >
+      <div className="bg-white rounded-2xl shadow-xl max-w-sm w-full overflow-hidden">
+        <div className="px-5 py-4">
+          <h3 className="font-serif text-lg text-stone-800 mb-2">Slette {pauseOrd}?</h3>
+          <p className="text-sm text-stone-600">
+            {handlingNavn} {forklaring} — sekvensen har {pauseOrd} i dag, og de følger ikke med.
+            {' '}Angre (⌘Z) henter dem tilbake etterpå.
+          </p>
+        </div>
+        <div className="px-5 py-3 border-t border-stone-100 flex justify-end gap-2">
+          <button
+            onClick={onAvbryt}
+            className="px-3 py-1.5 text-sm text-stone-500 hover:text-stone-700 transition-colors"
+          >
+            Avbryt
+          </button>
+          <button
+            onClick={onBekreft}
+            className="px-3 py-1.5 text-sm text-white bg-stone-800 rounded-lg hover:bg-stone-700 transition-colors"
+          >
+            {handlingNavn} — fjern {pauseOrd}
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 

@@ -57,28 +57,41 @@ export function effektivTradfarge(ctx: SekvensKontekst, el: SekvensKjoring): { h
   return snappTilPalett(raa)
 }
 
-// Snappet trådfarge PER STINGBLOKK per plassert motiv, for HVER kjøring i sekvensen —
-// ikke bare de som er overstyrt. Palett-snapping er billig for ett kall, men lerretet og
-// miniatyren tegner opptil tusenvis av blokker per rendring; å snappe INNI den løkken
-// ville gjort det samme oppslaget på nytt for hver enkelt polyline. Regn den ut HER, én
-// gang per sekvens-/motiv-endring (se kalleren, KomposisjonEditor.tsx), og slå bare opp i
-// det ferdige arrayet i selve rendringen. Nøkkelen er plassertMotivId, indeksen er
-// stingblokk-indeksen i det motivets egen data.stingblokker — en kjøring kan spenne flere
-// blokker (fra_index..til_index), og ALLE dem får samme (snappede) farge. undefined betyr
-// bare at motivet ikke er tolket ferdig ennå (finnFargekjoring/effektivTradfarge returnerte
-// undefined); kallstedet faller da tilbake til den rå blokk.farge_hex.
+// Snappet trådfarge PER STINGBLOKK per plassert motiv, for ALLE blokker — ikke bare de
+// som er dekket av en kjøring i sekvensen. Palett-snapping er billig for ett kall, men
+// lerretet og miniatyren tegner opptil tusenvis av blokker per rendring; å snappe INNI
+// den løkken ville gjort det samme oppslaget på nytt for hver enkelt polyline. Regn den
+// ut HER, én gang per sekvens-/motiv-endring (se kalleren, KomposisjonEditor.tsx), og slå
+// bare opp i det ferdige arrayet i selve rendringen.
+//
+// To lag: (1) hver blokk fylles først med SIN EGEN rå farge_hex snappet til paletten —
+// dette er den eneste plassen i appen der en blokk uten egen kjøring (eller en sekvens
+// som ennå ikke har rukket å synkroniseres for dette motivet) likevel får en snappet
+// farge, i stedet for at kalleren måtte falle tilbake til en rå hex-verdi selv. (2) alle
+// blokker som faktisk inngår i en kjøring i sekvensen overskrives med kjøringens
+// EFFEKTIVE farge (inkl. en eventuell brukeroverstyring) — samme som før. Resultatet er
+// et array uten hull: komponenten skal aldri trenge en "?? rå-farge"-fallback selv.
+// Nøkkelen er plassertMotivId, indeksen er stingblokk-indeksen i motivets egen
+// data.stingblokker — en kjøring kan spenne flere blokker (fra_index..til_index), og
+// ALLE dem får samme (snappede) farge.
 export function byggFargePerBlokk(
   sekvens: SekvensElement[], ctx: SekvensKontekst,
-): Record<string, (string | undefined)[]> {
-  const ut: Record<string, (string | undefined)[]> = {}
+): Record<string, string[]> {
+  const ut: Record<string, string[]> = {}
+  for (const pm of ctx.motiver) {
+    const data = ctx.resolved[motivKey(pm.embroideryId, pm.sizeId)]
+    if (!data) continue
+    ut[pm.id] = data.stingblokker.map(b => snappTilPalett(b.farge_hex).hex)
+  }
   for (const el of sekvens) {
     if (el.type !== 'kjoring') continue
     const funn = finnFargekjoring(ctx, el)
     if (!funn) continue
-    const { data, kjoring } = funn
+    const { kjoring } = funn
     const tradfarge = effektivTradfarge(ctx, el)
     if (!tradfarge) continue
-    const arr = ut[el.plassertMotivId] ?? (ut[el.plassertMotivId] = new Array(data.stingblokker.length).fill(undefined))
+    const arr = ut[el.plassertMotivId]
+    if (!arr) continue
     for (let i = kjoring.fra_index; i <= kjoring.til_index; i++) {
       if (i >= 0 && i < arr.length) arr[i] = tradfarge.hex
     }
