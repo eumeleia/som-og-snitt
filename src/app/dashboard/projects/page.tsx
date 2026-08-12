@@ -6,6 +6,7 @@ import '@/lib/readable-stream-async-iterator-polyfill'
 import { useState, useEffect, useCallback, useRef, type ReactNode, type ChangeEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { supabase } from '@/lib/supabase'
+import { useHistoryVisning } from '../_shared/useHistoryVisning'
 import { deepClone } from '@/lib/deep-clone'
 import { hentTekstFraSide } from '@/lib/pdf-text'
 import { RecipePicker, type PickerRecipe } from '@/app/dashboard/_shared/RecipePicker'
@@ -2902,6 +2903,8 @@ function DeleteDialog({ onConfirm, onCancel }: { onConfirm: () => void; onCancel
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
+type ProjectVisning = { v: 'liste' } | { v: 'item'; id: string } | { v: 'ny' }
+
 export default function ProjectsPage() {
   const [projects, setProjects]             = useState<Project[]>([])
   const [loading, setLoading]               = useState(true)
@@ -2957,16 +2960,7 @@ export default function ProjectsPage() {
       const { data, error } = await supabase
         .from('projects').select('*').order('created_at', { ascending: false })
       if (error) throw error
-      const list = (data as Project[]) || []
-      setProjects(list)
-
-      // Open project redirected from another page (e.g. "Start prosjekt" in recipes)
-      const openId = typeof window !== 'undefined' ? sessionStorage.getItem('openProjectId') : null
-      if (openId) {
-        sessionStorage.removeItem('openProjectId')
-        const p = list.find(x => x.id === openId)
-        if (p) { setCurrentProject(p); setShowDetail(true) }
-      }
+      setProjects((data as Project[]) || [])
     } catch (err) {
       console.error('Load error:', err)
     } finally {
@@ -2974,7 +2968,36 @@ export default function ProjectsPage() {
     }
   }, [])
 
+  const { push: pushVisning, replace: replaceVisning, closeToBase } = useHistoryVisning<ProjectVisning>(
+    'proj', { v: 'liste' },
+    visning => {
+      if (visning.v === 'liste') { setShowDetail(false); setCurrentProject(null); setShowNewModal(false); load() }
+      else if (visning.v === 'ny') { setShowNewModal(true); setShowDetail(false) }
+      else {
+        const funnet = projects.find(p => p.id === visning.id)
+        setCurrentProject(funnet ?? null)
+        setShowDetail(!!funnet)
+        setShowNewModal(false)
+      }
+    },
+  )
+
   useEffect(() => { load() }, [load])
+
+  // Åpne prosjekt viderekoblet fra en annen side (f.eks. "Start prosjekt" i oppskrifter) —
+  // egen effekt (ikke inni load()) fordi den må kalle pushVisning, som selv IKKE kan
+  // deklareres før load (onNavigate-callbacken over trenger load) — å legge denne logikken
+  // inni load() ville gitt en sirkulær erklæringsrekkefølge én enkelt useCallback ikke kan løse.
+  useEffect(() => {
+    const openId = typeof window !== 'undefined' ? sessionStorage.getItem('openProjectId') : null
+    if (!openId) return
+    const p = projects.find(x => x.id === openId)
+    if (!p) return
+    sessionStorage.removeItem('openProjectId')
+    setCurrentProject(p)
+    setShowDetail(true)
+    pushVisning({ v: 'item', id: p.id })
+  }, [projects, pushVisning])
 
   async function deleteProject(id: string) {
     await supabase.from('projects').delete().eq('id', id)
@@ -2982,12 +3005,14 @@ export default function ProjectsPage() {
     setDeleteId(null)
     setShowDetail(false)
     setCurrentProject(null)
+    replaceVisning({ v: 'liste' })
   }
 
   function handleCreated(project: Project) {
     setShowNewModal(false)
     setCurrentProject(project)
     setShowDetail(true)
+    replaceVisning({ v: 'item', id: project.id })
     load()
   }
 
@@ -3022,11 +3047,13 @@ export default function ProjectsPage() {
       await load()
       setCurrentProject(newProject)
       setShowDetail(true)
+      pushVisning({ v: 'item', id: newProject.id })
     }
   }
 
-  function openEdit(p: Project) { setAutoOpenPdfId(null); setCurrentProject(p); setShowDetail(true) }
-  function handleBack()         { setShowDetail(false); setCurrentProject(null); load() }
+  function openEdit(p: Project) { setAutoOpenPdfId(null); setCurrentProject(p); setShowDetail(true); pushVisning({ v: 'item', id: p.id }) }
+  function openNew()            { setShowNewModal(true); pushVisning({ v: 'ny' }) }
+  const handleBack = closeToBase
 
   // Open the recipe PDF as a modal overlay directly from the list,
   // so closing it returns the user to the list (same filter/tab).
@@ -3254,7 +3281,7 @@ export default function ProjectsPage() {
               {projects.length === 0 ? 'Ingen prosjekter ennå' : 'Ingen treff'}
             </p>
             {projects.length === 0 && (
-              <button onClick={() => setShowNewModal(true)}
+              <button onClick={() => openNew()}
                 className="mt-5 px-6 py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors font-medium">
                 Opprett ditt første prosjekt
               </button>
@@ -3283,7 +3310,7 @@ export default function ProjectsPage() {
       {showNewModal && (
         <NewProjectModal
           onCreated={handleCreated}
-          onClose={() => setShowNewModal(false)}
+          onClose={closeToBase}
         />
       )}
 
@@ -3296,7 +3323,7 @@ export default function ProjectsPage() {
 
       {/* FAB */}
       <button
-        onClick={() => setShowNewModal(true)}
+        onClick={() => openNew()}
         className="fixed bottom-6 right-6 w-14 h-14 bg-[#C9A57A] text-white rounded-full shadow-lg hover:bg-[#b8925f] transition-all flex items-center justify-center cursor-pointer z-30"
         aria-label="Nytt prosjekt"
       >

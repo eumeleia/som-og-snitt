@@ -3,6 +3,10 @@
 export const dynamic = 'force-dynamic'
 
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
+import { useRouter } from 'next/navigation'
+import { useHistoryVisning } from '../_shared/useHistoryVisning'
+import { RecipePicker, type PickerRecipe } from '../_shared/RecipePicker'
+import { ProjectPicker, type PickerProject } from '../_shared/ProjectPicker'
 import { supabase } from '@/lib/supabase'
 import { deepClone } from '@/lib/deep-clone'
 
@@ -30,13 +34,28 @@ interface InventoryItemData {
   type?:         StoffType
   mengde?:       string
   forbrukStoff?: string
+  // Fritekst — beholdt som fallback for rader lagret FØR koblingen under fantes, og for
+  // et prosjekt/en oppskrift som ikke (ennå) finnes i biblioteket. Når en ekte kobling er
+  // satt, vises DEN i UI-en; fritekstfeltet vises bare når ingen av id-feltene er satt.
   tiltenktProsjekt?: string
+  tiltenktProsjektId?: string
+  tiltenktProsjektNavn?: string
+  tiltenktOppskriftId?: string
+  tiltenktOppskriftNavn?: string
   // Tilbehør
   underkategori?: string
   antall?:        string
   farge?:         string
   lengde?:        string   // for Glidelås
   forbruksniva?:  'ubrukt' | 'lite-brukt' | 'mye-brukt' | 'oppbrukt'
+  // Broderitråd/Broderigarn — trådpalett brukt av broderi-arrangøren (KomposisjonEditor)
+  // for å vise EKTE trådfarge i stedet for Brothers generiske PEC-farge, se
+  // arranger/minTraadpalett.ts. hex er brukerens egen, redigerbare visningsfarge — IKKE
+  // hentet fra en fasit noe sted, siden ekte tråd varierer fra skjerm/lys uansett.
+  hex?:           string
+  merke?:         string
+  tradkode?:      string
+  iBroderipalett?: boolean
   // Utstyr
   utstyrstype?:  string
   detaljer?:     string
@@ -58,6 +77,11 @@ const TILBEHOR_CHIPS = ['Sytråd', 'Overlocktråd', 'Broderigarn', 'Broderitråd
 const UTSTYR_CHIPS   = ['Nål', 'Symaskinfot', 'Nålebord', 'Saks', 'Rull', 'Måleband', 'Annet']
 
 const THREAD_UNDERKATEGORIER = new Set(['Sytråd', 'Overlocktråd', 'Broderigarn', 'Broderitråd'])
+
+// Underkategoriene broderi-arrangørens trådpalett faktisk bruker — snevrere enn
+// THREAD_UNDERKATEGORIER (som også dekker vanlig sy-/overlocktråd, uten mening for en
+// broderimaskins fargevalg).
+const BRODERITRAD_UNDERKATEGORIER = new Set(['Broderitråd', 'Broderigarn'])
 
 const FORBRUKSNIVA_OPTIONS: { value: InventoryItemData['forbruksniva']; label: string; cls: string }[] = [
   { value: 'ubrukt',    label: 'Ubrukt',    cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
@@ -194,10 +218,10 @@ function InventoryCard({ item, onEdit, onDelete, onArchive, selectable, selected
           </div>
         )}
         <div
-          className="absolute bottom-0 left-0 right-0 px-3 pt-2 pb-1.5 flex flex-col h-14 overflow-hidden"
+          className="absolute bottom-0 left-0 right-0 px-3 pt-2 pb-1.5 flex flex-col"
           style={{ backgroundColor: 'rgba(250,247,244,0.78)' }}
         >
-          <h3 className="font-serif text-base font-semibold text-stone-800 truncate mt-0">
+          <h3 className="font-serif text-base font-semibold text-stone-800 line-clamp-3 mt-0">
             {d.navn || <span className="text-stone-300 italic font-light">Uten navn</span>}
           </h3>
           <p className="text-xs text-stone-500 truncate">{subtitle || ' '}</p>
@@ -206,6 +230,13 @@ function InventoryCard({ item, onEdit, onDelete, onArchive, selectable, selected
 
       <div className="px-3 py-2 flex items-center justify-between border-t border-stone-100 min-w-0">
         <div className="text-xs text-stone-500 truncate min-w-0 mr-1 flex-1 flex items-center gap-1.5">
+          {d.hex && (
+            <span
+              className="w-3.5 h-3.5 rounded-full border border-stone-300 flex-shrink-0"
+              style={{ backgroundColor: d.hex }}
+              title={d.hex}
+            />
+          )}
           {badge && <span className="font-medium">{badge}</span>}
           {forbruksInfo && (
             <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-xs font-medium ${forbruksInfo.cls}`}>
@@ -651,6 +682,9 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
   const [importUrl, setImportUrl]   = useState(item.data.kilde ?? '')
   const [importing, setImporting]   = useState(false)
   const [importNote, setImportNote] = useState('')
+  const [showProjectPicker, setShowProjectPicker] = useState(false)
+  const [showRecipePicker, setShowRecipePicker] = useState(false)
+  const router = useRouter()
 
   const itemIdRef    = useRef<string>(item.id)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -666,6 +700,31 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
   }
 
   function showToast(msg: string) { setToast(msg); setTimeout(() => setToast(''), 3500) }
+
+  const [prosjekter, setProsjekter] = useState<PickerProject[]>([])
+  const [oppskrifter, setOppskrifter] = useState<PickerRecipe[]>([])
+
+  async function apneProsjektvelger() {
+    const { data } = await supabase.from('projects').select('id, data').order('created_at', { ascending: false })
+    setProsjekter((data as PickerProject[]) ?? [])
+    setShowProjectPicker(true)
+  }
+
+  async function apneOppskriftvelger() {
+    const { data } = await supabase.from('recipes').select('id, data').order('created_at', { ascending: false })
+    setOppskrifter((data as PickerRecipe[]) ?? [])
+    setShowRecipePicker(true)
+  }
+
+  function gaTilProsjekt(id: string) {
+    sessionStorage.setItem('openProjectId', id)
+    router.push('/dashboard/projects')
+  }
+
+  function gaTilOppskrift(id: string) {
+    sessionStorage.setItem('openRecipeId', id)
+    router.push('/dashboard/recipes')
+  }
 
   async function handleImportUrl() {
     const trimmed = importUrl.trim()
@@ -744,6 +803,7 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
   const isTilbehor = d.kategori === 'Tilbehør'
   const isUtstyr   = d.kategori === 'Utstyr'
   const isThreadItem = isTilbehor && d.underkategori ? THREAD_UNDERKATEGORIER.has(d.underkategori) : false
+  const isBroderiTrad = isTilbehor && d.underkategori ? BRODERITRAD_UNDERKATEGORIER.has(d.underkategori) : false
 
   const skalForeslåArkivering = !d.arkivert && (
     (isStoff && (d.forbrukStoff === 'alt' || (!d.mengde?.trim() && d.mengde !== undefined))) ||
@@ -899,6 +959,49 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
                   </div>
                 </div>
               )}
+              {isBroderiTrad && (
+                <div className="space-y-3 p-3 rounded-xl bg-stone-50 border border-stone-200">
+                  <p className="text-xs font-medium text-stone-500">
+                    Trådpalett — brukes i broderi-arrangøren for å vise denne ekte fargen
+                    i stedet for Brothers generiske PEC-farge.
+                  </p>
+                  <div>
+                    <label className={labelCls}>Farge</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="color"
+                        value={/^#[0-9a-fA-F]{6}$/.test(d.hex ?? '') ? d.hex! : '#cccccc'}
+                        onChange={e => upd({ hex: e.target.value })}
+                        className="w-10 h-10 rounded-lg border border-stone-200 cursor-pointer bg-white p-0.5"
+                        aria-label="Velg farge"
+                      />
+                      <input className={`${inputCls} flex-1`} value={d.hex ?? ''}
+                        onChange={e => upd({ hex: e.target.value })}
+                        placeholder="#rrggbb" />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className={labelCls}>Merke</label>
+                      <input className={inputCls} value={d.merke ?? ''}
+                        onChange={e => upd({ merke: e.target.value })}
+                        placeholder="F.eks. Brother" />
+                    </div>
+                    <div>
+                      <label className={labelCls}>Trådkode</label>
+                      <input className={inputCls} value={d.tradkode ?? ''}
+                        onChange={e => upd({ tradkode: e.target.value })}
+                        placeholder="F.eks. CYT-122" />
+                    </div>
+                  </div>
+                  <label className="flex items-center gap-2 text-sm text-stone-600 cursor-pointer">
+                    <input type="checkbox" checked={d.iBroderipalett ?? true}
+                      onChange={e => upd({ iBroderipalett: e.target.checked })}
+                      className="rounded border-stone-300" />
+                    Vis i trådpaletten i broderi-arrangøren
+                  </label>
+                </div>
+              )}
             </>
           )}
 
@@ -966,14 +1069,54 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
           </>
         )}
 
-        {/* 3c. Tiltenkt prosjekt (Stoff only) */}
+        {/* 3c. Tiltenkt prosjekt / oppskrift (Stoff only) */}
         {isStoff && (
           <>
-            <SectionHeading>Tiltenkt prosjekt</SectionHeading>
-            <input className={inputCls}
-              value={d.tiltenktProsjekt ?? ''}
-              onChange={e => upd({ tiltenktProsjekt: e.target.value })}
-              placeholder="Skriv inn prosjektnavn…" />
+            <SectionHeading>Tiltenkt prosjekt / oppskrift</SectionHeading>
+            <div className="space-y-2">
+              {d.tiltenktProsjektId ? (
+                <div className="flex items-center gap-2">
+                  <button onClick={() => gaTilProsjekt(d.tiltenktProsjektId!)}
+                    className="flex-1 flex items-center justify-between px-3 py-2 rounded-lg border border-stone-200 bg-stone-50 hover:bg-stone-100 transition-colors text-left min-w-0">
+                    <span className="text-sm text-stone-700 truncate">{d.tiltenktProsjektNavn || 'Uten navn'}</span>
+                    <span className="text-xs text-[#8B6340] flex-shrink-0 ml-2">Åpne prosjekt →</span>
+                  </button>
+                  <button onClick={() => upd({ tiltenktProsjektId: undefined, tiltenktProsjektNavn: undefined })}
+                    className="p-2 text-stone-300 hover:text-red-400 flex-shrink-0" aria-label="Fjern kobling til prosjekt">✕</button>
+                </div>
+              ) : (
+                <button onClick={apneProsjektvelger}
+                  className="w-full py-2 text-sm border border-dashed border-stone-200 rounded-lg text-stone-500 hover:border-stone-400 transition-colors">
+                  + Koble til et prosjekt
+                </button>
+              )}
+
+              {d.tiltenktOppskriftId ? (
+                <div className="flex items-center gap-2">
+                  <button onClick={() => gaTilOppskrift(d.tiltenktOppskriftId!)}
+                    className="flex-1 flex items-center justify-between px-3 py-2 rounded-lg border border-stone-200 bg-stone-50 hover:bg-stone-100 transition-colors text-left min-w-0">
+                    <span className="text-sm text-stone-700 truncate">{d.tiltenktOppskriftNavn || 'Uten navn'}</span>
+                    <span className="text-xs text-[#8B6340] flex-shrink-0 ml-2">Åpne oppskrift →</span>
+                  </button>
+                  <button onClick={() => upd({ tiltenktOppskriftId: undefined, tiltenktOppskriftNavn: undefined })}
+                    className="p-2 text-stone-300 hover:text-red-400 flex-shrink-0" aria-label="Fjern kobling til oppskrift">✕</button>
+                </div>
+              ) : (
+                <button onClick={apneOppskriftvelger}
+                  className="w-full py-2 text-sm border border-dashed border-stone-200 rounded-lg text-stone-500 hover:border-stone-400 transition-colors">
+                  + Koble til en oppskrift
+                </button>
+              )}
+
+              {/* Fritekst-fallback — bare synlig når INGEN ekte kobling er satt, se
+                 InventoryItemData.tiltenktProsjekt-kommentaren. */}
+              {!d.tiltenktProsjektId && !d.tiltenktOppskriftId && (
+                <input className={inputCls}
+                  value={d.tiltenktProsjekt ?? ''}
+                  onChange={e => upd({ tiltenktProsjekt: e.target.value })}
+                  placeholder="…eller skriv fritekst hvis det ikke finnes i biblioteket ennå" />
+              )}
+            </div>
           </>
         )}
 
@@ -1090,6 +1233,20 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
       {showImgModal && (
         <ImageUploadModal onAdd={url => upd({ bilde: url })} onClose={() => setShowImgModal(false)} />
       )}
+      {showProjectPicker && (
+        <ProjectPicker
+          projects={prosjekter}
+          onSelect={p => { upd({ tiltenktProsjektId: p.id, tiltenktProsjektNavn: p.data.name }); setShowProjectPicker(false) }}
+          onClose={() => setShowProjectPicker(false)}
+        />
+      )}
+      {showRecipePicker && (
+        <RecipePicker
+          recipes={oppskrifter}
+          onSelect={r => { upd({ tiltenktOppskriftId: r.id, tiltenktOppskriftNavn: r.data.name }); setShowRecipePicker(false) }}
+          onClose={() => setShowRecipePicker(false)}
+        />
+      )}
       {toast && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-red-600 text-white text-sm px-4 py-2 rounded-lg shadow-lg whitespace-nowrap z-50">
           {toast}
@@ -1100,6 +1257,8 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
 }
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
+
+type InvVisning = { v: 'liste' } | { v: 'item'; id: string } | { v: 'ny' }
 
 export default function InventoryPage() {
   const [items, setItems]           = useState<InventoryItem[]>([])
@@ -1159,6 +1318,20 @@ export default function InventoryPage() {
     }
   }, [])
 
+  const { push: pushVisning, replace: replaceVisning, closeToBase } = useHistoryVisning<InvVisning>(
+    'inv', { v: 'liste' },
+    visning => {
+      if (visning.v === 'liste') { setShowDetail(false); setCurrentItem(null); setShowNewModal(false); load() }
+      else if (visning.v === 'ny') { setShowNewModal(true); setShowDetail(false) }
+      else {
+        const funnet = items.find(i => i.id === visning.id)
+        setCurrentItem(funnet ?? null)
+        setShowDetail(!!funnet)
+        setShowNewModal(false)
+      }
+    },
+  )
+
   useEffect(() => { load() }, [load])
   useEffect(() => { setTypeFilter('Alle') }, [tab])
   useEffect(() => {
@@ -1174,6 +1347,7 @@ export default function InventoryPage() {
       setCurrentItem(item)
       setShowNewModal(false)
       setShowDetail(true)
+      replaceVisning({ v: 'item', id: item.id })
     }
   }
 
@@ -1183,10 +1357,12 @@ export default function InventoryPage() {
     setDeleteId(null)
     setShowDetail(false)
     setCurrentItem(null)
+    replaceVisning({ v: 'liste' })
   }
 
-  function openEdit(item: InventoryItem) { setCurrentItem(item); setShowDetail(true) }
-  function handleBack()                  { setShowDetail(false); setCurrentItem(null); load() }
+  function openEdit(item: InventoryItem) { setCurrentItem(item); setShowDetail(true); pushVisning({ v: 'item', id: item.id }) }
+  function openNew()                     { setShowNewModal(true); pushVisning({ v: 'ny' }) }
+  const handleBack = closeToBase
 
   function toggleSelect(id: string) {
     setSelectedIds(prev => {
@@ -1471,7 +1647,7 @@ export default function InventoryPage() {
             if (groups.length === 0) return (
               <div className="text-center py-28">
                 <p className="font-serif text-2xl text-stone-400 font-light">Ingen tilbehør i lageret ennå.</p>
-                <button onClick={() => setShowNewModal(true)}
+                <button onClick={() => openNew()}
                   className="mt-5 px-6 py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors font-medium">
                   Legg til tilbehør
                 </button>
@@ -1527,7 +1703,7 @@ export default function InventoryPage() {
             if (groups.length === 0) return (
               <div className="text-center py-28">
                 <p className="font-serif text-2xl text-stone-400 font-light">Ingen utstyr i lageret ennå.</p>
-                <button onClick={() => setShowNewModal(true)}
+                <button onClick={() => openNew()}
                   className="mt-5 px-6 py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors font-medium">
                   Legg til utstyr
                 </button>
@@ -1608,7 +1784,7 @@ export default function InventoryPage() {
               {tabItems.length === 0 ? `Ingen ${emptyLabel} i lageret ennå.` : 'Ingen treff'}
             </p>
             {tabItems.length === 0 && (
-              <button onClick={() => setShowNewModal(true)}
+              <button onClick={() => openNew()}
                 className="mt-5 px-6 py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors font-medium">
                 Legg til {emptyLabel}
               </button>
@@ -1653,7 +1829,7 @@ export default function InventoryPage() {
       )}
 
       {showNewModal && (
-        <NewInventoryModal onCreate={createItem} onClose={() => setShowNewModal(false)} initialKategori={tab} />
+        <NewInventoryModal onCreate={createItem} onClose={closeToBase} initialKategori={tab} />
       )}
 
       {deleteId && !showDetail && (
@@ -1666,7 +1842,7 @@ export default function InventoryPage() {
 
       {/* FAB */}
       <button
-        onClick={() => setShowNewModal(true)}
+        onClick={() => openNew()}
         className={`fixed right-6 w-14 h-14 bg-[#C9A57A] text-white rounded-full shadow-lg hover:bg-[#b8925f] transition-all flex items-center justify-center cursor-pointer z-30 ${
           moveMode ? 'bottom-20' : 'bottom-6'
         }`}

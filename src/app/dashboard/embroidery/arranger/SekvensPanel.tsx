@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import {
   DndContext, closestCenter, PointerSensor, TouchSensor,
   useSensor, useSensors, type DragEndEvent,
@@ -10,17 +10,17 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { FargePicker } from './FargePicker'
-import { snappTilPalett } from './broderPalett'
 import {
   finnFargekjoring, effektivFargeRaa, effektivTradfarge, tellOmtredninger, flyttElementEtter,
   finnSammenslaingsforslag, sjekkFasesortering, fasesorter, nyPause,
   plassertFargekjoringRaster, bevarerMotivRekkefølge, type SekvensKontekst, type SammenslaingForslag,
 } from './sekvens'
 import { plassertPunkter } from './geometri'
+import type { MinTrad } from './minTraadpalett'
 import type { BroderiMotivData, PlassertMotiv, SekvensElement, SekvensKjoring } from './types'
 
 export function SekvensPanel({
-  sekvens, onChange, motiver, resolved,
+  sekvens, onChange, motiver, resolved, pecTilEkte, mineTrader,
   fokusKjoringId, setFokusKjoringId, onHoverEndret,
   kanAngre, kanGjørOm, onAngre, onGjørOm, onTilbakestill,
 }: {
@@ -28,6 +28,8 @@ export function SekvensPanel({
   onChange: (ny: SekvensElement[]) => void
   motiver: PlassertMotiv[]
   resolved: Record<string, BroderiMotivData>
+  pecTilEkte?: Map<string, MinTrad>
+  mineTrader?: MinTrad[]
   fokusKjoringId: string | null
   setFokusKjoringId: (id: string | null) => void
   onHoverEndret: (id: string | null) => void
@@ -48,7 +50,7 @@ export function SekvensPanel({
   // ingenting ekstra og knappen virker som før.
   const [bekreftHandling, setBekreftHandling] = useState<'fasesorter' | 'tilbakestill' | null>(null)
 
-  const ctx: SekvensKontekst = useMemo(() => ({ motiver, resolved }), [motiver, resolved])
+  const ctx: SekvensKontekst = useMemo(() => ({ motiver, resolved, pecTilEkte }), [motiver, resolved, pecTilEkte])
   const antallPauser = useMemo(() => sekvens.filter(el => el.type === 'pause').length, [sekvens])
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -306,24 +308,45 @@ export function SekvensPanel({
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd} onDragStart={() => setDndFeil(null)}>
         <SortableContext items={sekvens.map(el => el.id)} strategy={verticalListSortingStrategy}>
           <ul className="divide-y divide-stone-100 bg-white rounded-2xl border border-stone-200 shadow-sm overflow-hidden">
-            {sekvens.map(el => {
+            {sekvens.map((el, idx) => {
               if (el.type === 'pause') {
                 return <PauseRad key={el.id} el={el} onSlett={() => slettElement(el.id)} />
               }
               lopenummer++
+              // Kollisjonsvarsel: neste element er også en kjøring, og de to snapper til
+              // SAMME PEC-farge (uansett om skjermen viser en ekte substituert farge eller
+              // ikke — det er PEC-fargen som avgjør om maskinen ber om trådskift). Uten en
+              // pause mellom dem hopper eksporten over color_change() og syr begge i tråden
+              // til den FØRSTE — se _snap_til_palett/bygg_monster i api/export-pes.
+              const neste = sekvens[idx + 1]
+              const dennePecHex = effektivTradfarge(ctx, el)?.pecHex
+              const nestePecHex = neste?.type === 'kjoring' ? effektivTradfarge(ctx, neste)?.pecHex : undefined
+              const visKollisjonsvarsel = dennePecHex !== undefined && dennePecHex === nestePecHex
               return (
-                <KjoringRad
-                  key={el.id}
-                  el={el}
-                  nummer={lopenummer}
-                  ctx={ctx}
-                  fokusert={fokusKjoringId === el.id}
-                  onClick={() => setFokusKjoringId(fokusKjoringId === el.id ? null : el.id)}
-                  onMouseEnter={() => onHoverEndret(el.id)}
-                  onMouseLeave={() => onHoverEndret(null)}
-                  onFargeClick={() => setFargePickerForId(el.id)}
-                  onPauseEtter={() => leggPauseEtter(el.id)}
-                />
+                <Fragment key={el.id}>
+                  <KjoringRad
+                    el={el}
+                    nummer={lopenummer}
+                    ctx={ctx}
+                    fokusert={fokusKjoringId === el.id}
+                    onClick={() => setFokusKjoringId(fokusKjoringId === el.id ? null : el.id)}
+                    onMouseEnter={() => onHoverEndret(el.id)}
+                    onMouseLeave={() => onHoverEndret(null)}
+                    onFargeClick={() => setFargePickerForId(el.id)}
+                    onPauseEtter={() => leggPauseEtter(el.id)}
+                  />
+                  {visKollisjonsvarsel && (
+                    <li className="flex items-center gap-2 px-3 py-2 bg-amber-50 text-xs text-amber-800">
+                      <span className="flex-1">⚠ Samme tråd som neste kjøring — maskinen ber ikke om trådskift mellom dem.</span>
+                      <button
+                        onClick={() => leggPauseEtter(el.id)}
+                        className="px-2 py-1 rounded-lg border border-amber-300 text-amber-800 hover:bg-amber-100 transition-colors flex-shrink-0"
+                      >
+                        Sett inn pause
+                      </button>
+                    </li>
+                  )}
+                </Fragment>
               )
             })}
           </ul>
@@ -337,13 +360,9 @@ export function SekvensPanel({
 
       {fargePickerEl && fargePickerFunn && (
         <FargePicker
-          // Begge må være snappede palettverdier, ikke bare nuvarendeHex — FargePickerens
-          // rutenett ER paletten (f.hex === nuvarendeHex), og "Nullstill til original"
-          // vises når nuvarendeHex !== originalHex. Var originalHex fortsatt rå, ville en
-          // IKKE-overstyrt kjøring med en rå farge som ikke selv er en palettfarge alltid
-          // vist "Nullstill" (snappet ≠ rå) selv uten noen faktisk overstyring å nullstille.
           nuvarendeHex={effektivTradfarge(ctx, fargePickerEl)?.hex ?? fargePickerFunn.kjoring.farge_hex}
-          originalHex={snappTilPalett(fargePickerFunn.kjoring.farge_hex).hex}
+          harOverstyring={!!fargePickerEl.fargeOverrideHex}
+          mineTrader={mineTrader}
           onVelg={hex => settFarge(fargePickerEl.id, hex)}
           onNullstill={() => nullstillFarge(fargePickerEl.id)}
           onClose={() => setFargePickerForId(null)}
@@ -428,8 +447,11 @@ function KjoringRad({
             <p className="text-xs text-stone-400">
               {farge}{tradfarge ? ` · ${tradfarge.navn}` : ''}{el.fargeOverrideHex ? ' (endret)' : ''} · {funn.kjoring.antall_blokker} del{funn.kjoring.antall_blokker === 1 ? '' : 'er'}
             </p>
-            {raaFarge !== undefined && raaFarge !== farge && (
-              <p className="text-[11px] text-stone-400">Kildefila har {raaFarge} — maskinen syr {farge}.</p>
+            {raaFarge !== undefined && tradfarge && raaFarge !== tradfarge.pecHex && (
+              <p className="text-[11px] text-stone-400">Kildefila har {raaFarge} — maskinen syr {tradfarge.pecHex}.</p>
+            )}
+            {tradfarge?.ekte && tradfarge.hex !== tradfarge.pecHex && (
+              <p className="text-[11px] text-stone-400">Syr som {tradfarge.pecNavn} {tradfarge.pecHex} i fila.</p>
             )}
           </div>
           <span className="text-xs text-stone-500 flex-shrink-0">{funn.kjoring.antall_sting} sting</span>

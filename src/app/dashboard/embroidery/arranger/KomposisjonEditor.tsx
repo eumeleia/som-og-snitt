@@ -8,6 +8,7 @@ import { ErrorDetailsView } from '@/components/ErrorDetailsView'
 import { roterLokalePunkter, plassertBbox, kombinerBbox } from './geometri'
 import { synkroniserSekvens, byggFargePerBlokk, type SekvensKontekst } from './sekvens'
 import { byggMiniatyrSvg } from './miniatyr'
+import { hentMineTrader, byggPecTilEkteMap, type MinTrad } from './minTraadpalett'
 import { SekvensPanel } from './SekvensPanel'
 import { EksportPanel } from './EksportPanel'
 import { StingSimulator } from './StingSimulator'
@@ -26,6 +27,12 @@ import { buildFontData, layoutTekst, type FontData, type TextLayout } from './fo
 // som kunne drevet fra hverandre.
 export const RAMME_MM = 100
 const RAMME_HALV_TIENDEDEL_MM = (RAMME_MM / 2) * 10 // 500 — ±50 mm sentrert på origo
+
+// Rutenettet på lerretet (rene visningskonstanter, se rendring av <g> rutenett i
+// hovedkomponenten). Linjer ved hver 10 mm INNENFOR rammen (kantene selv tegnes allerede
+// av rammens rect); tall ved hver 10 mm LANGS kantene, 0–100 fra øvre venstre hjørne.
+const RUTENETT_LINJER = Array.from({ length: RAMME_MM / 10 - 1 }, (_, i) => (i + 1) * 10 - RAMME_MM / 2)
+const RUTENETT_TALL = Array.from({ length: RAMME_MM / 10 + 1 }, (_, i) => i * 10)
 
 function uid() {
   return Math.random().toString(36).slice(2, 10)
@@ -87,6 +94,14 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
   const [resolved, setResolved] = useState<Record<string, BroderiMotivData>>({})
   const [fetchErrors, setFetchErrors] = useState<Record<string, string>>({})
   const fetchingRef = useRef<Set<string>>(new Set())
+
+  // Brukerens egne broderitråder fra Lageret — hentet én gang ved åpning, ikke koblet
+  // til noen live-oppdatering (redigerer man en tråd i Lageret mens komposisjonen
+  // står åpen i en annen fane, må denne siden lastes på nytt for å se det, samme
+  // begrensning som resten av appens engangs-lastinger).
+  const [mineTrader, setMineTrader] = useState<MinTrad[]>([])
+  useEffect(() => { hentMineTrader().then(setMineTrader) }, [])
+  const pecTilEkte = useMemo(() => byggPecTilEkteMap(mineTrader), [mineTrader])
 
   const svgRef = useRef<SVGSVGElement>(null)
   const dragRef = useRef<{
@@ -352,7 +367,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
       // Miniatyren regnes ut HER, ved lagring — aldri når komposisjonslista bare vises. Bruker
       // resolved slik den står akkurat nå (motiver som ikke er tolket ferdig ennå mangler
       // rett og slett fra miniatyren, i stedet for å blokkere selve lagringen).
-      const miniatyrSvg = byggMiniatyrSvg(motiver, resolved, sekvens)
+      const miniatyrSvg = byggMiniatyrSvg(motiver, resolved, sekvens, pecTilEkte)
       const body = { data: { navn, motiver, sekvens, miniatyrSvg } }
       const res = id
         ? await fetch(`/api/broderi-komposisjon/${id}`, {
@@ -395,11 +410,11 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
   // lerretet under og miniatyren (byggMiniatyrSvg, ved lagring) leser fra, så alle flater er
   // enige om fargen på en kjøring. Rein utledning fra (sekvens, ctx); rører ikke roterteBlokker
   // sin egen useMemo i PlassertMotivGruppe, som fortsatt bare regner geometri.
-  const ctx: SekvensKontekst = useMemo(() => ({ motiver, resolved }), [motiver, resolved])
+  const ctx: SekvensKontekst = useMemo(() => ({ motiver, resolved, pecTilEkte }), [motiver, resolved, pecTilEkte])
   const fargePerBlokk = useMemo(() => byggFargePerBlokk(sekvens, ctx), [sekvens, ctx])
 
   return (
-    <div className="w-full max-w-3xl mx-auto px-4 sm:px-6 py-3 pb-24">
+    <div className="w-full max-w-3xl lg:max-w-6xl mx-auto px-4 sm:px-6 py-3 pb-24">
       <div className="flex items-center gap-3 mb-4">
         <button onClick={onBack} className="p-2 rounded-xl hover:bg-stone-100 text-stone-500 transition-colors">
           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -440,6 +455,11 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
         </div>
       )}
 
+      {/* To kolonner fra lg og opp: lerret + motivkontroller til venstre (sticky, så det
+         står stille mens sekvensen til høyre skrolles), sekvens/trådrekkefølge +
+         stingsimulator + eksport til høyre. Én kolonne som før under lg. */}
+      <div className="lg:grid lg:grid-cols-[26rem_1fr] lg:gap-6 lg:items-start">
+      <div className="lg:sticky lg:top-4 lg:self-start">
       <div className="bg-white rounded-2xl border border-stone-200 shadow-sm p-4 mb-4">
         <svg
           ref={svgRef}
@@ -453,6 +473,27 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
             x={-halvRamme} y={-halvRamme} width={RAMME_MM} height={RAMME_MM}
             fill="none" stroke="#C9A57A" strokeWidth={0.5} strokeDasharray="2 2"
           />
+          {/* Svakt 10 mm-rutenett med tall langs kantene, i SAMME konvensjon som X/Y-feltene
+             under (avstand fra rammens øvre venstre hjørne, 0–100) — ren visningshjelp, rører
+             aldri de lagrede koordinatene (som fortsatt er senter-baserte internt). En liten
+             sirkel+kryss ved (0,0) markerer det gamle senter-origo, til hjelp under overgangen. */}
+          <g className="pointer-events-none">
+            {RUTENETT_LINJER.map(g => (
+              <line key={`v${g}`} x1={g} y1={-halvRamme} x2={g} y2={halvRamme} stroke="#C9A57A" strokeWidth={0.15} opacity={0.35} />
+            ))}
+            {RUTENETT_LINJER.map(g => (
+              <line key={`h${g}`} x1={-halvRamme} y1={g} x2={halvRamme} y2={g} stroke="#C9A57A" strokeWidth={0.15} opacity={0.35} />
+            ))}
+            {RUTENETT_TALL.map(tall => (
+              <text key={`tx${tall}`} x={tall - halvRamme} y={-halvRamme - 1.5} fontSize={2.5} textAnchor="middle" fill="#B8A68C">{tall}</text>
+            ))}
+            {RUTENETT_TALL.map(tall => (
+              <text key={`ty${tall}`} x={-halvRamme - 1.5} y={tall - halvRamme} fontSize={2.5} textAnchor="end" dominantBaseline="middle" fill="#B8A68C">{tall}</text>
+            ))}
+            <circle cx={0} cy={0} r={0.8} fill="none" stroke="#C9A57A" strokeWidth={0.3} />
+            <line x1={-1.5} y1={0} x2={1.5} y2={0} stroke="#C9A57A" strokeWidth={0.3} />
+            <line x1={0} y1={-1.5} x2={0} y2={1.5} stroke="#C9A57A" strokeWidth={0.3} />
+          </g>
           {motiver.map(pm => {
             const data = resolved[motivKey(pm.embroideryId, pm.sizeId)]
             if (!data?.bbox) return null
@@ -497,26 +538,33 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
           </div>
           <div className="grid grid-cols-3 gap-3">
             <label className="block">
-              <span className="block text-[10px] text-stone-400 mb-1">X (mm)</span>
-              <input
-                type="number" step={0.1} value={valgtMotiv.posisjonXTiendedelMm / 10}
-                onChange={e => oppdaterValgt({ posisjonXTiendedelMm: Math.round(Number(e.target.value) * 10) })}
+              <span className="block text-[10px] text-stone-400 mb-1">X (mm, fra venstre)</span>
+              {/* Vist 0–100 fra rammens ØVRE VENSTRE hjørne (+RAMME_MM/2), ikke lagringens
+                 egen ±50 mm fra senter — se KRAV 6. Lagringen (posisjonXTiendedelMm) er
+                 fortsatt senter-basert i tiendedels mm, helt uendret; dette er bare en
+                 visnings-/innskrivingskonvertering ved selve feltet. */}
+              <TallFelt
+                step={0.1}
+                value={valgtMotiv.posisjonXTiendedelMm / 10 + RAMME_MM / 2}
+                onCommit={visX => oppdaterValgt({ posisjonXTiendedelMm: Math.round((visX - RAMME_MM / 2) * 10) })}
                 className="w-full px-2.5 py-1.5 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300"
               />
             </label>
             <label className="block">
-              <span className="block text-[10px] text-stone-400 mb-1">Y (mm)</span>
-              <input
-                type="number" step={0.1} value={valgtMotiv.posisjonYTiendedelMm / 10}
-                onChange={e => oppdaterValgt({ posisjonYTiendedelMm: Math.round(Number(e.target.value) * 10) })}
+              <span className="block text-[10px] text-stone-400 mb-1">Y (mm, fra toppen)</span>
+              <TallFelt
+                step={0.1}
+                value={valgtMotiv.posisjonYTiendedelMm / 10 + RAMME_MM / 2}
+                onCommit={visY => oppdaterValgt({ posisjonYTiendedelMm: Math.round((visY - RAMME_MM / 2) * 10) })}
                 className="w-full px-2.5 py-1.5 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300"
               />
             </label>
             <label className="block">
               <span className="block text-[10px] text-stone-400 mb-1">Rotasjon (°)</span>
-              <input
-                type="number" step={1} value={valgtMotiv.rotasjonGrader}
-                onChange={e => oppdaterValgt({ rotasjonGrader: Number(e.target.value) })}
+              <TallFelt
+                step={1}
+                value={valgtMotiv.rotasjonGrader}
+                onCommit={n => oppdaterValgt({ rotasjonGrader: n })}
                 className="w-full px-2.5 py-1.5 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300"
               />
             </label>
@@ -567,15 +615,19 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
           })}
         </ul>
       )}
+      </div>
 
+      <div className="mt-6 lg:mt-0 lg:min-w-0">
       {sekvens.length > 0 && (
-        <div className="mt-6">
+        <div className="mt-6 lg:mt-0">
           <h3 className="font-serif text-lg text-stone-700 mb-3">Sekvens</h3>
           <SekvensPanel
             sekvens={sekvens}
             onChange={handleSekvensChange}
             motiver={motiver}
             resolved={resolved}
+            pecTilEkte={pecTilEkte}
+            mineTrader={mineTrader}
             fokusKjoringId={fokusKjoringId}
             setFokusKjoringId={setFokusKjoringId}
             onHoverEndret={setHoverKjoringId}
@@ -590,7 +642,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
 
       {sekvens.length > 0 && (
         <div className="bg-white rounded-2xl border border-stone-200 shadow-sm p-4 mb-4 mt-4">
-          <StingSimulator sekvens={sekvens} motiver={motiver} resolved={resolved} halv={halv} />
+          <StingSimulator sekvens={sekvens} motiver={motiver} resolved={resolved} halv={halv} pecTilEkte={pecTilEkte} />
         </div>
       )}
 
@@ -599,6 +651,8 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
           <EksportPanel sekvens={sekvens} motiver={motiver} resolved={resolved} navn={navn} />
         </div>
       )}
+      </div>
+      </div>
 
       {showPicker && (
         <MotivPicker
@@ -609,6 +663,78 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
         />
       )}
     </div>
+  )
+}
+
+// ── Kontrollert tallfelt ─────────────────────────────────────────────────────────
+
+function formatTall(n: number): string {
+  // Number(...toFixed(2)) fjerner både flyttall-støy (17.30000000000001) og
+  // overflødige nuller (17.00 → 17) i samme slag.
+  return Number(n.toFixed(2)).toString()
+}
+
+function parseTall(tekst: string): number | null {
+  const normalisert = tekst.trim().replace(',', '.')
+  if (normalisert === '' || normalisert === '-') return null
+  const n = Number(normalisert)
+  return Number.isFinite(n) ? n : null
+}
+
+// Kontrollert tekstfelt for tall — <input type="number"> lar seg ikke skrive fritt i:
+// "-" kan ikke skrives manuelt (minus må klikkes fram med pilene), og feltet kan ikke
+// tømmes midlertidig (siste siffer byttes straks ut med "0" av nettleseren). Løsningen
+// er lokal tekst-state som får være midlertidig ugyldig ("", "-", "17,") mens brukeren
+// skriver; verdien tolkes og skrives til state FØRST når feltet mister fokus eller
+// Enter trykkes. Escape angrer til sist forpliktede verdi. Komma og punktum godtas
+// begge som desimalskilletegn. Piltastene justerer fortsatt ±step, med umiddelbar commit
+// (ingen grunn til å vente på blur for et eksplisitt tastetrykk).
+function TallFelt({ value, onCommit, step = 1, className }: {
+  value: number
+  onCommit: (n: number) => void
+  step?: number
+  className?: string
+}) {
+  const [tekst, setTekst] = useState(() => formatTall(value))
+  const redigererRef = useRef(false)
+
+  useEffect(() => {
+    if (!redigererRef.current) setTekst(formatTall(value))
+  }, [value])
+
+  function commit() {
+    redigererRef.current = false
+    const n = parseTall(tekst)
+    if (n === null) { setTekst(formatTall(value)); return }
+    onCommit(n)
+    setTekst(formatTall(n))
+  }
+
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      value={tekst}
+      onFocus={() => { redigererRef.current = true }}
+      onChange={e => setTekst(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => {
+        if (e.key === 'Enter') {
+          e.currentTarget.blur()
+        } else if (e.key === 'Escape') {
+          redigererRef.current = false
+          setTekst(formatTall(value))
+          e.currentTarget.blur()
+        } else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+          e.preventDefault()
+          const naa = parseTall(tekst) ?? value
+          const ny = e.key === 'ArrowUp' ? naa + step : naa - step
+          onCommit(ny)
+          setTekst(formatTall(ny))
+        }
+      }}
+      className={className}
+    />
   )
 }
 
@@ -1164,6 +1290,21 @@ function ValgtBunnlinje({ antall, onFjernValg, onLeggTilValgte }: {
   )
 }
 
+// Topp-nivå av samme grunn som ValgtBunnlinje over — brukes to steder i MotivPicker
+// (kategorier/kategori-headeren og bundle-innhold, se KRAV 8: filteret skal kunne slås
+// av/på UANSETT hvor i velgeren brukeren står, ikke bare på toppnivå), og trengte ingen
+// closures, bare rene props.
+function FilterPasserCheckbox({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label className="flex items-center gap-2 cursor-pointer">
+      <input type="checkbox" checked={checked}
+        onChange={e => onChange(e.target.checked)}
+        className="w-4 h-4 rounded accent-[#C9A57A]" />
+      <span className="text-sm text-stone-600">Bare motiver som passer (&lt;{RAMME_GRENSE_MM} mm)</span>
+    </label>
+  )
+}
+
 function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
   biblioteket: Embroidery[]
   onVelg: (embroideryId: string, sizeId: string, navn: string) => void
@@ -1177,7 +1318,10 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
 }) {
   const [view, setView] = useState<PickerView>({ type: 'kategorier' })
   const [search, setSearch] = useState('')
-  const [filterPaaRamme, setFilterPaaRamme] = useState(true)
+  // Standard AV (viser alt) — se KRAV 8: velgeren skal aldri skjule noe pga. størrelse
+  // med mindre brukeren selv har bedt om det. Filteret er fortsatt der for den som vil
+  // ha et ryddigere utvalg, bare ikke lenger påslått som standard.
+  const [filterPaaRamme, setFilterPaaRamme] = useState(false)
   const [bboxCache, setBboxCache] = useState<Map<string, BboxMm | null>>(new Map())
   const [cacheLastet, setCacheLastet] = useState(false)
   const [globalCounts, setGlobalCounts] = useState<{ passer: number; passerIkke: number } | null>(null)
@@ -1773,7 +1917,7 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
         </div>
         <div className="px-3 py-1.5">
           <span className={`text-xs ${stat === 'passer' ? 'text-stone-500' : stat === 'ikkeMalt' ? 'text-amber-600' : 'text-red-400'}`}>
-            {erFont ? 'Font' : stat === 'passer' ? `${antallPasser}/${vms.length} passer` : stat === 'ikkeMalt' ? 'Ikke målt' : 'For stor'}
+            {erFont ? 'Font' : stat === 'passer' ? `${antallPasser}/${vms.length} passer` : stat === 'ikkeMalt' ? 'Ikke målt' : 'Passer ikke i rammen'}
           </span>
         </div>
       </article>
@@ -1838,6 +1982,10 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
           <p className="text-sm text-stone-800 truncate leading-tight">{vm.navn}</p>
           <p className={`text-xs truncate mt-0.5 ${stat === 'passer' ? 'text-stone-400' : stat === 'ikkeMalt' ? 'text-amber-600' : 'text-red-400'}`}>
             {vm.sizes.length === 1 ? (maal ?? 'Ikke målt') : `${vm.sizes.length} størrelser${maal ? ` · ${maal}` : ''}`}
+            {/* Eksplisitt tekst, ikke bare rødfarget mål — se KRAV 8: ingenting skal
+               skjules pga. størrelse, bare merkes. Et tall alene ("45×89 mm") sier ikke
+               SELV at det er for stort uten at man kjenner rammegrensen utenat. */}
+            {stat === 'passerIkke' && ' · Passer ikke i rammen'}
           </p>
         </div>
       </article>
@@ -2020,6 +2168,9 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
             <>
               <Topptekst tittel={bundlerMap.get(view.bundleId)?.data.navn ?? ''}
                 onTilbake={() => setView(view.fraKat !== undefined ? { type: 'kategori', kat: view.fraKat } : { type: 'kategorier' })} />
+              <div className="px-5 py-3 border-b border-stone-100 flex-shrink-0">
+                <FilterPasserCheckbox checked={filterPaaRamme} onChange={setFilterPaaRamme} />
+              </div>
               <div className="overflow-y-auto flex-1 min-h-0 p-3">
                 {filtered.length === 0 ? (
                   <p className="text-sm text-stone-400 text-center py-12">Ingen motiver.</p>
@@ -2103,12 +2254,7 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
                   placeholder="Søk i hele biblioteket…"
                   className="w-full pl-9 pr-4 py-2 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300" />
               </div>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked={filterPaaRamme}
-                  onChange={e => setFilterPaaRamme(e.target.checked)}
-                  className="w-4 h-4 rounded accent-[#C9A57A]" />
-                <span className="text-sm text-stone-600">Bare motiver som passer (&lt;{RAMME_GRENSE_MM} mm)</span>
-              </label>
+              <FilterPasserCheckbox checked={filterPaaRamme} onChange={setFilterPaaRamme} />
             </div>
 
             <div className="overflow-y-auto flex-1 min-h-0">

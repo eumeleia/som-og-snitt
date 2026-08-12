@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { plassertPunkter } from './geometri'
 import { effektivFargeRaa, effektivTradfarge, finnFargekjoring, type SekvensKontekst } from './sekvens'
+import type { MinTrad } from './minTraadpalett'
 import type { BroderiMotivData, PlassertMotiv, SekvensElement } from './types'
 
 interface SimSubPath {
@@ -58,13 +59,14 @@ function byggSegmenter(sekvens: SekvensElement[], ctx: SekvensKontekst): SimSegm
 const CANVAS_PX = 480
 const STING_PER_SEK = 2000
 
-export function StingSimulator({ sekvens, motiver, resolved, halv }: {
+export function StingSimulator({ sekvens, motiver, resolved, halv, pecTilEkte }: {
   sekvens: SekvensElement[]
   motiver: PlassertMotiv[]
   resolved: Record<string, BroderiMotivData>
   halv: number
+  pecTilEkte?: Map<string, MinTrad>
 }) {
-  const ctx: SekvensKontekst = useMemo(() => ({ motiver, resolved }), [motiver, resolved])
+  const ctx: SekvensKontekst = useMemo(() => ({ motiver, resolved, pecTilEkte }), [motiver, resolved, pecTilEkte])
 
   const segments = useMemo(() => byggSegmenter(sekvens, ctx), [sekvens, ctx])
 

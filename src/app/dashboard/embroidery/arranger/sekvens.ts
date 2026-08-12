@@ -2,6 +2,7 @@ import {
   plassertUnderBbox, kombinerBbox, bokserOverlapper, plassertPunkter, interpolerSting, rasterCeller, cellerKolliderer,
 } from './geometri'
 import { snappTilPalett } from './broderPalett'
+import type { MinTrad } from './minTraadpalett'
 import type {
   BroderiBbox, BroderiMotivData, PlassertMotiv, SekvensElement, SekvensKjoring,
 } from './types'
@@ -13,6 +14,10 @@ export function motivKey(embroideryId: string, sizeId: string): string {
 export interface SekvensKontekst {
   motiver: PlassertMotiv[]
   resolved: Record<string, BroderiMotivData>
+  // PEC-hex → brukerens egen tråd (fra Lageret) — se minTraadpalett.ts. Valgfri: uten
+  // den (eller når ingen av brukerens tråder treffer akkurat den PEC-fargen) faller
+  // effektivTradfarge tilbake til Brothers PEC-fasit, akkurat som før dette feltet fantes.
+  pecTilEkte?: Map<string, MinTrad>
 }
 
 function uid() {
@@ -47,14 +52,33 @@ export function effektivFargeRaa(ctx: SekvensKontekst, el: SekvensKjoring): stri
   return finnFargekjoring(ctx, el)?.kjoring.farge_hex
 }
 
-// Den effektive TRÅDFARGEN — effektivFargeRaa snappet til nærmeste farge i Brothers
-// 64-fargers palett (snappTilPalett), altså den samme fargen PesWriter kommer til å
-// bruke når fila faktisk bygges. Dette er fargen "sant" i appens forstand: to kjøringer
-// som snapper likt ER samme tråd, selv om de rå hex-verdiene er ulike.
-export function effektivTradfarge(ctx: SekvensKontekst, el: SekvensKjoring): { hex: string; navn: string } | undefined {
+export interface Tradfarge { hex: string; navn: string; ekte: boolean; pecHex: string; pecNavn: string }
+
+// Snapper en rå hex til Brothers PEC-fasit, og erstatter den med brukerens EGEN tråd
+// (ctx.pecTilEkte, se minTraadpalett.ts) når en finnes for akkurat den PEC-fargen.
+// pecHex/pecNavn beholder alltid PEC-fasiten ved siden av, uansett — det er DEN fargen
+// PesWriter faktisk bruker, og UI-en trenger den for å kunne vise «syr som X i fila» når
+// den ekte visningsfargen avviker. Uten en treffende egen tråd er hex/navn og
+// pecHex/pecNavn identiske.
+function ekteEllerPec(ctx: SekvensKontekst, raaHex: string): Tradfarge {
+  const pec = snappTilPalett(raaHex)
+  const ekteTrad = ctx.pecTilEkte?.get(pec.hex)
+  if (ekteTrad) {
+    return { hex: ekteTrad.hex, navn: ekteTrad.navn, ekte: true, pecHex: pec.hex, pecNavn: pec.navn }
+  }
+  return { hex: pec.hex, navn: pec.navn, ekte: false, pecHex: pec.hex, pecNavn: pec.navn }
+}
+
+// Den effektive TRÅDFARGEN. Kjernen er fortsatt effektivFargeRaa snappet til nærmeste
+// farge i Brothers 64-fargers palett — det er fortsatt den fargen PesWriter kommer til å
+// bruke når fila faktisk bygges, og fortsatt fasiten for hvilke kjøringer som ER samme
+// tråd (to kjøringer som snapper likt, er samme tråd, selv om de rå hex-verdiene er
+// ulike). Det NYE er at selve VISNINGEN kan erstattes med brukerens egen tråd — se
+// ekteEllerPec.
+export function effektivTradfarge(ctx: SekvensKontekst, el: SekvensKjoring): Tradfarge | undefined {
   const raa = effektivFargeRaa(ctx, el)
   if (!raa) return undefined
-  return snappTilPalett(raa)
+  return ekteEllerPec(ctx, raa)
 }
 
 // Snappet trådfarge PER STINGBLOKK per plassert motiv, for ALLE blokker — ikke bare de
@@ -81,7 +105,7 @@ export function byggFargePerBlokk(
   for (const pm of ctx.motiver) {
     const data = ctx.resolved[motivKey(pm.embroideryId, pm.sizeId)]
     if (!data) continue
-    ut[pm.id] = data.stingblokker.map(b => snappTilPalett(b.farge_hex).hex)
+    ut[pm.id] = data.stingblokker.map(b => ekteEllerPec(ctx, b.farge_hex).hex)
   }
   for (const el of sekvens) {
     if (el.type !== 'kjoring') continue

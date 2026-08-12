@@ -7,6 +7,7 @@ import { useState, useEffect, useCallback, useRef, type ReactNode, type ChangeEv
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { useHistoryVisning } from '../_shared/useHistoryVisning'
 import { deepClone } from '@/lib/deep-clone'
 import { describeError, type ErrorDetails } from '@/lib/error-details'
 import { ErrorDetailsView } from '@/components/ErrorDetailsView'
@@ -2215,6 +2216,8 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
+type RecipeVisning = { v: 'liste' } | { v: 'item'; id: string } | { v: 'ny' }
+
 export default function RecipesPage() {
   const [recipes, setRecipes]               = useState<Recipe[]>([])
   const [loading, setLoading]               = useState(true)
@@ -2287,7 +2290,36 @@ export default function RecipesPage() {
     }
   }, [])
 
+  const { push: pushVisning, replace: replaceVisning, closeToBase } = useHistoryVisning<RecipeVisning>(
+    'recipe', { v: 'liste' },
+    visning => {
+      if (visning.v === 'liste') { setShowDetail(false); setCurrentRecipe(null); setShowNewModal(false); load() }
+      else if (visning.v === 'ny') { setShowNewModal(true); setShowDetail(false) }
+      else {
+        const funnet = recipes.find(r => r.id === visning.id)
+        setCurrentRecipe(funnet ?? null)
+        setShowDetail(!!funnet)
+        setShowNewModal(false)
+      }
+    },
+  )
+
   useEffect(() => { load() }, [load])
+
+  // Åpne oppskrift viderekoblet fra en annen side (f.eks. "Velg oppskrift"-koblingen på
+  // et stoff i Lager) — samme mønster som openProjectId i projects/page.tsx, inkludert
+  // grunnen til at det er en EGEN effekt og ikke inni load(): den må kalle pushVisning,
+  // som selv ikke kan deklareres før load (onNavigate-callbacken over trenger load).
+  useEffect(() => {
+    const openId = typeof window !== 'undefined' ? sessionStorage.getItem('openRecipeId') : null
+    if (!openId) return
+    const r = recipes.find(x => x.id === openId)
+    if (!r) return
+    sessionStorage.removeItem('openRecipeId')
+    setCurrentRecipe(r)
+    setShowDetail(true)
+    pushVisning({ v: 'item', id: r.id })
+  }, [recipes, pushVisning])
 
   async function createRecipe(data: RecipeData) {
     const existingOrders = recipes.map(r => r.data.sortOrder).filter((o): o is number => o !== undefined)
@@ -2300,6 +2332,7 @@ export default function RecipesPage() {
       setCurrentRecipe(recipe)
       setShowNewModal(false)
       setShowDetail(true)
+      replaceVisning({ v: 'item', id: recipe.id })
     }
   }
 
@@ -2309,10 +2342,12 @@ export default function RecipesPage() {
     setDeleteId(null)
     setShowDetail(false)
     setCurrentRecipe(null)
+    replaceVisning({ v: 'liste' })
   }
 
-  function openEdit(r: Recipe) { setCurrentRecipe(r); setShowDetail(true) }
-  function handleBack()        { setShowDetail(false); setCurrentRecipe(null); load() }
+  function openEdit(r: Recipe) { setCurrentRecipe(r); setShowDetail(true); pushVisning({ v: 'item', id: r.id }) }
+  function openNew()           { setShowNewModal(true); pushVisning({ v: 'ny' }) }
+  const handleBack = closeToBase
 
   const allCategories = Array.from(
     new Set(recipes.map(r => r.data.category).filter(Boolean))
@@ -2555,7 +2590,7 @@ export default function RecipesPage() {
             {recipes.length === 0 && (
               <>
                 <p className="text-sm text-stone-400 mt-2">Last opp din første!</p>
-                <button onClick={() => setShowNewModal(true)}
+                <button onClick={() => openNew()}
                   className="mt-5 px-6 py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors font-medium">
                   Legg til oppskrift
                 </button>
@@ -2582,7 +2617,7 @@ export default function RecipesPage() {
       {showNewModal && (
         <NewRecipeModal
           onCreate={createRecipe}
-          onClose={() => setShowNewModal(false)}
+          onClose={closeToBase}
         />
       )}
 
@@ -2606,7 +2641,7 @@ export default function RecipesPage() {
 
       {/* FAB */}
       <button
-        onClick={() => setShowNewModal(true)}
+        onClick={() => openNew()}
         className="fixed bottom-6 right-6 w-14 h-14 bg-[#C9A57A] text-white rounded-full shadow-lg hover:bg-[#b8925f] transition-all flex items-center justify-center cursor-pointer z-30"
         aria-label="Ny oppskrift"
       >

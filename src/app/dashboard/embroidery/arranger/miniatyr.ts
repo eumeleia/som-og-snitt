@@ -1,5 +1,6 @@
 import { plassertPunkter, plassertBbox, kombinerBbox } from './geometri'
 import { motivKey, byggFargePerBlokk, type SekvensKontekst } from './sekvens'
+import type { MinTrad } from './minTraadpalett'
 import type { BroderiBbox, BroderiMotivData, PlassertMotiv, SekvensElement } from './types'
 
 const RAMME_MM = 100
@@ -39,8 +40,9 @@ export function byggMiniatyrSvg(
   motiver: PlassertMotiv[],
   resolved: Record<string, BroderiMotivData>,
   sekvens: SekvensElement[],
+  pecTilEkte?: Map<string, MinTrad>,
 ): string {
-  const ctx: SekvensKontekst = { motiver, resolved }
+  const ctx: SekvensKontekst = { motiver, resolved, pecTilEkte }
   const fargePerBlokk = byggFargePerBlokk(sekvens, ctx)
   const plasserteBbokser: BroderiBbox[] = []
   const alleBlokker: Array<{ farge_hex: string; punkter: [number, number][] }> = []

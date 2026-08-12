@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { useHistoryVisning } from '../_shared/useHistoryVisning'
 import { supabase } from '@/lib/supabase'
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -437,6 +438,8 @@ function TechniqueDetail({ technique, onBack, onSaved, onDelete }: {
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
+type TechVisning = { v: 'liste' } | { v: 'item'; id: string } | { v: 'ny' }
+
 export default function TechniquesPage() {
   const [items,        setItems]        = useState<Technique[]>([])
   const [loading,      setLoading]      = useState(true)
@@ -488,6 +491,20 @@ export default function TechniquesPage() {
     }
   }, [])
 
+  const { push: pushVisning, replace: replaceVisning, closeToBase } = useHistoryVisning<TechVisning>(
+    'tech', { v: 'liste' },
+    visning => {
+      if (visning.v === 'liste') { setShowDetail(false); setCurrentItem(null); setShowNew(false); load() }
+      else if (visning.v === 'ny') { setShowNew(true); setShowDetail(false) }
+      else {
+        const funnet = items.find(i => i.id === visning.id)
+        setCurrentItem(funnet ?? null)
+        setShowDetail(!!funnet)
+        setShowNew(false)
+      }
+    },
+  )
+
   useEffect(() => { load() }, [load])
 
   async function createItem(data: TechniqueData) {
@@ -499,6 +516,7 @@ export default function TechniquesPage() {
       setCurrentItem(item)
       setShowNew(false)
       setShowDetail(true)
+      replaceVisning({ v: 'item', id: item.id })
     }
   }
 
@@ -508,6 +526,7 @@ export default function TechniquesPage() {
     setDeleteId(null)
     setShowDetail(false)
     setCurrentItem(null)
+    replaceVisning({ v: 'liste' })
   }
 
   const filtered = items
@@ -541,7 +560,7 @@ export default function TechniquesPage() {
       <>
         <TechniqueDetail
           technique={currentItem}
-          onBack={() => { setShowDetail(false); setCurrentItem(null); load() }}
+          onBack={closeToBase}
           onSaved={load}
           onDelete={() => setDeleteId(currentItem.id)}
         />
@@ -689,7 +708,7 @@ export default function TechniquesPage() {
               {items.length === 0 ? 'Ingen teknikker ennå.' : 'Ingen treff'}
             </p>
             {items.length === 0 && (
-              <button onClick={() => setShowNew(true)}
+              <button onClick={() => { setShowNew(true); pushVisning({ v: 'ny' }) }}
                 className="mt-5 px-6 py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors font-medium">
                 Legg til første teknikk
               </button>
@@ -699,7 +718,7 @@ export default function TechniquesPage() {
           <div className="w-full grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-5 overflow-hidden">
             {filtered.map(item => (
               <TechniqueCard key={item.id} technique={item}
-                onEdit={() => { setCurrentItem(item); setShowDetail(true) }}
+                onEdit={() => { setCurrentItem(item); setShowDetail(true); pushVisning({ v: 'item', id: item.id }) }}
                 onDelete={() => setDeleteId(item.id)} />
             ))}
           </div>
@@ -707,7 +726,7 @@ export default function TechniquesPage() {
       </main>
 
       {showNew && (
-        <NewTechniqueModal onCreate={createItem} onClose={() => setShowNew(false)} />
+        <NewTechniqueModal onCreate={createItem} onClose={closeToBase} />
       )}
 
       {deleteId && !showDetail && (
@@ -719,7 +738,7 @@ export default function TechniquesPage() {
 
       {/* FAB */}
       <button
-        onClick={() => setShowNew(true)}
+        onClick={() => { setShowNew(true); pushVisning({ v: 'ny' }) }}
         className="fixed bottom-6 right-6 w-14 h-14 bg-[#C9A57A] text-white rounded-full shadow-lg hover:bg-[#b8925f] transition-all flex items-center justify-center cursor-pointer z-30"
         aria-label="Ny teknikk"
       >

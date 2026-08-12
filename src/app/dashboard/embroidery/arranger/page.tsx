@@ -7,26 +7,43 @@ import { supabase } from '@/lib/supabase'
 import { hentAllePaginert } from '@/lib/supabasePaginering'
 import { describeError, type ErrorDetails } from '@/lib/error-details'
 import { ErrorDetailsView } from '@/components/ErrorDetailsView'
-import { KomposisjonEditor } from './KomposisjonEditor'
-import { EmbroideryCard } from '../page'
+import { KomposisjonEditor, byggVirtuelleMotiver } from './KomposisjonEditor'
+import { EmbroideryCard, KATEGORIER } from '../page'
 import {
   type Embroidery, type BroderiMotivData, type BroderiKomposisjon,
+  type EmbroideryBundle, type VirtuelMotiv,
+  getBundleCoverImage, byggKategoriGrupper,
 } from './types'
+import { useHistoryVisning } from '../../_shared/useHistoryVisning'
 
 const RAMME_MM = 100
 const ADVARSEL_GRENSE_MM = 98
 
 type Tab = 'bibliotek' | 'komposisjoner'
 
+type ArrVisning =
+  | { v: 'liste' }
+  | { v: 'motiv'; id: string }
+  | { v: 'komposisjon'; id: string }
+  | { v: 'ny' }
+
 // ── Side ───────────────────────────────────────────────────────────────────────
 
 export default function ArrangerPage() {
   const [tab, setTab] = useState<Tab>('bibliotek')
   const [motifs, setMotifs] = useState<Embroidery[]>([])
+  const [bundlerMap, setBundlerMap] = useState<Map<string, EmbroideryBundle>>(new Map())
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<Embroidery | null>(null)
+  // Lokal (ikke historikk-sporet) navigasjon INNI biblioteket — kategori- og
+  // bundle-nivåene er mellomstopp på vei mot et motiv, ikke egne "sider" brukeren
+  // trenger å komme rett tilbake til med nettleserens tilbakeknapp. Selve motivvisningen
+  // (MotivVisning under) ER historikk-sporet via pushVisning, se useHistoryVisning over.
+  const [libView, setLibView] = useState<
+    { type: 'kategorier' } | { type: 'kategori'; kat: string | null } | { type: 'bundle'; bundleId: string }
+  >({ type: 'kategorier' })
 
   const [komposisjoner, setKomposisjoner] = useState<BroderiKomposisjon[]>([])
   const [kompLoading, setKompLoading] = useState(true)
@@ -43,18 +60,34 @@ export default function ArrangerPage() {
     // samme transaksjon (f.eks. en zip-opplasting med mange filer) kan dele eksakt samme
     // created_at, siden Postgres sin now() returnerer transaksjonstidspunktet, ikke kalletidspunktet.
     // id som sekundær sortering bryter alle slike bånd deterministisk uten å endre visningsrekkefølgen.
-    const { data, error } = await hentAllePaginert<Embroidery>(
-      (fra, til) => supabase.from('embroidery')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .order('id', { ascending: true })
-        .range(fra, til),
-      ['created_at', 'id'],
-    )
-    if (error) {
-      setLoadError(error.message)
+    // Bundlene hentes i samme slengen (samme mønster som embroidery/page.tsx og
+    // MotivPicker) — biblioteket her skal grupperes akkurat som resten av appen, se
+    // byggVirtuelleMotiver/byggKategoriGrupper under.
+    const [embRes, bundleRes] = await Promise.all([
+      hentAllePaginert<Embroidery>(
+        (fra, til) => supabase.from('embroidery')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: true })
+          .range(fra, til),
+        ['created_at', 'id'],
+      ),
+      hentAllePaginert<EmbroideryBundle>(
+        (fra, til) => supabase.from('embroidery_bundles')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: true })
+          .range(fra, til),
+        ['created_at', 'id'],
+      ),
+    ])
+    if (embRes.error) {
+      setLoadError(embRes.error.message)
     } else {
-      setMotifs(data)
+      setMotifs(embRes.data)
+      if (!bundleRes.error) {
+        setBundlerMap(new Map(bundleRes.data.map(b => [b.id, b])))
+      }
     }
     setLoading(false)
   }, [])
@@ -81,6 +114,27 @@ export default function ArrangerPage() {
     }
     setKompLoading(false)
   }, [])
+
+  const { push: pushVisning, closeToBase } = useHistoryVisning<ArrVisning>(
+    'arr', { v: 'liste' },
+    visning => {
+      if (visning.v === 'liste') {
+        setSelected(null); setAktivKomposisjon(null); setNyKomposisjon(false)
+        loadKomposisjoner()
+      } else if (visning.v === 'motiv') {
+        const funnet = motifs.find(m => m.id === visning.id)
+        setSelected(funnet ?? null)
+        setAktivKomposisjon(null); setNyKomposisjon(false)
+      } else if (visning.v === 'komposisjon') {
+        const funnet = komposisjoner.find(k => k.id === visning.id)
+        setAktivKomposisjon(funnet ?? null)
+        setSelected(null); setNyKomposisjon(false)
+      } else {
+        setNyKomposisjon(true)
+        setSelected(null); setAktivKomposisjon(null)
+      }
+    },
+  )
 
   useEffect(() => {
     loadKomposisjoner()
@@ -115,8 +169,35 @@ export default function ArrangerPage() {
     return motifs.filter(m => m.data.navn?.toLowerCase().includes(q))
   }, [motifs, search])
 
+  // Samme grupperingslogikk (identitet, font-gjenkjenning, kategoriarv fra bundle) som
+  // MotivPicker i KomposisjonEditor bruker når et motiv skal velges INN i en komposisjon
+  // — gjenbrukt her fremfor gjenoppfunnet, siden det er nettopp denne logikken (ikke
+  // selve visningen, som er en annen interaksjon: bla/se, ikke velg/plasser) som er delt.
+  const virtuelleMotiver = useMemo(
+    () => byggVirtuelleMotiver(motifs, bundlerMap),
+    [motifs, bundlerMap],
+  )
+  const kategoriGrupper = useMemo(
+    () => byggKategoriGrupper(virtuelleMotiver, KATEGORIER),
+    [virtuelleMotiver],
+  )
+
+  // Åpner MotivVisning for det motivet en VM (evt. et bundle-medlem) faktisk peker på.
+  // For font-grupperte VM-er (ett tegn i flere tommestørrelser, ofte fra FLERE
+  // embroidery-rader) finnes det ingen enkelt Embroidery-rad som dekker alle
+  // størrelsene — vi åpner da raden bak FØRSTE størrelse. MotivVisning viser uansett
+  // bare én rad med dens egne størrelser (samme visning som å åpne raden direkte fra
+  // et flatt søk), så dette er en bevisst forenkling, ikke en feil forsøkt skjult.
+  function apneVM(vm: VirtuelMotiv) {
+    const forsteStorrelse = vm.sizes[0]
+    const rad = forsteStorrelse ? motifs.find(m => m.id === forsteStorrelse.embroideryId) : undefined
+    if (!rad) return
+    setSelected(rad)
+    pushVisning({ v: 'motiv', id: rad.id })
+  }
+
   if (selected) {
-    return <MotivVisning motiv={selected} onBack={() => setSelected(null)} />
+    return <MotivVisning motiv={selected} onBack={closeToBase} />
   }
 
   if (aktivKomposisjon || nyKomposisjon) {
@@ -124,11 +205,7 @@ export default function ArrangerPage() {
       <KomposisjonEditor
         komposisjon={aktivKomposisjon}
         biblioteket={motifs}
-        onBack={() => {
-          setAktivKomposisjon(null)
-          setNyKomposisjon(false)
-          loadKomposisjoner()
-        }}
+        onBack={closeToBase}
       />
     )
   }
@@ -176,7 +253,7 @@ export default function ArrangerPage() {
             <input
               type="search"
               value={search}
-              onChange={e => setSearch(e.target.value)}
+              onChange={e => { setSearch(e.target.value); setLibView({ type: 'kategorier' }) }}
               placeholder="Søk i biblioteket…"
               className="w-full pl-9 pr-4 py-2 border border-stone-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300 shadow-sm"
             />
@@ -188,27 +265,52 @@ export default function ArrangerPage() {
             </div>
           ) : loadError ? (
             <p className="text-sm text-red-500 text-center py-12">{loadError}</p>
-          ) : filtered.length === 0 ? (
+          ) : motifs.length === 0 ? (
             <p className="text-sm text-stone-400 text-center py-12">
-              {motifs.length === 0 ? (
-                <>Ingen motiver i biblioteket ennå. Last opp under{' '}
-                  <a href="/dashboard/embroidery" className="text-[#8B6340] underline">Broderi</a>.</>
-              ) : 'Ingen treff'}
+              Ingen motiver i biblioteket ennå. Last opp under{' '}
+              <a href="/dashboard/embroidery" className="text-[#8B6340] underline">Broderi</a>.
             </p>
-          ) : (
-            // Samme kortkomponent og rutenett som hovedbiblioteket (/dashboard/embroidery) —
-            // ikke en egen, lignende kortstil bygget for arrangeringssiden alene.
+          ) : search.trim() ? (
+            // Søk går på tvers av kategorier/bundles og viser flate treff — samme
+            // kortkomponent og rutenett som hovedbiblioteket (/dashboard/embroidery).
+            filtered.length === 0 ? (
+              <p className="text-sm text-stone-400 text-center py-12">Ingen treff</p>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-5">
+                {filtered.map(m => (
+                  <EmbroideryCard key={m.id} item={m} onEdit={() => { setSelected(m); pushVisning({ v: 'motiv', id: m.id }) }} />
+                ))}
+              </div>
+            )
+          ) : libView.type === 'kategorier' ? (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-5">
-              {filtered.map(m => (
-                <EmbroideryCard key={m.id} item={m} onEdit={() => setSelected(m)} />
+              {kategoriGrupper.map(({ kat, vms }) => (
+                <KategoriTile key={kat ?? '(uten)'} kat={kat} vms={vms} bundlerMap={bundlerMap}
+                  onClick={() => setLibView({ type: 'kategori', kat })} />
               ))}
             </div>
+          ) : libView.type === 'kategori' ? (
+            <KategoriInnhold
+              kat={libView.kat}
+              vms={kategoriGrupper.find(g => g.kat === libView.kat)?.vms ?? []}
+              bundlerMap={bundlerMap}
+              onBack={() => setLibView({ type: 'kategorier' })}
+              onApneBundle={bundleId => setLibView({ type: 'bundle', bundleId })}
+              onApneVM={apneVM}
+            />
+          ) : (
+            <BundleInnhold
+              bundle={bundlerMap.get(libView.bundleId)}
+              vms={virtuelleMotiver.filter(vm => vm.bundleId === libView.bundleId)}
+              onBack={() => setLibView({ type: 'kategorier' })}
+              onApneVM={apneVM}
+            />
           )}
         </>
       ) : (
         <>
           <button
-            onClick={() => setNyKomposisjon(true)}
+            onClick={() => { setNyKomposisjon(true); pushVisning({ v: 'ny' }) }}
             className="w-full mb-5 py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors"
           >
             + Ny komposisjon
@@ -226,7 +328,7 @@ export default function ArrangerPage() {
             <ul className="divide-y divide-stone-100 bg-white rounded-2xl border border-stone-200 shadow-sm overflow-hidden">
               {komposisjoner.map(k => (
                 <li key={k.id} className="flex items-center gap-3 p-3 hover:bg-stone-50 transition-colors">
-                  <button onClick={() => setAktivKomposisjon(k)} className="flex items-center gap-3 flex-1 min-w-0 text-left">
+                  <button onClick={() => { setAktivKomposisjon(k); pushVisning({ v: 'komposisjon', id: k.id }) }} className="flex items-center gap-3 flex-1 min-w-0 text-left">
                     <div className="w-12 h-12 rounded-lg overflow-hidden bg-stone-100 flex-shrink-0 flex items-center justify-center">
                       {k.data.miniatyrSvg ? (
                         // eslint-disable-next-line @next/next/no-img-element
@@ -292,6 +394,153 @@ export default function ArrangerPage() {
             </ul>
           )}
         </>
+      )}
+    </div>
+  )
+}
+
+// ── Bibliotek: kategorier og bundles ────────────────────────────────────────────
+
+// Ett representativt bilde er nok her (ikke kategoriData sin 4-bilders collage i
+// MotivPicker) — denne flisen er bare en inngang til kategorien, ikke et forsøk på å
+// vise alt den inneholder. Ekte forsidebilde foretrekkes over miniatyr_svg, av samme
+// grunn og med samme regel som MotivKort/kategoriflisene i MotivPicker (KomposisjonEditor.tsx):
+// dette er gjenkjenning, ikke stingdetaljer.
+function kategoriThumbnail(vms: VirtuelMotiv[], bundlerMap: Map<string, EmbroideryBundle>): string | null {
+  for (const vm of vms) {
+    if (vm.bundleId) {
+      const bundle = bundlerMap.get(vm.bundleId)
+      if (bundle) return getBundleCoverImage(bundle.data)
+    }
+  }
+  for (const vm of vms) {
+    if (vm.coverImage) return vm.coverImage
+  }
+  return null
+}
+
+function BiblioTile({ bilde, tittel, undertekst, onClick }: {
+  bilde: string | null
+  tittel: string
+  undertekst?: string
+  onClick: () => void
+}) {
+  return (
+    <article
+      onClick={onClick}
+      className="group bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-all cursor-pointer overflow-hidden flex flex-col relative min-w-0"
+    >
+      <div className="relative aspect-[5/4] overflow-hidden bg-stone-50">
+        {bilde ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={bilde} alt={tittel} className="w-full h-full object-contain" />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <svg className="w-10 h-10 text-stone-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1}
+                d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+          </div>
+        )}
+        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/50 to-transparent px-3 py-2.5">
+          <h3 className="font-serif text-sm font-semibold text-white leading-tight truncate">{tittel}</h3>
+          {undertekst && <p className="text-xs text-white/80 truncate">{undertekst}</p>}
+        </div>
+      </div>
+    </article>
+  )
+}
+
+function KategoriTile({ kat, vms, bundlerMap, onClick }: {
+  kat: string | null; vms: VirtuelMotiv[]; bundlerMap: Map<string, EmbroideryBundle>; onClick: () => void
+}) {
+  return (
+    <BiblioTile
+      bilde={kategoriThumbnail(vms, bundlerMap)}
+      tittel={kat ?? 'Uten kategori'}
+      undertekst={`${vms.length} motiv${vms.length === 1 ? '' : 'er'}`}
+      onClick={onClick}
+    />
+  )
+}
+
+function TilbakeKnapp({ onClick, tittel }: { onClick: () => void; tittel: string }) {
+  return (
+    <div className="flex items-center gap-3 mb-5">
+      <button onClick={onClick} className="p-2 rounded-xl hover:bg-stone-100 text-stone-500 transition-colors">
+        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 19l-7-7 7-7" />
+        </svg>
+      </button>
+      <h2 className="font-serif text-xl text-stone-700 truncate flex-1 min-w-0">{tittel}</h2>
+    </div>
+  )
+}
+
+// Innholdet i én kategori: bundles i kategorien vises som egne fliser (klikk åpner
+// bundle-innhold), løse motiver (uten bundle) vises direkte som motivfliser.
+function KategoriInnhold({ kat, vms, bundlerMap, onBack, onApneBundle, onApneVM }: {
+  kat: string | null
+  vms: VirtuelMotiv[]
+  bundlerMap: Map<string, EmbroideryBundle>
+  onBack: () => void
+  onApneBundle: (bundleId: string) => void
+  onApneVM: (vm: VirtuelMotiv) => void
+}) {
+  const bundleIder = Array.from(new Set(vms.filter(vm => vm.bundleId).map(vm => vm.bundleId!)))
+  const løse = vms.filter(vm => !vm.bundleId)
+
+  return (
+    <div>
+      <TilbakeKnapp onClick={onBack} tittel={kat ?? 'Uten kategori'} />
+      {bundleIder.length === 0 && løse.length === 0 ? (
+        <p className="text-sm text-stone-400 text-center py-12">Ingen motiver i denne kategorien.</p>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-5">
+          {bundleIder.map(bid => {
+            const bundle = bundlerMap.get(bid)
+            const antall = vms.filter(vm => vm.bundleId === bid).length
+            return (
+              <BiblioTile
+                key={bid}
+                bilde={bundle ? getBundleCoverImage(bundle.data) : null}
+                tittel={bundle?.data.navn || 'Uten navn'}
+                undertekst={`Bundle · ${antall} motiv${antall === 1 ? '' : 'er'}`}
+                onClick={() => onApneBundle(bid)}
+              />
+            )
+          })}
+          {løse.map(vm => (
+            <BiblioTile
+              key={vm.key}
+              bilde={vm.coverImage || null}
+              tittel={vm.navn}
+              onClick={() => onApneVM(vm)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function BundleInnhold({ bundle, vms, onBack, onApneVM }: {
+  bundle: EmbroideryBundle | undefined
+  vms: VirtuelMotiv[]
+  onBack: () => void
+  onApneVM: (vm: VirtuelMotiv) => void
+}) {
+  return (
+    <div>
+      <TilbakeKnapp onClick={onBack} tittel={bundle?.data.navn || 'Uten navn'} />
+      {vms.length === 0 ? (
+        <p className="text-sm text-stone-400 text-center py-12">Fant ingen motiver i denne bundlen.</p>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-5">
+          {vms.map(vm => (
+            <BiblioTile key={vm.key} bilde={vm.coverImage || null} tittel={vm.navn} onClick={() => onApneVM(vm)} />
+          ))}
+        </div>
       )}
     </div>
   )

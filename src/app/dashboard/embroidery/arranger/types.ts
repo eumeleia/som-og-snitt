@@ -182,3 +182,38 @@ export interface VirtuelMotiv {
   karakter?: import('./tomme').Karakter
   sizes: VirtuelStorrelse[]
 }
+
+export interface KategoriGruppe {
+  kat: string | null   // null = "Uten kategori"
+  vms: VirtuelMotiv[]
+}
+
+// Delt av MotivPicker (KomposisjonEditor.tsx) og arranger sitt Bibliotek-fane
+// (arranger/page.tsx) — selve kategori-grupperingen av allerede byggede virtuelle
+// motiver (byggVirtuelleMotiver), IKKE en full kopi av MotivPicker sin visning (som i
+// tillegg har "passer i ramme"-telling, flervalg og parse-fremgang — konsepter som
+// bare gir mening der motiver faktisk skal PLASSERES i en komposisjon, ikke ved ren
+// nettlesing av biblioteket). Et motiv med flere kategorier dukker opp i HVER av dem —
+// samme regel begge steder, ikke en bug. `kategoriRekkefolge` er den kjente
+// KATEGORIER-rekkefølgen (embroidery/page.tsx); ukjente/brukerlagte kategorier
+// kommer etter, "Uten kategori" sist.
+export function byggKategoriGrupper(vms: VirtuelMotiv[], kategoriRekkefolge: string[]): KategoriGruppe[] {
+  const katToVms = new Map<string | null, VirtuelMotiv[]>()
+  for (const vm of vms) {
+    const kats = vm.kats.length > 0 ? vm.kats : [null]
+    for (const kat of kats) {
+      const arr = katToVms.get(kat) ?? []
+      arr.push(vm)
+      katToVms.set(kat, arr)
+    }
+  }
+  const alleKats: Array<string | null> = []
+  for (const k of kategoriRekkefolge) {
+    if (katToVms.has(k)) alleKats.push(k)
+  }
+  for (const k of katToVms.keys()) {
+    if (k !== null && !alleKats.includes(k)) alleKats.push(k)
+  }
+  if (katToVms.has(null)) alleKats.push(null)
+  return alleKats.map(kat => ({ kat, vms: katToVms.get(kat) ?? [] }))
+}
