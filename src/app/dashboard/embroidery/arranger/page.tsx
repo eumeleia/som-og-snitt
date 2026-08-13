@@ -27,6 +27,10 @@ type ArrVisning =
   | { v: 'motiv'; id: string }
   | { v: 'komposisjon'; id: string }
   | { v: 'ny' }
+  // Enkeltmotiv åpnet for redigering fra biblioteket: samme editor som en komposisjon,
+  // men med bare dette ene motivet plassert. Lagres den, blir den en helt vanlig
+  // komposisjon — det finnes bevisst ingen egen "enkeltmotiv-lagring" ved siden av.
+  | { v: 'nyFraMotiv'; id: string; sizeId: string }
 
 // ── Side ───────────────────────────────────────────────────────────────────────
 
@@ -53,6 +57,8 @@ export default function ArrangerPage() {
   const [nyKomposisjon, setNyKomposisjon] = useState(false)
   const [deleteKompId, setDeleteKompId] = useState<string | null>(null)
   const [kopierKompId, setKopierKompId] = useState<string | null>(null)
+  // Enkeltmotiv som er åpnet i komposisjonseditoren (se ArrVisning: 'nyFraMotiv').
+  const [startMotiv, setStartMotiv] = useState<{ embroideryId: string; sizeId: string; navn: string } | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -120,19 +126,31 @@ export default function ArrangerPage() {
     'arr', { v: 'liste' },
     visning => {
       if (visning.v === 'liste') {
-        setSelected(null); setAktivKomposisjon(null); setNyKomposisjon(false)
+        setSelected(null); setAktivKomposisjon(null); setNyKomposisjon(false); setStartMotiv(null)
         loadKomposisjoner()
       } else if (visning.v === 'motiv') {
         const funnet = motifs.find(m => m.id === visning.id)
         setSelected(funnet ?? null)
-        setAktivKomposisjon(null); setNyKomposisjon(false)
+        setAktivKomposisjon(null); setNyKomposisjon(false); setStartMotiv(null)
       } else if (visning.v === 'komposisjon') {
         const funnet = komposisjoner.find(k => k.id === visning.id)
         setAktivKomposisjon(funnet ?? null)
-        setSelected(null); setNyKomposisjon(false)
+        setSelected(null); setNyKomposisjon(false); setStartMotiv(null)
+      } else if (visning.v === 'nyFraMotiv') {
+        // Tilbake/fram til en enkeltmotiv-redigering: bygg startMotiv på nytt fra id-ene i
+        // historikk-staten. Finnes ikke raden lenger (slettet i en annen fane), faller vi
+        // tilbake til listen i stedet for å åpne en tom editor.
+        const funnet = motifs.find(m => m.id === visning.id)
+        const size = funnet?.data.sizes?.find(s => s.id === visning.sizeId)
+        if (funnet && size) {
+          setStartMotiv({ embroideryId: funnet.id, sizeId: size.id, navn: funnet.data.navn || 'Uten navn' })
+        } else {
+          setStartMotiv(null)
+        }
+        setSelected(null); setAktivKomposisjon(null); setNyKomposisjon(false)
       } else {
         setNyKomposisjon(true)
-        setSelected(null); setAktivKomposisjon(null)
+        setSelected(null); setAktivKomposisjon(null); setStartMotiv(null)
       }
     },
   )
@@ -197,8 +215,32 @@ export default function ArrangerPage() {
     pushVisning({ v: 'motiv', id: rad.id })
   }
 
+  // Enkeltmotiv-redigering vinner over selve motivvisningen: å trykke «Rediger» der
+  // åpner den samme editoren som komposisjoner bruker, med bare dette motivet plassert.
+  if (startMotiv) {
+    return (
+      <KomposisjonEditor
+        komposisjon={null}
+        biblioteket={motifs}
+        onBack={closeToBase}
+        startMotiv={startMotiv}
+      />
+    )
+  }
+
   if (selected) {
-    return <MotivVisning motiv={selected} onBack={closeToBase} />
+    return (
+      <MotivVisning
+        motiv={selected}
+        onBack={closeToBase}
+        onRediger={sizeId => {
+          const m = selected
+          setSelected(null)
+          setStartMotiv({ embroideryId: m.id, sizeId, navn: m.data.navn || 'Uten navn' })
+          pushVisning({ v: 'nyFraMotiv', id: m.id, sizeId })
+        }}
+      />
+    )
   }
 
   if (aktivKomposisjon || nyKomposisjon) {
@@ -549,7 +591,14 @@ function BundleInnhold({ bundle, vms, onBack, onApneVM }: {
 
 // ── Motiv-visning ──────────────────────────────────────────────────────────────
 
-function MotivVisning({ motiv, onBack }: { motiv: Embroidery; onBack: () => void }) {
+function MotivVisning({ motiv, onBack, onRediger }: {
+  motiv: Embroidery
+  onBack: () => void
+  // Åpner motivet i komposisjonseditoren med den størrelsen som er valgt HER. Visningen
+  // under er bevisst fortsatt bare lesing (rask titt på sting, farger og mål) — all
+  // redigering skjer i den ene editoren, ikke i en egen, halv kopi av den.
+  onRediger: (sizeId: string) => void
+}) {
   const sizes = motiv.data.sizes ?? []
   const [sizeId, setSizeId] = useState<string | null>(sizes[0]?.id ?? null)
   const [data, setData] = useState<BroderiMotivData | null>(null)
@@ -622,6 +671,13 @@ function MotivVisning({ motiv, onBack }: { motiv: Embroidery; onBack: () => void
         <h2 className="font-serif text-xl text-stone-700 truncate flex-1 min-w-0">
           {motiv.data.navn || 'Uten navn'}
         </h2>
+        <button
+          onClick={() => size && onRediger(size.id)}
+          disabled={!size}
+          className="flex-shrink-0 h-9 px-4 rounded-xl bg-stone-800 text-white text-sm hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          Rediger
+        </button>
       </div>
 
       {sizes.length > 1 && (

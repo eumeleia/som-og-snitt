@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { supabase } from '@/lib/supabase'
 import { hentAllePaginert } from '@/lib/supabasePaginering'
 import { describeError, type ErrorDetails } from '@/lib/error-details'
@@ -66,14 +66,36 @@ function erUtenforRamme(bbox: BroderiBbox): boolean {
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
-export function KomposisjonEditor({ komposisjon, biblioteket, onBack }: {
+export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv }: {
   komposisjon: BroderiKomposisjon | null
   biblioteket: Embroidery[]
   onBack: () => void
+  // Ett motiv som skal ligge ferdig plassert i en NY komposisjon fra første rendring.
+  // Brukes når biblioteksvisningen (MotivVisning i arranger/page.tsx) åpner et enkeltmotiv
+  // for redigering: i stedet for et eget, halvt redigeringsverktøy for enkeltmotiv får
+  // motivet den fulle editoren med bare seg selv på lerretet. Ignoreres når `komposisjon`
+  // er satt — en lagret komposisjon har alltid sine egne motiver.
+  startMotiv?: { embroideryId: string; sizeId: string; navn: string }
 }) {
   const [id, setId] = useState<string | null>(komposisjon?.id ?? null)
-  const [navn, setNavn] = useState(komposisjon?.data.navn ?? 'Ny komposisjon')
-  const [motiver, setMotiver] = useState<PlassertMotiv[]>(komposisjon?.data.motiver ?? [])
+  const [navn, setNavn] = useState(
+    komposisjon?.data.navn ?? (startMotiv ? startMotiv.navn : 'Ny komposisjon'),
+  )
+  const [motiver, setMotiver] = useState<PlassertMotiv[]>(() => {
+    if (komposisjon?.data.motiver) return komposisjon.data.motiver
+    if (startMotiv) {
+      return [{
+        id: uid(),
+        embroideryId: startMotiv.embroideryId,
+        sizeId: startMotiv.sizeId,
+        navn: startMotiv.navn,
+        posisjonXTiendedelMm: 0,
+        posisjonYTiendedelMm: 0,
+        rotasjonGrader: 0,
+      }]
+    }
+    return []
+  })
   const [sekvens, setSekvens] = useState<SekvensElement[]>(komposisjon?.data.sekvens ?? [])
   const [undoStack, setUndoStack] = useState<SekvensElement[][]>([])
   const [redoStack, setRedoStack] = useState<SekvensElement[][]>([])
@@ -825,12 +847,16 @@ function PlassertMotivGruppe({ pm, data, bbox, valgt, utenforRamme, aktivKjoring
 
 // ── Tekstverktøy ─────────────────────────────────────────────────────────────
 
-function TextVerktoy({ bundleNavn, vms, biblioteket, onLeggTil, onBack }: {
+function TextVerktoy({ bundleNavn, vms, biblioteket, onLeggTil, onBack, onEnkelttegn }: {
   bundleNavn: string
   vms: VirtuelMotiv[]
   biblioteket: Embroidery[]
   onLeggTil: (items: Array<{ embroideryId: string; sizeId: string; navn: string; x: number; y: number }>) => void
   onBack: () => void
+  // Vei ut av tekstmodus for en font-bundle: samme tegn kan brukes som ETT motiv, ikke bare
+  // som bokstav i en tekst. Uten denne var en «font»-kategorisert bundle låst til
+  // tekstverktøyet, og enkelttegn var utilgjengelige når teksten ikke lot seg bygge.
+  onEnkelttegn: () => void
 }) {
   const tilgjengeligeTommes = useMemo(() => {
     const set = new Set<string>()
@@ -893,10 +919,16 @@ function TextVerktoy({ bundleNavn, vms, biblioteket, onLeggTil, onBack }: {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 19l-7-7 7-7" />
           </svg>
         </button>
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <h3 className="font-serif text-xl text-stone-800 truncate">{bundleNavn}</h3>
           <p className="text-xs text-stone-400">Legg til tekst</p>
         </div>
+        <button
+          onClick={onEnkelttegn}
+          className="flex-shrink-0 h-8 px-3 rounded-lg border border-stone-200 text-xs text-stone-600 hover:border-[#C9A57A] hover:text-[#8B6340] transition-colors"
+        >
+          Sett inn enkelttegn
+        </button>
       </div>
 
       <div className="overflow-y-auto flex-1 min-h-0 p-5 space-y-5">
@@ -1031,7 +1063,10 @@ type PickerView =
   | { type: 'kategorier' }
   | { type: 'kategori'; kat: string | null }
   | { type: 'bundle-innhold'; bundleId: string; fraKat?: string | null }
-  | { type: 'tegn'; bundleId: string; fraKat?: string | null }
+  // fraTekst: tegnrutenettet ble åpnet FRA tekstverktøyet («Sett inn enkelttegn»), ikke
+  // fra kategorilista. Da skal tilbakeknappen føre tilbake dit man kom fra, ikke hoppe
+  // helt ut til kategorien — og «Skriv tekst i stedet» vises som veien tilbake.
+  | { type: 'tegn'; bundleId: string; fraKat?: string | null; fraTekst?: boolean }
   | { type: 'tekst'; bundleId: string; fraKat?: string | null }
   | { type: 'storrelse'; vm: VirtuelMotiv; prevView: PickerView }
 
@@ -1584,7 +1619,12 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
 
   // ── UI-deler ──────────────────────────────────────────────────────────────
 
-  function Topptekst({ tittel, onTilbake }: { tittel: string; onTilbake?: () => void }) {
+  function Topptekst({ tittel, onTilbake, handling }: {
+    tittel: string
+    onTilbake?: () => void
+    // Valgfri handling helt til høyre i toppteksten (f.eks. «Skriv tekst» i tegnrutenettet).
+    handling?: ReactNode
+  }) {
     return (
       <div className="px-5 py-4 border-b border-stone-100 flex-shrink-0 flex items-center gap-3">
         {onTilbake && (
@@ -1594,7 +1634,8 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
             </svg>
           </button>
         )}
-        <h3 className="font-serif text-xl text-stone-800 truncate">{tittel}</h3>
+        <h3 className="font-serif text-xl text-stone-800 truncate flex-1">{tittel}</h3>
+        {handling}
       </div>
     )
   }
@@ -1950,10 +1991,26 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
           const liten = vms.filter(vm => vm.karakter?.type === 'liten').sort((a, b) => a.karakter!.tegn.localeCompare(b.karakter!.tegn))
           const tall = vms.filter(vm => vm.karakter?.type === 'tall').sort((a, b) => a.karakter!.tegn.localeCompare(b.karakter!.tegn))
           const symbol = vms.filter(vm => vm.karakter?.type === 'symbol').sort((a, b) => a.karakter!.tegn.localeCompare(b.karakter!.tegn))
+          const bundleHer = bundlerMap.get(view.bundleId)
+          const erFontHer = bundleHer ? getKats(bundleHer.data).some(k => k.toLowerCase() === 'font') : false
+          const tilbakeTilTekst = () => setView({ type: 'tekst', bundleId: view.bundleId, fraKat: view.fraKat })
           return (
             <>
-              <Topptekst tittel={bundlerMap.get(view.bundleId)?.data.navn ?? ''}
-                onTilbake={() => setView(view.fraKat !== undefined ? { type: 'kategori', kat: view.fraKat } : { type: 'kategorier' })} />
+              <Topptekst tittel={bundleHer?.data.navn ?? ''}
+                onTilbake={() => setView(
+                  view.fraTekst
+                    ? { type: 'tekst', bundleId: view.bundleId, fraKat: view.fraKat }
+                    : view.fraKat !== undefined ? { type: 'kategori', kat: view.fraKat } : { type: 'kategorier' },
+                )}
+                handling={erFontHer ? (
+                  <button onClick={tilbakeTilTekst}
+                    className="flex-shrink-0 h-8 px-3 rounded-lg border border-stone-200 text-xs text-stone-600 hover:border-[#C9A57A] hover:text-[#8B6340] transition-colors">
+                    Skriv tekst
+                  </button>
+                ) : undefined} />
+              <p className="px-5 pt-3 text-xs text-stone-400">
+                Trykk på et tegn for å sette det inn som et enkeltmotiv.
+              </p>
               <div className="overflow-y-auto flex-1 min-h-0 pt-4 pb-2">
                 <TegnGruppe label="Stor" tegns={stor} bundleId={view.bundleId} />
                 <TegnGruppe label="Liten" tegns={liten} bundleId={view.bundleId} />
@@ -2037,6 +2094,7 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
               biblioteket={biblioteket}
               onLeggTil={items => onVelgFlere(items)}
               onBack={() => setView(fraKat !== undefined ? { type: 'kategori', kat: fraKat } : { type: 'kategorier' })}
+              onEnkelttegn={() => setView({ type: 'tegn', bundleId: view.bundleId, fraKat, fraTekst: true })}
             />
           )
         })()}
