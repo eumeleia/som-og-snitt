@@ -23,6 +23,10 @@ interface EmbroiderySize {
   sizeLabel: string
   pesUrl: string
   pesFilename: string
+  // Rent additivt (kun nye opplastinger) — lagringsnavnet er flatt, så stien kan ikke
+  // gjenvinnes for eksisterende rader. Ingen migrering, ingen backfill, og ingenting
+  // leser dette feltet ennå.
+  pesPath?: string
   widthMm?: number
   heightMm?: number
 }
@@ -967,7 +971,7 @@ function UploadModal({ onDone, onClose }: {
               const bounds = await fetchPesBounds(pesData)
               if (bounds) { widthMm = bounds.widthMm; heightMm = bounds.heightMm }
             } catch { /* ignore per-file failure */ }
-            embSizes.push({ id: uid(), sizeLabel, pesUrl: urlData.publicUrl, pesFilename: pesFile.name, widthMm, heightMm })
+            embSizes.push({ id: uid(), sizeLabel, pesUrl: urlData.publicUrl, pesFilename: pesFile.name, pesPath: pesFile.path, widthMm, heightMm })
           }
 
           if (embSizes.length === 0) {
