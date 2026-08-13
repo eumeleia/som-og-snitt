@@ -9,6 +9,7 @@ import { describeError, type ErrorDetails } from '@/lib/error-details'
 import { ErrorDetailsView } from '@/components/ErrorDetailsView'
 import { KomposisjonEditor } from './KomposisjonEditor'
 import { byggVirtuelleMotiver } from './motivvalg'
+import { snappTilPalett } from './broderPalett'
 import { EmbroideryCard, KATEGORIER } from '../page'
 import {
   type Embroidery, type BroderiMotivData, type BroderiKomposisjon,
@@ -759,7 +760,7 @@ function MotivDetaljer({ data }: { data: BroderiMotivData }) {
               key={i}
               points={b.sting.map(([x, y]) => `${x / 10},${y / 10}`).join(' ')}
               fill="none"
-              stroke={b.farge_hex}
+              stroke={snappTilPalett(b.farge_hex).hex}
               strokeWidth={0.3}
               strokeLinecap="round"
               strokeLinejoin="round"
@@ -772,24 +773,30 @@ function MotivDetaljer({ data }: { data: BroderiMotivData }) {
       </div>
 
       <div className="bg-white rounded-2xl border border-stone-200 shadow-sm divide-y divide-stone-100">
-        {data.fargekjoringer.map((k, i) => (
-          <div key={i} className="flex items-center gap-3 px-4 py-3">
-            <span className="text-xs text-stone-400 w-5 text-right flex-shrink-0">{i + 1}</span>
-            <span
-              className="w-6 h-6 rounded-md border border-stone-200 flex-shrink-0"
-              style={{ backgroundColor: k.farge_hex }}
-            />
-            <div className="flex-1 min-w-0">
-              <p className="text-sm text-stone-700 truncate">
-                {k.tradnavn_auto || <span className="text-stone-400 italic">Ukjent trådnavn</span>}
-              </p>
-              <p className="text-xs text-stone-400">
-                {k.farge_hex} · {k.antall_blokker} del{k.antall_blokker === 1 ? '' : 'er'}
-              </p>
+        {data.fargekjoringer.map((k, i) => {
+          const pec = snappTilPalett(k.farge_hex)
+          return (
+            <div key={i} className="flex items-center gap-3 px-4 py-3">
+              <span className="text-xs text-stone-400 w-5 text-right flex-shrink-0">{i + 1}</span>
+              <span
+                className="w-6 h-6 rounded-md border border-stone-200 flex-shrink-0"
+                style={{ backgroundColor: pec.hex }}
+              />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-stone-700 truncate">
+                  {k.tradnavn_auto || <span className="text-stone-400 italic">Ukjent trådnavn</span>}
+                </p>
+                <p className="text-xs text-stone-400">
+                  {pec.hex} · {k.antall_blokker} del{k.antall_blokker === 1 ? '' : 'er'}
+                </p>
+                {k.farge_hex !== pec.hex && (
+                  <p className="text-[11px] text-stone-400">Kildefila har {k.farge_hex} — maskinen syr {pec.hex}.</p>
+                )}
+              </div>
+              <span className="text-xs text-stone-500 flex-shrink-0">{k.antall_sting} sting</span>
             </div>
-            <span className="text-xs text-stone-500 flex-shrink-0">{k.antall_sting} sting</span>
-          </div>
-        ))}
+          )
+        })}
       </div>
     </div>
   )

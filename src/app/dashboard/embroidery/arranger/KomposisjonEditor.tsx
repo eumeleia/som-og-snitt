@@ -6,7 +6,7 @@ import { hentAllePaginert } from '@/lib/supabasePaginering'
 import { describeError, type ErrorDetails } from '@/lib/error-details'
 import { ErrorDetailsView } from '@/components/ErrorDetailsView'
 import { roterLokalePunkter, plassertBbox, kombinerBbox } from './geometri'
-import { synkroniserSekvens, byggFargePerBlokk, type SekvensKontekst } from './sekvens'
+import { synkroniserSekvens, byggFargePerBlokk, tellSting, tellOmtredninger, type SekvensKontekst } from './sekvens'
 import { byggMiniatyrSvg } from './miniatyr'
 import { hentMineTrader, byggPecTilEkteMap, type MinTrad } from './minTraadpalett'
 import { SekvensPanel } from './SekvensPanel'
@@ -466,6 +466,18 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
   const ctx: SekvensKontekst = useMemo(() => ({ motiver, resolved, pecTilEkte }), [motiver, resolved, pecTilEkte])
   const fargePerBlokk = useMemo(() => byggFargePerBlokk(sekvens, ctx), [sekvens, ctx])
 
+  // Stingteller og fargetall mot Skitch PP1 sine faste grenser (30 000 sting, 63 farger
+  // per design, Brother support artikkel 145472) — regnet FØR eksport, fra samme data
+  // lerretet allerede har (resolved), ingen ny henting. Advarer, blokkerer aldri — samme
+  // prinsipp som rammevarselet: en fil jeg har tenkt å dele i to hoopinger skal fortsatt
+  // kunne bygges ferdig. omtredninger er allerede "fargekjøringer slik fila faktisk får
+  // dem" (etter snapping og sammenslåing av like nabofarger, se tellOmtredninger).
+  const stingAntall = useMemo(() => tellSting(sekvens, ctx), [sekvens, ctx])
+  const fargeAntall = useMemo(() => tellOmtredninger(sekvens, ctx), [sekvens, ctx])
+  const STING_GRENSE = 30000
+  const STING_ADVARSEL = 25000
+  const FARGE_GRENSE = 63
+
   // Kalibreringskandidater: motiver på lerretet plassert av TextVerktoy (fontKilde satt),
   // gruppert per bundle og tegn (samme tegn flere ganger i teksten, f.eks. de to o-ene i
   // "zoo", gjennomsnittes). Diffen regnes ALLTID mot NAIV standard (bif = heightMm,
@@ -576,6 +588,13 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
         </div>
       )}
 
+      {fargeAntall > FARGE_GRENSE && (
+        <div className="px-4 py-3 mb-4 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-800">
+          {fargeAntall} fargekjøringer — over Skitch PP1 sin grense på {FARGE_GRENSE} farger per design.
+          Fila kan fortsatt bygges, men maskinen vil trolig avvise den.
+        </div>
+      )}
+
       {/* To kolonner fra lg og opp: lerret + motivkontroller til venstre (sticky, så det
          står stille mens sekvensen til høyre skrolles), sekvens/trådrekkefølge +
          stingsimulator + eksport til høyre. Én kolonne som før under lg. */}
@@ -644,6 +663,15 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
           )}
         </svg>
       </div>
+
+      {sekvens.length > 0 && (
+        <p className={`text-xs text-center mb-4 -mt-2 ${
+          stingAntall > STING_GRENSE ? 'text-red-600' : stingAntall > STING_ADVARSEL ? 'text-amber-600' : 'text-stone-400'
+        }`}>
+          {combinedBbox && `${komposisjonBreddeMm.toFixed(1)} × ${komposisjonHoydeMm.toFixed(1)} mm · `}
+          {stingAntall.toLocaleString('nb-NO')} av {STING_GRENSE.toLocaleString('nb-NO')} sting
+        </p>
+      )}
 
       <button
         onClick={() => setShowPicker(true)}

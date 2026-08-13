@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { byggFargePerBlokk, finnSammenslaingsforslag, effektivTradfarge, type SekvensKontekst } from './sekvens'
+import { byggFargePerBlokk, finnSammenslaingsforslag, effektivTradfarge, tellSting, type SekvensKontekst } from './sekvens'
 import { snappTilPalett } from './broderPalett'
 import { byggPecTilEkteMap, type MinTrad } from './minTraadpalett'
-import type { BroderiBbox, BroderiMotivData, BroderiStingblokk, PlassertMotiv, SekvensKjoring } from './types'
+import type { BroderiBbox, BroderiMotivData, BroderiStingblokk, PlassertMotiv, SekvensElement, SekvensKjoring } from './types'
 
 function blokk(overrides: Partial<BroderiStingblokk> & { farge_hex: string; sting: [number, number][]; bbox: BroderiBbox }): BroderiStingblokk {
   return { tradnavn_auto: null, antall_sting: overrides.sting.length, ...overrides }
@@ -125,6 +125,42 @@ describe('byggFargePerBlokk', () => {
     const egenSnappet = snappTilPalett('#abcdef').hex
     expect(ut['pm-5']).toEqual([overstyrtSnappet, overstyrtSnappet, egenSnappet])
     expect(ut['pm-5'][2]).not.toBe('#abcdef') // aldri rå
+  })
+})
+
+// Stingtelleren mot Skitch PP1 sin 30 000-grense (prompt 4, docs/plan-og-prompter-2026-08-13.md).
+describe('tellSting', () => {
+  it('summerer antall_sting for kjøringene i sekvensen, ikke for hele biblioteket', () => {
+    const pm = plassert('pm-t', 'et', 'st')
+    const bbox: BroderiBbox = { min_x: 0, max_x: 10, min_y: 0, max_y: 10 }
+    const data = motivData({
+      bbox,
+      stingblokker: [
+        blokk({ farge_hex: '#111111', sting: [[0, 0], [1, 1]], bbox }),
+        blokk({ farge_hex: '#222222', sting: [[0, 0], [1, 1], [2, 2]], bbox }),
+      ],
+      fargekjoringer: [
+        { farge_hex: '#111111', tradnavn_auto: null, fra_index: 0, til_index: 0, antall_blokker: 1, antall_sting: 250 },
+        { farge_hex: '#222222', tradnavn_auto: null, fra_index: 1, til_index: 1, antall_blokker: 1, antall_sting: 400 },
+      ],
+    })
+    const ctx: SekvensKontekst = { motiver: [pm], resolved: { 'et:st': data } }
+
+    // Bare den første kjøringen er med i sekvensen — den andre skal IKKE telles med.
+    const sekvens: SekvensKjoring[] = [
+      { id: 'el0', type: 'kjoring', plassertMotivId: 'pm-t', fargekjoringIndex: 0 },
+    ]
+
+    expect(tellSting(sekvens, ctx)).toBe(250)
+  })
+
+  it('teller pauser og manglende motivdata som 0, krasjer ikke', () => {
+    const ctx: SekvensKontekst = { motiver: [], resolved: {} }
+    const sekvens: SekvensElement[] = [
+      { id: 'p', type: 'pause' },
+      { id: 'el0', type: 'kjoring', plassertMotivId: 'ukjent', fargekjoringIndex: 0 },
+    ]
+    expect(tellSting(sekvens, ctx)).toBe(0)
   })
 })
 

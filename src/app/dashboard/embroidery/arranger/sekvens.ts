@@ -211,6 +211,22 @@ export function tellOmtredninger(sekvens: SekvensElement[], ctx: SekvensKontekst
   return count
 }
 
+// Summerer antall_sting for hver kjøring i sekvensen — samme felt parseren allerede har
+// regnet ut per fargekjøring (broderi_motiv-cachen), ingen ny henting eller manuell
+// summering av sting.length over blokker. Brukes til stingtelleren mot Skitch PP1 sin
+// 30 000-grense (KomposisjonEditor), FØR eksport — samme prinsipp som tellOmtredninger,
+// bare på sting i stedet for fargeskift.
+export function tellSting(sekvens: SekvensElement[], ctx: SekvensKontekst): number {
+  let sum = 0
+  for (const el of sekvens) {
+    if (el.type !== 'kjoring') continue
+    const funn = finnFargekjoring(ctx, el)
+    if (!funn) continue
+    sum += funn.kjoring.antall_sting
+  }
+  return sum
+}
+
 export function flyttElementEtter(sekvens: SekvensElement[], flyttId: string, etterId: string): SekvensElement[] {
   const flyttet = sekvens.find(el => el.id === flyttId)
   if (!flyttet) return sekvens
