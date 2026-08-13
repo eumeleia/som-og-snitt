@@ -3,6 +3,7 @@ import {
   byggVirtuelleMotiver, velgStandardStorrelse, beregnRutenettPosisjoner, beregnRutenettCelle,
   RAMME_GRENSE_MM, type BboxMm,
 } from './motivvalg'
+import { utledTommeFraSizeLabel } from './tomme'
 import type { Embroidery, EmbroideryBundle, EmbroiderySize, VirtuelMotiv, VirtuelStorrelse } from './types'
 
 function size(overrides: Partial<EmbroiderySize> & { id: string; pesFilename: string }): EmbroiderySize {
@@ -87,6 +88,48 @@ describe('byggVirtuelleMotiver', () => {
     expect(vms).toHaveLength(1)
     expect(vms[0].navn).toBe('X')
     expect(vms[0].sizes).toHaveLength(2)
+  })
+
+  // Steg A (docs/fontmaling-2026-08-13.md) avdekket at BX Florals småbokstaver har
+  // sizeLabel-SPENN («1.5-2"»), mens versaler har en ren tommeangivelse («2"»). Uten
+  // dette hadde småbokstavene fått tommeLabel: null og vært usynlige for tekstverktøyet
+  // ved enhver tommestørrelse.
+  it('BX Floral-lignende rad: en småbokstav med sizeLabel-spenn gir én størrelse PER endepunkt, som matcher versalenes eksakte tomme', () => {
+    const bd = bundle('b-bx', 'BX FLORAL ALPHABET PINK')
+    const bundlerMap = new Map([[bd.id, bd]])
+    const versal = rad('row-A-stor', 'A (stor)', [
+      size({ id: 'a-2', sizeLabel: '2"', pesFilename: 'A.PES' }),
+    ], bd.id)
+    const liten = rad('row-a-liten', 'a (liten)', [
+      size({ id: 'a-spenn', sizeLabel: '1.5-2"', pesFilename: 'A.PES' }),
+    ], bd.id)
+
+    const vms = byggVirtuelleMotiver([versal, liten], bundlerMap)
+
+    const A = vms.find(vm => vm.navn === 'A')
+    const a = vms.find(vm => vm.navn === 'a')
+    expect(A?.sizes.map(s => s.tommeLabel)).toEqual(['2'])
+    // spennet 1.5-2" dekker BEGGE endepunktene — to VirtuelStorrelse fra samme fil/rad
+    expect(a?.sizes.map(s => s.tommeLabel).sort()).toEqual(['1.5', '2'])
+    expect(a?.sizes.every(s => s.sizeId === 'a-spenn')).toBe(true)
+    // "2" finnes for begge — det er nettopp det som gjør «Ada» ved 2" mulig
+    expect(a?.sizes.map(s => s.tommeLabel)).toContain(A?.sizes[0].tommeLabel)
+  })
+})
+
+describe('utledTommeFraSizeLabel', () => {
+  it('ren tommeangivelse gir én verdi', () => {
+    expect(utledTommeFraSizeLabel('2"')).toEqual(['2'])
+    expect(utledTommeFraSizeLabel('3.5"')).toEqual(['3.5'])
+  })
+
+  it('spenn gir BEGGE endepunktene', () => {
+    expect(utledTommeFraSizeLabel('1.5-2"')).toEqual(['1.5', '2'])
+  })
+
+  it('ikke-tommeetiketter gir tom liste', () => {
+    expect(utledTommeFraSizeLabel('Smallest')).toEqual([])
+    expect(utledTommeFraSizeLabel('Medium')).toEqual([])
   })
 })
 

@@ -124,15 +124,22 @@ export function byggVirtuelleMotiver(
       karakter: karakter ?? undefined,
       // tommeLabel her (til tekstverktøyet): filnavnet vinner der utledTomme fant en
       // indikator, ellers sizeLabel — men KUN når HELE etiketten er en tommeangivelse
-      // («1.5"», «2"», BX Floral). 12Berries sine «Smallest»/«Small»/«Medium»/… har ingen
-      // siffer og treffer aldri utledTommeFraSizeLabel, så de forblir null som før — dette
-      // er bevisst IKKE samme felt som brukes til fontrad-gjenkjenning (p.tomme der er
-      // fortsatt ren utledTomme, urørt).
-      sizes: perStorrelse.map(p => ({
-        embroideryId: m.id, sizeId: p.s.id,
-        tommeLabel: p.tomme ?? utledTommeFraSizeLabel(p.s.sizeLabel),
-        sizeLabel: p.s.sizeLabel,
-      })),
+      // («1.5"», «2"», BX Floral) eller et SPENN («1.5-2"», BX Florals småbokstaver). Et
+      // spenn dekker BEGGE endepunktene — samme fil brukes for begge tommestørrelsene, så
+      // den gir ÉN VirtuelStorrelse PER endepunkt, ikke én. 12Berries sine
+      // «Smallest»/«Small»/«Medium»/… har ingen siffer og treffer aldri
+      // utledTommeFraSizeLabel, så de forblir null som før (én størrelse, ikke null av
+      // dem) — dette er bevisst IKKE samme felt som brukes til fontrad-gjenkjenning
+      // (p.tomme der er fortsatt ren utledTomme, urørt).
+      sizes: perStorrelse.flatMap((p): VirtuelStorrelse[] => {
+        const tommer = p.tomme !== null ? [p.tomme] : utledTommeFraSizeLabel(p.s.sizeLabel)
+        if (tommer.length === 0) {
+          return [{ embroideryId: m.id, sizeId: p.s.id, tommeLabel: null, sizeLabel: p.s.sizeLabel }]
+        }
+        return tommer.map(tommeLabel => ({
+          embroideryId: m.id, sizeId: p.s.id, tommeLabel, sizeLabel: p.s.sizeLabel,
+        }))
+      }),
     })
   }
 

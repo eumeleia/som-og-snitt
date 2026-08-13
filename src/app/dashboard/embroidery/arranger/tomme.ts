@@ -50,13 +50,18 @@ export function utledTomme(pesFilename: string): TommeResultat | null {
   return null
 }
 
-// Utleder tomme-verdi fra en sizeLabel som ER en ren tommeangivelse, f.eks. BX Floral sin
-// «1.5"», «2"», «3.5"» — hele etiketten må være tallet pluss et rett anførselstegn, intet
-// annet, ellers gjettes det ikke: 12Berries sine «Smallest»/«Small»/«Medium»/«Large»/
-// «Largest» har ingen siffer og treffer aldri dette. Brukes bare når utledTomme(pesFilename)
-// ikke fant noe (BX Floral sine filnavn er bare «A.PES», uten tomme-indikator).
-export function utledTommeFraSizeLabel(sizeLabel: string): string | null {
-  return /^(\d+(?:\.\d+)?)"$/.exec(sizeLabel)?.[1] ?? null
+// Utleder tomme-verdi(er) fra en sizeLabel, f.eks. BX Floral sin «1.5"», «2"», «3.5"» —
+// eller et SPENN som BX Florals småbokstaver bruker («1.5-2"», «2-2.5"»), der én fil er
+// ment for begge endepunktene. 12Berries sine «Smallest»/«Small»/«Medium»/«Large»/«Largest»
+// har ingen siffer og treffer aldri dette — tom liste. Brukes bare når
+// utledTomme(pesFilename) ikke fant noe (BX Floral sine filnavn er bare «A.PES», uten
+// tomme-indikator).
+export function utledTommeFraSizeLabel(sizeLabel: string): string[] {
+  const enkelt = /^(\d+(?:\.\d+)?)"$/.exec(sizeLabel)
+  if (enkelt) return [enkelt[1]]
+  const spenn = /^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)"$/.exec(sizeLabel)
+  if (spenn) return [spenn[1], spenn[2]]
+  return []
 }
 
 // Gjenkjenner enkelt-tegn fra en motividentitet.

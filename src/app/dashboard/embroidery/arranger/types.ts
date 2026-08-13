@@ -51,6 +51,19 @@ export interface Embroidery {
   data: EmbroideryData
 }
 
+// Grunnlinje-kalibrering med øyet (docs/plan-og-prompter-2026-08-13.md, "Beslutning etter
+// steg A"): målt automatikk (finnGrunnlinjeFraSting) ble forkastet — den rettet 2 av 10
+// ekte underlengder og forskyvet 7 tegn som allerede var riktige. I stedet: fast standard
+// (tegnets egen bunn) + manuell korreksjon lagret HER, per tegn, som ANDEL av tegnets egen
+// høyde (ikke mm) — det gjør korreksjonen gyldig i alle tommestørrelser, ikke bare den man
+// kalibrerte i. Ingen tomme-nøkkel av samme grunn. underlengdeAndel er alltid regnet mot
+// den NAIVE standarden (bif = heightMm, andel 0) — se KomposisjonEditor sin
+// "Lagre grunnlinje"-handling — så gjentatt kalibrering overskriver i stedet for å
+// akkumulere.
+export interface FontMetrikk {
+  tegn: { [tegn: string]: { underlengdeAndel: number; kilde: 'manuell'; oppdatert: string } }
+}
+
 export interface EmbroideryBundleData {
   navn: string
   kategori?: string
@@ -58,6 +71,7 @@ export interface EmbroideryBundleData {
   coverImage: string
   customImage: string
   useCustomImage: boolean
+  fontMetrikk?: FontMetrikk
 }
 
 export interface EmbroideryBundle {
@@ -110,6 +124,12 @@ export interface PlassertMotiv {
   posisjonXTiendedelMm: number
   posisjonYTiendedelMm: number
   rotasjonGrader: number
+  // Satt bare av TextVerktoy når motivet er ETT TEGN fra en fontbundle — aldri av
+  // enkeltmotiv- eller flervalg-veiene. Grunnlaget for "Lagre grunnlinje for denne
+  // fonten" (KomposisjonEditor): hvilke motiver på lerretet er kalibreringskandidater,
+  // og for hvilket tegn i hvilken bundle. bundleNavn ligger med her (ikke bare bundleId)
+  // for å slippe et eget oppslag i lagringspanelet — TextVerktoy har den allerede.
+  fontKilde?: { bundleId: string; bundleNavn: string; tegn: string }
 }
 
 // Sekvensen er den flate, faktiske sylisten på tvers av alle plasserte motiver —

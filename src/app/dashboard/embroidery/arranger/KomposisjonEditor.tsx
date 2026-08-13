@@ -15,7 +15,7 @@ import { StingSimulator } from './StingSimulator'
 import {
   type Embroidery, type BroderiMotivData, type BroderiBbox,
   type BroderiKomposisjon, type PlassertMotiv, type SekvensElement, type SekvensKjoring, type EmbroideryBundle,
-  type VirtuelMotiv, type VirtuelStorrelse,
+  type EmbroideryBundleData, type VirtuelMotiv, type VirtuelStorrelse, type FontMetrikk,
   getBundleCoverImage, getKats,
 } from './types'
 import { buildFontData, layoutTekst, type FontData, type TextLayout } from './fontUtils'
@@ -66,6 +66,23 @@ function erUtenforRamme(bbox: BroderiBbox): boolean {
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
+// Steg A-målingene (docs/fontmaling-2026-08-13.md, bredde-profil terskel 0,3) — vist som
+// et KLIKKBART FORSLAG i "Lagre grunnlinje"-panelet, aldri forhåndsutfylt (se "Beslutning
+// etter steg A" i docs/plan-og-prompter-2026-08-13.md: den samme automatikken forkastet
+// som STANDARD, men tallene er fortsatt et nyttig utgangspunkt å dra mot med øyet). Nøkkel
+// er bundle-navnet slik det står i basen; bare de to fontene og tegnene som faktisk ble
+// målt der.
+const STEG_A_MALT_HALE_MM: Record<string, Record<string, number>> = {
+  'SERAPHINE SATIN FONT': {
+    H: 3.0, O: 1.5, A: 2.5, o: 0.5, c: 0.0, e: 0.0, x: 2.0, z: 0.5, l: 0.5, '1': 19.5,
+    i: 0.5, g: 0.5, p: 20.5, y: 0.5, q: 2.5, j: 0.5, f: 0.5, Q: 1.5, J: 1.5, ',': 0.5,
+  },
+  'BX FLORAL ALPHABET PINK': {
+    H: 0.0, O: 1.5, A: 0.0, o: 1.0, c: 0.5, e: 0.5, x: 0.0, z: 0.5, l: 0.0, '1': 0.0,
+    i: 0.0, g: 0.5, p: 0.0, y: 1.5, q: 0.0, j: 0.5, f: 0.5, Q: 1.0, J: 0.0,
+  },
+}
+
 export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv }: {
   komposisjon: BroderiKomposisjon | null
   biblioteket: Embroidery[]
@@ -110,6 +127,18 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
   const [saveErrorDetails, setSaveErrorDetails] = useState<ErrorDetails | null>(null)
   const [fokusKjoringId, setFokusKjoringId] = useState<string | null>(null)
   const [hoverKjoringId, setHoverKjoringId] = useState<string | null>(null)
+
+  // ── Grunnlinje-kalibrering med øyet ("Lagre grunnlinje for denne fonten") ──────────
+  // Se "Beslutning etter steg A" i docs/plan-og-prompter-2026-08-13.md: automatikken
+  // (finnGrunnlinjeFraSting) ble forkastet, kalibrering skjer i stedet ved at brukeren
+  // drar tegn til riktig sted på dette lerretet og lagrer differansen som fontMetrikk.
+  const [kalibreringApneBundles, setKalibreringApneBundles] = useState<Set<string>>(new Set())
+  // Manuell overstyring av en rad — fraværende nøkkel betyr "bruk levende dra-differanse".
+  // Satt av "målt hale"-forslaget (steg A) eller av tallfeltet, ALDRI forhåndsutfylt.
+  const [kalibreringOverride, setKalibreringOverride] = useState<Record<string, number>>({})
+  const [kalibreringInkludert, setKalibreringInkludert] = useState<Record<string, boolean>>({})
+  const [kalibreringLagrer, setKalibreringLagrer] = useState<string | null>(null)
+  const [kalibreringFeil, setKalibreringFeil] = useState<ErrorDetails | null>(null)
 
   const [resolved, setResolved] = useState<Record<string, BroderiMotivData>>({})
   const [fetchErrors, setFetchErrors] = useState<Record<string, string>>({})
@@ -225,7 +254,10 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
   }
 
   function leggTilMotiverBolk(
-    items: Array<{ embroideryId: string; sizeId: string; navn: string; x: number; y: number }>,
+    items: Array<{
+      embroideryId: string; sizeId: string; navn: string; x: number; y: number
+      fontKilde?: { bundleId: string; bundleNavn: string; tegn: string }
+    }>,
     rutenettUmulig?: boolean,
   ) {
     if (items.length === 0) return
@@ -237,6 +269,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
       posisjonXTiendedelMm: item.x,
       posisjonYTiendedelMm: item.y,
       rotasjonGrader: 0,
+      fontKilde: item.fontKilde,
     }))
     setMotiver(m => [...m, ...nye])
     setValgtId(null)
@@ -433,6 +466,74 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
   const ctx: SekvensKontekst = useMemo(() => ({ motiver, resolved, pecTilEkte }), [motiver, resolved, pecTilEkte])
   const fargePerBlokk = useMemo(() => byggFargePerBlokk(sekvens, ctx), [sekvens, ctx])
 
+  // Kalibreringskandidater: motiver på lerretet plassert av TextVerktoy (fontKilde satt),
+  // gruppert per bundle og tegn (samme tegn flere ganger i teksten, f.eks. de to o-ene i
+  // "zoo", gjennomsnittes). Diffen regnes ALLTID mot NAIV standard (bif = heightMm,
+  // andel 0) — se FontMetrikk i types.ts — aldri mot en tidligere lagret fontMetrikk, slik
+  // at et nytt lagre-trykk overskriver i stedet for å akkumulere oppå forrige runde.
+  const kalibreringsGrupper = useMemo(() => {
+    type Akk = { bundleNavn: string; perTegn: Map<string, { heightMmSum: number; diffSumMm: number; antall: number }> }
+    const perBundle = new Map<string, Akk>()
+    for (const pm of motiver) {
+      if (!pm.fontKilde) continue
+      const data = resolved[motivKey(pm.embroideryId, pm.sizeId)]
+      if (!data?.bbox) continue
+      const heightMm = (data.bbox.max_y - data.bbox.min_y) / 10
+      if (heightMm <= 0) continue
+      const naivYTiendedelMm = Math.round(-heightMm / 2 * 10)
+      const diffMm = (pm.posisjonYTiendedelMm - naivYTiendedelMm) / 10
+      const gruppe = perBundle.get(pm.fontKilde.bundleId) ?? { bundleNavn: pm.fontKilde.bundleNavn, perTegn: new Map() }
+      const rad = gruppe.perTegn.get(pm.fontKilde.tegn) ?? { heightMmSum: 0, diffSumMm: 0, antall: 0 }
+      rad.heightMmSum += heightMm
+      rad.diffSumMm += diffMm
+      rad.antall += 1
+      gruppe.perTegn.set(pm.fontKilde.tegn, rad)
+      perBundle.set(pm.fontKilde.bundleId, gruppe)
+    }
+    return Array.from(perBundle.entries()).map(([bundleId, g]) => ({
+      bundleId,
+      bundleNavn: g.bundleNavn,
+      rader: Array.from(g.perTegn.entries())
+        .map(([tegn, r]) => ({
+          tegn, heightMm: r.heightMmSum / r.antall, draggedDiffMm: r.diffSumMm / r.antall,
+        }))
+        .sort((a, b) => a.tegn.localeCompare(b.tegn)),
+    }))
+  }, [motiver, resolved])
+
+  async function lagreGrunnlinje(gruppe: (typeof kalibreringsGrupper)[number]) {
+    setKalibreringLagrer(gruppe.bundleId)
+    setKalibreringFeil(null)
+    try {
+      const inkluderte = gruppe.rader.filter(r => kalibreringInkludert[`${gruppe.bundleId}:${r.tegn}`] !== false)
+      if (inkluderte.length === 0) { setKalibreringLagrer(null); return }
+      const { data: bundleRow, error } = await supabase
+        .from('embroidery_bundles').select('data').eq('id', gruppe.bundleId).single()
+      if (error || !bundleRow) throw new Error(error?.message ?? 'Fant ikke fontbunten')
+      const eksisterendeTegn = (bundleRow.data as EmbroideryBundleData).fontMetrikk?.tegn ?? {}
+      const nyttTegnOppslag = { ...eksisterendeTegn }
+      const now = new Date().toISOString()
+      for (const rad of inkluderte) {
+        const key = `${gruppe.bundleId}:${rad.tegn}`
+        const verdiMm = kalibreringOverride[key] ?? rad.draggedDiffMm
+        nyttTegnOppslag[rad.tegn] = { underlengdeAndel: verdiMm / rad.heightMm, kilde: 'manuell' as const, oppdatert: now }
+      }
+      const nyData = { ...bundleRow.data, fontMetrikk: { tegn: nyttTegnOppslag } }
+      const { error: saveErr } = await supabase.from('embroidery_bundles').update({ data: nyData }).eq('id', gruppe.bundleId)
+      if (saveErr) throw new Error(saveErr.message)
+      setKalibreringApneBundles(s => { const n = new Set(s); n.delete(gruppe.bundleId); return n })
+      setKalibreringOverride(o => {
+        const n = { ...o }
+        for (const r of gruppe.rader) delete n[`${gruppe.bundleId}:${r.tegn}`]
+        return n
+      })
+    } catch (err) {
+      setKalibreringFeil(describeError(err))
+    } finally {
+      setKalibreringLagrer(null)
+    }
+  }
+
   return (
     <div className="w-full max-w-3xl lg:max-w-6xl mx-auto px-4 sm:px-6 py-3 pb-24">
       <div className="flex items-center gap-3 mb-4">
@@ -531,6 +632,16 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
               />
             )
           })}
+          {/* Grunnlinje (y=0) — kun synlig mens minst ett tekst-plassert tegn ligger på
+             lerretet, ikke permanent støy i vanlige komposisjoner. Uten en strek å se mot
+             er kalibrering med øyet bare gjetning. */}
+          {kalibreringsGrupper.length > 0 && (
+            <line
+              x1={-halv} y1={0} x2={halv} y2={0}
+              stroke="#8B6340" strokeWidth={0.25} strokeDasharray="1.5 1" opacity={0.6}
+              className="pointer-events-none"
+            />
+          )}
         </svg>
       </div>
 
@@ -540,6 +651,80 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
       >
         + Legg til motiv
       </button>
+
+      {kalibreringsGrupper.map(gruppe => (
+        <div key={gruppe.bundleId} className="bg-white rounded-2xl border border-stone-200 shadow-sm p-4 mb-4">
+          {!kalibreringApneBundles.has(gruppe.bundleId) ? (
+            <button
+              onClick={() => setKalibreringApneBundles(s => new Set(s).add(gruppe.bundleId))}
+              className="w-full text-sm text-stone-600 hover:text-[#8B6340] transition-colors"
+            >
+              Lagre grunnlinje for {gruppe.bundleNavn}
+            </button>
+          ) : (
+            <div>
+              <p className="text-sm font-medium text-stone-700 mb-1">Lagre grunnlinje for {gruppe.bundleNavn}</p>
+              <p className="text-xs text-stone-400 mb-3">
+                Dra bokstavene på lerretet til ordet står riktig, hopp så over tegn du bare
+                flyttet av estetiske grunner.
+              </p>
+              <ul className="space-y-2 mb-3">
+                {gruppe.rader.map(rad => {
+                  const key = `${gruppe.bundleId}:${rad.tegn}`
+                  const inkludert = kalibreringInkludert[key] !== false
+                  const verdi = kalibreringOverride[key] ?? rad.draggedDiffMm
+                  const forslag = STEG_A_MALT_HALE_MM[gruppe.bundleNavn]?.[rad.tegn]
+                  return (
+                    <li key={rad.tegn} className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox" checked={inkludert}
+                        onChange={e => setKalibreringInkludert(m => ({ ...m, [key]: e.target.checked }))}
+                        className="accent-[#C9A57A]"
+                      />
+                      <span className="font-mono w-5 text-stone-700">{rad.tegn === ' ' ? '·' : rad.tegn}</span>
+                      <TallFelt
+                        step={0.1} value={verdi}
+                        onCommit={v => setKalibreringOverride(m => ({ ...m, [key]: v }))}
+                        className="w-20 px-2 py-1 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300"
+                      />
+                      <span className="text-stone-400 text-xs">mm</span>
+                      {forslag != null && forslag !== 0 && (
+                        <button
+                          onClick={() => setKalibreringOverride(m => ({ ...m, [key]: forslag }))}
+                          className="text-xs text-[#8B6340] hover:underline ml-auto"
+                          title="Målt i steg A — trykk for å bruke denne verdien i stedet"
+                        >
+                          målt hale: {forslag.toFixed(1)} mm
+                        </button>
+                      )}
+                    </li>
+                  )
+                })}
+              </ul>
+              {kalibreringFeil && (
+                <div className="mb-3">
+                  <ErrorDetailsView details={kalibreringFeil} context="Lagre grunnlinje" />
+                </div>
+              )}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => lagreGrunnlinje(gruppe)}
+                  disabled={kalibreringLagrer === gruppe.bundleId}
+                  className="flex-1 py-1.5 text-sm bg-stone-800 text-white rounded-lg hover:bg-stone-700 disabled:opacity-50 transition-colors"
+                >
+                  {kalibreringLagrer === gruppe.bundleId ? 'Lagrer…' : 'Lagre grunnlinje'}
+                </button>
+                <button
+                  onClick={() => setKalibreringApneBundles(s => { const n = new Set(s); n.delete(gruppe.bundleId); return n })}
+                  className="px-3 py-1.5 text-sm text-stone-400 hover:text-stone-600 transition-colors"
+                >
+                  Avbryt
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      ))}
 
       {valgtMotiv && (
         <div className="bg-white rounded-2xl border border-stone-200 shadow-sm p-4 mb-4">
@@ -847,11 +1032,16 @@ function PlassertMotivGruppe({ pm, data, bbox, valgt, utenforRamme, aktivKjoring
 
 // ── Tekstverktøy ─────────────────────────────────────────────────────────────
 
-function TextVerktoy({ bundleNavn, vms, biblioteket, onLeggTil, onBack, onEnkelttegn }: {
+function TextVerktoy({ bundleId, bundleNavn, fontMetrikk, vms, biblioteket, onLeggTil, onBack, onEnkelttegn }: {
+  bundleId: string
   bundleNavn: string
+  fontMetrikk?: FontMetrikk
   vms: VirtuelMotiv[]
   biblioteket: Embroidery[]
-  onLeggTil: (items: Array<{ embroideryId: string; sizeId: string; navn: string; x: number; y: number }>) => void
+  onLeggTil: (items: Array<{
+    embroideryId: string; sizeId: string; navn: string; x: number; y: number
+    fontKilde?: { bundleId: string; bundleNavn: string; tegn: string }
+  }>) => void
   onBack: () => void
   // Vei ut av tekstmodus for en font-bundle: samme tegn kan brukes som ETT motiv, ikke bare
   // som bokstav i en tekst. Uten denne var en «font»-kategorisert bundle låst til
@@ -870,12 +1060,19 @@ function TextVerktoy({ bundleNavn, vms, biblioteket, onLeggTil, onBack, onEnkelt
 
   const [tomme, setTomme] = useState<string>(tilgjengeligeTommes[0] ?? '')
   const [tekst, setTekst] = useState('')
-  const [tracking, setTracking] = useState(0)
+  // Standard 0,08 × x-høyde (≈1,3 mm ved 2"), ikke 0 — filene har ingen sidelagre
+  // (min_x = 0 for alle tegn), så 0 mm gir bokstaver som berører hverandre. Et
+  // utgangspunkt, ikke en sannhet — glideren justerer fritt videre herfra.
+  const [tracking, setTracking] = useState(() => {
+    if (!tomme) return 0
+    const fd = buildFontData(vms, tomme, biblioteket, fontMetrikk)
+    return Math.round(fd.metrics.xHeight * 0.08 * 10) / 10
+  })
   const [mellomromFaktor, setMellomromFaktor] = useState(0.6)
 
   const fontData: FontData | null = useMemo(
-    () => tomme ? buildFontData(vms, tomme, biblioteket) : null,
-    [vms, tomme, biblioteket],
+    () => tomme ? buildFontData(vms, tomme, biblioteket, fontMetrikk) : null,
+    [vms, tomme, biblioteket, fontMetrikk],
   )
 
   const layout: TextLayout | null = useMemo(
@@ -888,12 +1085,12 @@ function TextVerktoy({ bundleNavn, vms, biblioteket, onLeggTil, onBack, onEnkelt
     const rene = tekst.replace(/\s/g, '')
     for (const t of [...tilgjengeligeTommes].reverse()) {
       if (t === tomme) continue
-      const fd = buildFontData(vms, t, biblioteket)
+      const fd = buildFontData(vms, t, biblioteket, fontMetrikk)
       const lay = layoutTekst(rene, fd, { tracking, mellomromFaktor })
       if (lay.totalBreddeMm <= RAMME_MM && lay.totalHøydeMm <= RAMME_MM) return t
     }
     return null
-  }, [layout, tilgjengeligeTommes, tomme, tekst, vms, biblioteket, tracking, mellomromFaktor])
+  }, [layout, tilgjengeligeTommes, tomme, tekst, vms, biblioteket, fontMetrikk, tracking, mellomromFaktor])
 
   const passerBredde = !layout || layout.totalBreddeMm <= RAMME_MM
   const passerHøyde = !layout || layout.totalHøydeMm <= RAMME_MM
@@ -907,6 +1104,7 @@ function TextVerktoy({ bundleNavn, vms, biblioteket, onLeggTil, onBack, onEnkelt
       navn: `${b.tegn} – ${tomme}" (${bundleNavn})`,
       x: b.posXTiendedelMm,
       y: b.posYTiendedelMm,
+      fontKilde: { bundleId, bundleNavn, tegn: b.tegn },
     })))
   }
 
@@ -1162,7 +1360,10 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
   // rutenettUmulig: kun satt av leggTilValgte (flervalg), aldri av tekstverktøyets
   // onLeggTil — se beregnRutenettCelle for hva den faktisk betyr.
   onVelgFlere: (
-    items: Array<{ embroideryId: string; sizeId: string; navn: string; x: number; y: number }>,
+    items: Array<{
+      embroideryId: string; sizeId: string; navn: string; x: number; y: number
+      fontKilde?: { bundleId: string; bundleNavn: string; tegn: string }
+    }>,
     rutenettUmulig?: boolean,
   ) => void
   onClose: () => void
@@ -2089,7 +2290,9 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
           const fraKat = view.fraKat
           return (
             <TextVerktoy
+              bundleId={view.bundleId}
               bundleNavn={bundleNavn}
+              fontMetrikk={bundlerMap.get(view.bundleId)?.data.fontMetrikk}
               vms={vms}
               biblioteket={biblioteket}
               onLeggTil={items => onVelgFlere(items)}
