@@ -18,7 +18,7 @@ import {
   type EmbroideryBundleData, type VirtuelMotiv, type VirtuelStorrelse, type FontMetrikk,
   getBundleCoverImage, getKats,
 } from './types'
-import { buildFontData, layoutTekst, type FontData, type TextLayout } from './fontUtils'
+import { buildFontData, layoutTekst, klassifiser, type FontData, type TextLayout } from './fontUtils'
 import {
   RAMME_MM, RAMME_GRENSE_MM, type BboxMm,
   velgStandardStorrelse, byggVirtuelleMotiver, beregnRutenettPosisjoner, beregnRutenettCelle,
@@ -1222,6 +1222,14 @@ function TextVerktoy({ bundleId, bundleNavn, fontMetrikk, vms, biblioteket, onLe
                 </span>
               ) : null}
             </p>
+            {fontData && !fontData.metrics.xHeightMalt
+              && layout?.bokstaver.some(b => klassifiser(b.tegn) === 'underlengde') && (
+              <p className="text-xs text-amber-600 mb-2">
+                Fant ingen x-høyde-bokstaver (a c e m n o r s u v w x z) å måle grunnlinjen
+                mot i denne størrelsen — g/j/p/q/y/f vises på egen bunn til x-høyden er målt
+                eller korrigert manuelt.
+              </p>
+            )}
             <div className="flex flex-wrap gap-1">
               {Array.from(tekst).map((ch, i) => {
                 const isSpace = ch === ' '
