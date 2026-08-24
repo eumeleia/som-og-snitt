@@ -4,12 +4,15 @@ export const dynamic = 'force-dynamic'
 
 import '@/lib/readable-stream-async-iterator-polyfill'
 import { useState, useEffect, useCallback, useRef, type ReactNode, type ChangeEvent } from 'react'
+import { useRouter } from 'next/navigation'
 import ReactMarkdown from 'react-markdown'
 import { supabase } from '@/lib/supabase'
 import { useHistoryVisning } from '../_shared/useHistoryVisning'
 import { deepClone } from '@/lib/deep-clone'
 import { hentTekstFraSide } from '@/lib/pdf-text'
 import { RecipePicker, type PickerRecipe } from '@/app/dashboard/_shared/RecipePicker'
+import { FabricPicker, type PickerFabric } from '@/app/dashboard/_shared/FabricPicker'
+import { lesKoblinger, skrivKoblinger } from '@/app/dashboard/_shared/stoffProsjektKobling'
 import {
   DndContext, closestCenter, PointerSensor, TouchSensor,
   useSensor, useSensors, type DragEndEvent,
@@ -57,6 +60,17 @@ interface FabricItem {
   id: string; sourceUrl: string
   navn: string; materiale: string; bredde: string; vekt: string
   vask: string; bilde: string; mengde: string; type: FabricType
+}
+
+// Stoff koblet FRA Lageret (inventory-tabellen) — motsatt av FabricItem, som er data
+// importert og kopiert INN i prosjektet. Se _shared/stoffProsjektKobling.ts: koblingen
+// bor bare på stoffet i Lageret, prosjektsiden bare leser den.
+interface LagerStoff {
+  id: string
+  navn: string
+  bilde: string
+  materiale?: string
+  mengde?: string
 }
 
 interface ProjectData {
@@ -1641,6 +1655,15 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
   const [stoffImportError, setStoffImportError] = useState('')
   const [stoffImportNote, setStoffImportNote]   = useState('')
 
+  // Stoff koblet fra Lageret (motsatt retning av stoffer[] under — se
+  // _shared/stoffProsjektKobling.ts). Speil av projectIdRef som faktisk trigger
+  // re-render, siden et nyopprettet prosjekt ikke har id før første autolagring.
+  const [projectId, setProjectId]           = useState<string | null>(project?.id ?? null)
+  const [lagerStoffer, setLagerStoffer]     = useState<LagerStoff[]>([])
+  const [showFabricPicker, setShowFabricPicker] = useState(false)
+  const [pickerFabrics, setPickerFabrics]   = useState<PickerFabric[]>([])
+  const router = useRouter()
+
   const projectIdRef = useRef<string | null>(project?.id ?? null)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingRef   = useRef<ProjectData>(form)
@@ -1666,6 +1689,81 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.recipeId])
 
+  // Stoff koblet fra Lageret — hentes fra inventory (kategori Stoff), filtrert på
+  // hvilke rader som har DENNE prosjekt-iden i sin tiltenktProsjekter-liste. Egen,
+  // smal spørring (samme mønster som hentMineTrader i minTraadpalett.ts) — henter
+  // alt av kategori Stoff og filtrerer klient-side, siden koblingen ligger i en
+  // jsonb-array som ikke er praktisk å filtrere på i selve spørringen.
+  async function lastLagerStoffer(pid: string) {
+    const { data, error } = await supabase.from('inventory').select('id, data').eq('data->>kategori', 'Stoff')
+    if (error) { console.error('[projects] henting av lagerstoffer feilet', error); return }
+    const rader = (data ?? []) as Array<{ id: string; data: Record<string, unknown> & {
+      navn?: string; bilde?: string; materiale?: string; mengde?: string
+      tiltenktProsjekter?: { id: string; navn: string }[]; tiltenktProsjektId?: string; tiltenktProsjektNavn?: string
+    } }>
+    setLagerStoffer(
+      rader
+        .filter(r => lesKoblinger(r.data).some(k => k.id === pid))
+        .map(r => ({ id: r.id, navn: r.data.navn ?? '', bilde: r.data.bilde ?? '', materiale: r.data.materiale, mengde: r.data.mengde }))
+    )
+  }
+
+  useEffect(() => {
+    if (!projectId) { setLagerStoffer([]); return }
+    lastLagerStoffer(projectId)
+  }, [projectId])
+
+  async function apneStoffvelger() {
+    const { data, error } = await supabase.from('inventory').select('id, data').eq('data->>kategori', 'Stoff')
+    if (error) { showToast('Kunne ikke hente stoffer fra Lageret.'); return }
+    const rader = (data ?? []) as Array<{ id: string; data: Record<string, unknown> & {
+      navn?: string; bilde?: string; materiale?: string; mengde?: string; arkivert?: boolean
+    } }>
+    setPickerFabrics(
+      rader
+        .filter(r => r.data.arkivert !== true)
+        .map(r => ({ id: r.id, data: { navn: r.data.navn ?? '', bilde: r.data.bilde ?? '', materiale: r.data.materiale, mengde: r.data.mengde } }))
+    )
+    setShowFabricPicker(true)
+  }
+
+  // Skriver til inventory UTENFOR denne sidens egen autolagring (pendingRef/saveTimerRef
+  // over er for projects-raden, ikke inventory-raden) — se doSave. Henter raden på nytt
+  // rett før skriving for å holde kappløpsvinduet lite, men uten en updated_at-kolonne
+  // eller en jsonb-merge finnes det ingen ekte løsning her (se skjemaet i supabase/
+  // migrations) — vinduet finnes fortsatt, det er bare gjort kort.
+  async function kobleStoffFraLager(fabric: PickerFabric) {
+    if (!projectId) return
+    const { data: rad, error } = await supabase.from('inventory').select('data').eq('id', fabric.id).single()
+    if (error || !rad) { showToast('Kunne ikke koble stoffet.'); return }
+    const stoffData = rad.data as Record<string, unknown> & {
+      tiltenktProsjekter?: { id: string; navn: string }[]; tiltenktProsjektId?: string; tiltenktProsjektNavn?: string
+    }
+    const neste = skrivKoblinger(stoffData, [...lesKoblinger(stoffData), { id: projectId, navn: form.name }])
+    const { error: writeErr } = await supabase.from('inventory').update({ data: neste }).eq('id', fabric.id)
+    if (writeErr) { showToast('Kunne ikke koble stoffet.'); return }
+    setShowFabricPicker(false)
+    await lastLagerStoffer(projectId)
+  }
+
+  async function fjernStoffFraLager(fabricId: string) {
+    if (!projectId) return
+    const { data: rad, error } = await supabase.from('inventory').select('data').eq('id', fabricId).single()
+    if (error || !rad) { showToast('Kunne ikke fjerne koblingen.'); return }
+    const stoffData = rad.data as Record<string, unknown> & {
+      tiltenktProsjekter?: { id: string; navn: string }[]; tiltenktProsjektId?: string; tiltenktProsjektNavn?: string
+    }
+    const neste = skrivKoblinger(stoffData, lesKoblinger(stoffData).filter(k => k.id !== projectId))
+    const { error: writeErr } = await supabase.from('inventory').update({ data: neste }).eq('id', fabricId)
+    if (writeErr) { showToast('Kunne ikke fjerne koblingen.'); return }
+    await lastLagerStoffer(projectId)
+  }
+
+  function gaTilLagerStoff(id: string) {
+    sessionStorage.setItem('openInventoryId', id)
+    router.push('/dashboard/inventory')
+  }
+
   function upd(patch: Partial<ProjectData>) {
     setForm(f => {
       const next = { ...f, ...patch }
@@ -1690,7 +1788,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
         const { data: rows, error } = await supabase.from('projects').insert({ data }).select()
         if (error) throw error
         const newId = (rows as Project[])?.[0]?.id
-        if (newId) projectIdRef.current = newId
+        if (newId) { projectIdRef.current = newId; setProjectId(newId) }
       }
       setSaveStatus('saved')
       onSaved()
@@ -2310,24 +2408,31 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
         {/* ── 3. Stoffer ── */}
         <SectionHeading>Stoffer</SectionHeading>
         <div className="space-y-4">
-          <div>
-            <label className={labelCls}>Importer fra produktside (URL)</label>
-            <div className="flex gap-2">
-              <input className={`${inputCls} flex-1`}
-                value={stoffImportUrl}
-                onChange={e => { setStoffImportUrl(e.target.value); setStoffImportError(''); setStoffImportNote('') }}
-                onKeyDown={e => e.key === 'Enter' && importStoff()}
-                placeholder="https://www.selfmade.com/…" />
-              <button onClick={importStoff}
-                disabled={!stoffImportUrl.trim() || stoffImporting}
-                className="flex items-center gap-2 px-4 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap">
-                {stoffImporting && <Spinner />}
-                {stoffImporting ? 'Henter…' : 'Importer'}
-              </button>
+          <div className="flex flex-col sm:flex-row sm:items-start gap-3">
+            <button onClick={apneStoffvelger} disabled={!projectId}
+              title={projectId ? undefined : 'Lagre prosjektet først (gi det et navn)'}
+              className="px-4 py-2 text-sm border border-dashed border-stone-300 rounded-lg text-stone-600 hover:border-stone-400 hover:bg-stone-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap">
+              + Velg stoff fra lageret
+            </button>
+            <div className="flex-1 min-w-0">
+              <label className={labelCls}>Importer fra produktside (URL)</label>
+              <div className="flex gap-2">
+                <input className={`${inputCls} flex-1`}
+                  value={stoffImportUrl}
+                  onChange={e => { setStoffImportUrl(e.target.value); setStoffImportError(''); setStoffImportNote('') }}
+                  onKeyDown={e => e.key === 'Enter' && importStoff()}
+                  placeholder="https://www.selfmade.com/…" />
+                <button onClick={importStoff}
+                  disabled={!stoffImportUrl.trim() || stoffImporting}
+                  className="flex items-center gap-2 px-4 py-2 bg-stone-800 text-white text-sm rounded-lg hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap">
+                  {stoffImporting && <Spinner />}
+                  {stoffImporting ? 'Henter…' : 'Importer'}
+                </button>
+              </div>
+              <p className="text-xs text-stone-400 mt-1.5">
+                Selfmade, Stoff &amp; Stil, o.l. – Claude henter navn, materiale, bredde, vekt og vaskeinfo.
+              </p>
             </div>
-            <p className="text-xs text-stone-400 mt-1.5">
-              Selfmade, Stoff &amp; Stil, o.l. – Claude henter navn, materiale, bredde, vekt og vaskeinfo.
-            </p>
           </div>
           {stoffImportError && (
             <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-sm text-red-700">{stoffImportError}</div>
@@ -2335,8 +2440,51 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
           {stoffImportNote && !stoffImportError && (
             <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-700">{stoffImportNote}</div>
           )}
-          {form.stoffer.length > 0 && (
+          {(lagerStoffer.length > 0 || form.stoffer.length > 0) && (
             <ul className="space-y-3">
+              {lagerStoffer.map(stoff => (
+                <li key={`lager-${stoff.id}`} className="bg-white rounded-xl border border-stone-200 overflow-hidden flex flex-col sm:flex-row w-full max-w-full">
+                  <div className="w-full h-24 sm:w-20 sm:h-auto flex-shrink-0 bg-stone-100" style={{ minHeight: '96px' }}>
+                    {stoff.bilde ? (
+                      <img src={stoff.bilde} alt={stoff.navn} className="w-full h-full object-cover" style={{ minHeight: '96px' }} />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <svg className="w-7 h-7 text-stone-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1}
+                            d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" />
+                        </svg>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0 p-3 space-y-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="font-medium text-stone-800 text-sm leading-tight break-words min-w-0">
+                        {stoff.navn || <span className="text-stone-400 italic font-normal">Ukjent stoff</span>}
+                      </p>
+                      <button onClick={() => fjernStoffFraLager(stoff.id)}
+                        className="p-1 rounded hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors flex-shrink-0 -mt-0.5"
+                        aria-label="Fjern kobling til stoff">
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="inline-block px-2 py-0.5 rounded border text-xs font-medium bg-[#F5EFE6] text-[#8B6340] border-[#D4A574]">
+                        Fra lageret
+                      </span>
+                      <button onClick={() => gaTilLagerStoff(stoff.id)} className="text-xs text-[#8B6340] hover:underline">
+                        Åpne i lager →
+                      </button>
+                    </div>
+                    {(stoff.materiale || stoff.mengde) && (
+                      <p className="text-xs text-stone-500">
+                        {[stoff.materiale, stoff.mengde].filter(Boolean).join(' · ')}
+                      </p>
+                    )}
+                  </div>
+                </li>
+              ))}
               {form.stoffer.map(stoff => (
                 <li key={stoff.id} className="bg-white rounded-xl border border-stone-200 overflow-hidden flex flex-col sm:flex-row w-full max-w-full">
                   {stoff.bilde ? (
@@ -2409,7 +2557,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
               ))}
             </ul>
           )}
-          {form.stoffer.length === 0 && !stoffImportError && (
+          {lagerStoffer.length === 0 && form.stoffer.length === 0 && !stoffImportError && (
             <p className="text-center py-6 text-sm text-stone-300">Ingen stoffer ennå</p>
           )}
         </div>
@@ -2865,6 +3013,13 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
           recipes={pickerRecipes}
           onSelect={handleLinkRecipe}
           onClose={() => setShowRecipePicker(false)}
+        />
+      )}
+      {showFabricPicker && (
+        <FabricPicker
+          fabrics={pickerFabrics}
+          onSelect={kobleStoffFraLager}
+          onClose={() => setShowFabricPicker(false)}
         />
       )}
 

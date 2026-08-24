@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation'
 import { useHistoryVisning } from '../_shared/useHistoryVisning'
 import { RecipePicker, type PickerRecipe } from '../_shared/RecipePicker'
 import { ProjectPicker, type PickerProject } from '../_shared/ProjectPicker'
+import { lesKoblinger, skrivKoblinger } from '../_shared/stoffProsjektKobling'
 import { supabase } from '@/lib/supabase'
 import { deepClone } from '@/lib/deep-clone'
 
@@ -44,6 +45,11 @@ interface InventoryItemData {
   // et prosjekt/en oppskrift som ikke (ennå) finnes i biblioteket. Når en ekte kobling er
   // satt, vises DEN i UI-en; fritekstfeltet vises bare når ingen av id-feltene er satt.
   tiltenktProsjekt?: string
+  // Ett stoff kan være tiltenkt flere prosjekter. Les/skriv ALLTID via
+  // lesKoblinger/skrivKoblinger i _shared/stoffProsjektKobling.ts — det er der
+  // bakoverkompatibiliteten mot de gamle enkeltfeltene (tiltenktProsjektId/
+  // tiltenktProsjektNavn) bor.
+  tiltenktProsjekter?: { id: string; navn: string }[]
   tiltenktProsjektId?: string
   tiltenktProsjektNavn?: string
   tiltenktOppskriftId?: string
@@ -1119,22 +1125,21 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
           <>
             <SectionHeading>Tiltenkt prosjekt / oppskrift</SectionHeading>
             <div className="space-y-2">
-              {d.tiltenktProsjektId ? (
-                <div className="flex items-center gap-2">
-                  <button onClick={() => gaTilProsjekt(d.tiltenktProsjektId!)}
+              {lesKoblinger(d).map(k => (
+                <div key={k.id} className="flex items-center gap-2">
+                  <button onClick={() => gaTilProsjekt(k.id)}
                     className="flex-1 flex items-center justify-between px-3 py-2 rounded-lg border border-stone-200 bg-stone-50 hover:bg-stone-100 transition-colors text-left min-w-0">
-                    <span className="text-sm text-stone-700 truncate">{d.tiltenktProsjektNavn || 'Uten navn'}</span>
+                    <span className="text-sm text-stone-700 truncate">{k.navn || 'Uten navn'}</span>
                     <span className="text-xs text-[#8B6340] flex-shrink-0 ml-2">Åpne prosjekt →</span>
                   </button>
-                  <button onClick={() => upd({ tiltenktProsjektId: undefined, tiltenktProsjektNavn: undefined })}
+                  <button onClick={() => upd(skrivKoblinger(d, lesKoblinger(d).filter(x => x.id !== k.id)))}
                     className="p-2 text-stone-300 hover:text-red-400 flex-shrink-0" aria-label="Fjern kobling til prosjekt">✕</button>
                 </div>
-              ) : (
-                <button onClick={apneProsjektvelger}
-                  className="w-full py-2 text-sm border border-dashed border-stone-200 rounded-lg text-stone-500 hover:border-stone-400 transition-colors">
-                  + Koble til et prosjekt
-                </button>
-              )}
+              ))}
+              <button onClick={apneProsjektvelger}
+                className="w-full py-2 text-sm border border-dashed border-stone-200 rounded-lg text-stone-500 hover:border-stone-400 transition-colors">
+                + Koble til et prosjekt
+              </button>
 
               {d.tiltenktOppskriftId ? (
                 <div className="flex items-center gap-2">
@@ -1155,7 +1160,7 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
 
               {/* Fritekst-fallback — bare synlig når INGEN ekte kobling er satt, se
                  InventoryItemData.tiltenktProsjekt-kommentaren. */}
-              {!d.tiltenktProsjektId && !d.tiltenktOppskriftId && (
+              {lesKoblinger(d).length === 0 && !d.tiltenktOppskriftId && (
                 <input className={inputCls}
                   value={d.tiltenktProsjekt ?? ''}
                   onChange={e => upd({ tiltenktProsjekt: e.target.value })}
@@ -1287,7 +1292,10 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
       {showProjectPicker && (
         <ProjectPicker
           projects={prosjekter}
-          onSelect={p => { upd({ tiltenktProsjektId: p.id, tiltenktProsjektNavn: p.data.name }); setShowProjectPicker(false) }}
+          onSelect={p => {
+            upd(skrivKoblinger(d, [...lesKoblinger(d), { id: p.id, navn: p.data.name }]))
+            setShowProjectPicker(false)
+          }}
           onClose={() => setShowProjectPicker(false)}
         />
       )}
@@ -1384,6 +1392,20 @@ export default function InventoryPage() {
   )
 
   useEffect(() => { load() }, [load])
+
+  // Åpne stoff viderekoblet fra prosjektsiden (velg stoff fra lageret via chip-lenke) —
+  // samme mønster som openProjectId/openRecipeId, se projects/page.tsx.
+  useEffect(() => {
+    const openId = typeof window !== 'undefined' ? sessionStorage.getItem('openInventoryId') : null
+    if (!openId) return
+    const item = items.find(i => i.id === openId)
+    if (!item) return
+    sessionStorage.removeItem('openInventoryId')
+    setCurrentItem(item)
+    setShowDetail(true)
+    pushVisning({ v: 'item', id: item.id })
+  }, [items, pushVisning])
+
   useEffect(() => { setTypeFilter('Alle') }, [tab])
   useEffect(() => {
     if (!moveMode) setSelectedIds(new Set())
