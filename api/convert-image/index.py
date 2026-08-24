@@ -218,6 +218,32 @@ def _scanline_v(mask, col_spacing: int, max_stitch: int):
     return pts
 
 
+def sett_rammeflagg(pes_bytes: bytes) -> bytes:
+    """
+    Nullstiller de to rammefeltene i PES v1-headeren. Samme funksjon som i
+    api/export-pes/index.py — bevisst duplisert, siden de to endepunktene
+    deployes hver for seg og ikke deler modul.
+
+    pyembroidery hardkoder begge (PesWriter.write_pes_header_v1):
+
+        write_int_16le(f, 0x01)  # scale to fit
+        write_int_16le(f, 0x01)  # 0 = 100x100, 130x180 hoop
+
+    Hver fil biblioteket skriver sier altså «skaler til rammen» og
+    «ramme = 130x180», uansett motivets faktiske mål. Skitch PP1 har
+    100x100 mm, og motivet skal aldri skaleres til rammen.
+
+    Verifisert: bare disse fire bytene endres, og pyembroidery leser tilbake
+    samme sting, tråder og extents.
+    """
+    if not pes_bytes.startswith(b'#PES0001') or len(pes_bytes) < 16:
+        return pes_bytes
+    b = bytearray(pes_bytes)
+    b[12:14] = (0).to_bytes(2, 'little')   # scale to fit = av
+    b[14:16] = (0).to_bytes(2, 'little')   # ramme = 100x100
+    return bytes(b)
+
+
 def _emit(pattern, positions, cx: int, cy: int, pe,
           sc: list, jc: list, tc: list, max_stitch: int = 30):
     """Emit stitches for a list of (px,py) positions into the pattern."""
@@ -1683,12 +1709,13 @@ def convert_image_to_pes(image_bytes: bytes,
     with tempfile.NamedTemporaryFile(suffix='.pes', delete=False) as f:
         tmp = f.name
     try:
-        pyembroidery.write(pattern, tmp, {
-            'hoop_width':  1000,
-            'hoop_height': 1000,
-        })
+        # hoop_width/hoop_height ble sendt inn her før. De hadde ingen effekt —
+        # pyembroidery leser dem ikke i PES/PEC-skriveren (målt: headeren blir
+        # byte for byte lik med og uten dem). Rammen settes i sett_rammeflagg
+        # under, som patcher de to feltene skriveren faktisk hardkoder.
+        pyembroidery.write(pattern, tmp)
         with open(tmp, 'rb') as f:
-            pes_bytes = f.read()
+            pes_bytes = sett_rammeflagg(f.read())
         # Re-parse the written file so metadata matches what external tools see
         _parsed = pyembroidery.read(tmp)
         ghost_noise_count      = 0

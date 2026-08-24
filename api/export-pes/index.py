@@ -8,6 +8,37 @@ from http.server import BaseHTTPRequestHandler
 RAMME_MM = 100.0
 
 
+def sett_rammeflagg(pes_bytes: bytes) -> bytes:
+    """
+    Nullstiller de to rammefeltene i PES v1-headeren.
+
+    pyembroidery hardkoder begge (PesWriter.write_pes_header_v1):
+
+        write_int_16le(f, 0x01)  # scale to fit
+        write_int_16le(f, 0x01)  # 0 = 100x100, 130x180 hoop
+
+    Altså: hver eneste fil biblioteket skriver sier «skaler til rammen» og
+    «ramme = 130x180», uansett hvor stort motivet faktisk er. Skitch PP1 har
+    100x100 mm, og et motiv skal ALDRI skaleres til rammen — målene i
+    CEmbOne/PEC er allerede motivets egne (målt: 63,5 x 65,0 mm for en
+    komposisjon som fyller under to tredjedeler av rammen).
+
+    Patches ETTER skriving, på de fire bytene, i stedet for å vedlikeholde en
+    egen kopi av PES-skriveren. Verifisert: resten av fila er byte for byte
+    identisk, og pyembroidery leser tilbake nøyaktig samme sting, tråder og
+    extents — selvsjekken under påvirkes derfor ikke.
+
+    Bare PES v1 har disse feltene på faste offset. v6 har egne rammefelt lenger
+    ute i headeren, så signaturen sjekkes før noe røres.
+    """
+    if not pes_bytes.startswith(b'#PES0001') or len(pes_bytes) < 16:
+        return pes_bytes
+    b = bytearray(pes_bytes)
+    b[12:14] = (0).to_bytes(2, 'little')   # scale to fit = av
+    b[14:16] = (0).to_bytes(2, 'little')   # ramme = 100x100
+    return bytes(b)
+
+
 def _snap_til_palett(farge_hex):
     """
     PesWriter snapper HVER trådfarge til nærmeste farge i Brothers 64-fargers PEC-palett
@@ -162,7 +193,7 @@ def bygg_monster(segmenter, pes_versjon):
         settings = {'version': float(pes_versjon)} if pes_versjon else None
         pattern.write(tmp_pes, settings=settings)
         with open(tmp_pes, 'rb') as f:
-            pes_bytes = f.read()
+            pes_bytes = sett_rammeflagg(f.read())
     finally:
         try:
             os.unlink(tmp_pes)
