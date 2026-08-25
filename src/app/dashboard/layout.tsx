@@ -59,7 +59,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       {/* Desktop persistent sidebar */}
       {desktopOpen && (
         <aside className="hidden lg:flex lg:flex-col lg:w-64 lg:flex-shrink-0 lg:sticky lg:top-0 lg:h-screen border-r border-stone-200">
-          <SidebarContent userName={userName} onNavigate={() => {}} onClose={() => setDesktopOpen(false)} />
+          <SidebarContent userName={userName} onNavigate={() => {}} onClose={() => setDesktopOpen(false)} onLogout={handleLogout} />
         </aside>
       )}
 
@@ -68,7 +68,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <>
           <div className="fixed inset-0 bg-black/30 z-40 lg:hidden" onClick={() => setMobileOpen(false)} />
           <aside className="fixed inset-y-0 left-0 w-72 max-w-[85vw] z-50 bg-[#FAF7F4] border-r border-stone-200 lg:hidden">
-            <SidebarContent userName={userName} onNavigate={closeMenus} onClose={() => setMobileOpen(false)} />
+            <SidebarContent userName={userName} onNavigate={closeMenus} onClose={() => setMobileOpen(false)} onLogout={handleLogout} />
           </aside>
         </>
       )}

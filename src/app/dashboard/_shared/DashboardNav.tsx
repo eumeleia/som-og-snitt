@@ -128,9 +128,10 @@ function NavRow({ section, isActive, isOpen, onToggle, onNavigate, search }: {
   )
 }
 
-export function SidebarContent({ onNavigate, onClose, userName }: {
+export function SidebarContent({ onNavigate, onClose, onLogout, userName }: {
   onNavigate: () => void
   onClose: () => void
+  onLogout: () => void
   userName: string
 }) {
   const pathname = usePathname()
@@ -186,6 +187,14 @@ export function SidebarContent({ onNavigate, onClose, userName }: {
           <span className="text-sm text-stone-700 truncate flex-1 min-w-0">{userName}</span>
           <NavIcon name="chevronRight" className="w-4 h-4 text-stone-300 flex-shrink-0" />
         </Link>
+        {/* Ingen ikon her — ingenting i DashboardIcons betyr "logg ut", og oppgaven ba
+           oss si fra i stedet for å tegne et nytt. Den tomme spaceren holder teksten på
+           linje med Innstillinger/brukerraden over. */}
+        <button onClick={onLogout}
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-stone-600 hover:bg-stone-100 transition-colors text-left">
+          <span className="w-5 h-5 flex-shrink-0" />
+          Logg ut
+        </button>
       </div>
     </div>
   )
