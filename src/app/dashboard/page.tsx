@@ -21,6 +21,8 @@ interface LandingProject {
     focalY?: number
     recipientName?: string
     size?: string
+    recipeId?: string
+    recipeName?: string
   }
 }
 
@@ -57,6 +59,11 @@ export default function DashboardHomePage() {
   function openProject(id: string) {
     sessionStorage.setItem('openProjectId', id)
     router.push('/dashboard/projects')
+  }
+
+  function openRecipe(id: string) {
+    sessionStorage.setItem('openRecipeId', id)
+    router.push('/dashboard/recipes')
   }
 
   const aktive = projects.filter(p => p.data.status === 'Aktiv')
@@ -151,6 +158,14 @@ export default function DashboardHomePage() {
                       <p className="text-xs text-stone-400 truncate">
                         {[p.data.recipientName && `Til ${p.data.recipientName}`, p.data.size].filter(Boolean).join(' · ')}
                       </p>
+                    )}
+                    {p.data.recipeId && (
+                      <button
+                        onClick={e => { e.stopPropagation(); openRecipe(p.data.recipeId!) }}
+                        className="text-xs text-[#C9A57A] hover:text-[#8B6340] hover:underline transition-colors truncate block"
+                      >
+                        {p.data.recipeName || 'Oppskrift'} ↗
+                      </button>
                     )}
                   </div>
                   <button onClick={() => openProject(p.id)}
