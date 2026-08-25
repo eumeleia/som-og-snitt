@@ -2,31 +2,23 @@
 
 import Link from 'next/link'
 import Image from 'next/image'
-import { usePathname, useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
 import { supabase } from '@/lib/supabase'
-
-const TABS = [
-  { href: '/dashboard/recipes',    label: 'Oppskrifter' },
-  { href: '/dashboard/projects',   label: 'Prosjekter' },
-  { href: '/dashboard/embroidery', label: 'Broderi' },
-  { href: '/dashboard/techniques', label: 'Teknikker' },
-  { href: '/dashboard/inventory',  label: 'Lager' },
-]
+import { NavIcon } from './_shared/DashboardIcons'
+import { SidebarContent } from './_shared/DashboardNav'
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const pathname  = usePathname()
-  const router    = useRouter()
-  const navRef    = useRef<HTMLElement>(null)
-  const menuRef   = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
 
-  const [userName, setUserName] = useState<string>('Min konto')
-  const [menuOpen, setMenuOpen] = useState(false)
-
-  useEffect(() => {
-    const active = navRef.current?.querySelector('[data-active="true"]') as HTMLElement | null
-    active?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' })
-  }, [pathname])
+  const [userName, setUserName]     = useState<string>('Min konto')
+  const [menuOpen, setMenuOpen]     = useState(false)
+  // Persistent sidebar på desktop (lg+), overlegg på mobil — se DashboardNav.tsx.
+  // Uavhengige tilstander: mobileOpen styrer bare overlegget (skjult over lg via
+  // lg:hidden på selve elementet), desktopOpen bare den faste kolonnen (skjult
+  // under lg). Hamburgerknappen i toppfeltet setter alltid begge til true —
+  // riktig variant vises uansett fordi CSS-en over skjuler den andre.
+  const [mobileOpen, setMobileOpen]   = useState(false)
+  const [desktopOpen, setDesktopOpen] = useState(true)
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
@@ -60,89 +52,104 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     supabase.auth.signOut().then(() => { window.location.href = '/login' })
   }
 
+  function closeMenus() { setMobileOpen(false) }
+
   return (
-    <div className="min-h-screen overflow-x-hidden" style={{ backgroundColor: '#FAF7F4' }}>
-      <header className="sticky top-0 z-20 bg-[#FAF7F4] border-b border-stone-200">
-        {/* Brand + account menu — h-12 = 48px */}
-        <div className="flex items-center justify-between px-4 sm:px-8 h-12">
-          <Link href="/dashboard">
-            <Image src="/logo.png" alt="Søm & Snitt" width={0} height={0} sizes="100vw"
-              className="h-10 sm:h-14 w-auto" priority />
-          </Link>
+    <div className="min-h-screen overflow-x-hidden flex" style={{ backgroundColor: '#FAF7F4' }}>
+      {/* Desktop persistent sidebar */}
+      {desktopOpen && (
+        <aside className="hidden lg:flex lg:flex-col lg:w-64 lg:flex-shrink-0 lg:sticky lg:top-0 lg:h-screen border-r border-stone-200">
+          <SidebarContent userName={userName} onNavigate={() => {}} onClose={() => setDesktopOpen(false)} />
+        </aside>
+      )}
 
-          {/* Account dropdown */}
-          <div ref={menuRef} className="relative">
-            <button
-              onClick={() => setMenuOpen(o => !o)}
-              aria-expanded={menuOpen}
-              aria-haspopup="true"
-              className="flex items-center gap-1 px-2.5 py-1.5 text-xs sm:text-sm text-stone-500 hover:bg-stone-100 rounded-lg transition-colors min-h-[44px]"
-            >
-              {/* Person icon — shown on mobile in place of name */}
-              <svg className="w-4 h-4 sm:hidden flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                  d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-              </svg>
-              <span className="hidden sm:inline">{userName}</span>
-              <svg className="w-3 h-3 flex-shrink-0 transition-transform duration-150"
-                style={{ transform: menuOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}
-                fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-              </svg>
-            </button>
+      {/* Mobile overlay */}
+      {mobileOpen && (
+        <>
+          <div className="fixed inset-0 bg-black/30 z-40 lg:hidden" onClick={() => setMobileOpen(false)} />
+          <aside className="fixed inset-y-0 left-0 w-72 max-w-[85vw] z-50 bg-[#FAF7F4] border-r border-stone-200 lg:hidden">
+            <SidebarContent userName={userName} onNavigate={closeMenus} onClose={() => setMobileOpen(false)} />
+          </aside>
+        </>
+      )}
 
-            {menuOpen && (
-              <div className="absolute right-0 top-full mt-1 w-44 bg-white rounded-xl border border-stone-200 shadow-lg py-1 z-30">
-                <Link
-                  href="/dashboard/settings"
-                  onClick={() => setMenuOpen(false)}
-                  className="flex items-center px-4 py-2.5 text-sm text-stone-700 hover:bg-stone-50 transition-colors"
-                >
-                  Innstillinger
-                </Link>
-                <div className="border-t border-stone-100 my-1" />
+      <div className="flex-1 min-w-0 flex flex-col">
+        <header className="relative sticky top-0 z-20 bg-[#FAF7F4] border-b border-stone-200 h-[88px] flex-shrink-0">
+          <div className="flex items-center justify-between h-full px-4 sm:px-8">
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setMobileOpen(true)}
+                aria-label="Åpne sidemeny"
+                className="lg:hidden p-2 -ml-2 text-stone-600 hover:bg-stone-100 rounded-lg transition-colors"
+              >
+                <NavIcon name="menu" className="w-6 h-6" />
+              </button>
+              {!desktopOpen && (
                 <button
-                  onClick={() => { setMenuOpen(false); handleLogout() }}
-                  className="w-full text-left flex items-center px-4 py-2.5 text-sm text-stone-700 hover:bg-stone-50 transition-colors"
+                  onClick={() => setDesktopOpen(true)}
+                  aria-label="Åpne sidemeny"
+                  className="hidden lg:flex p-2 -ml-2 text-stone-600 hover:bg-stone-100 rounded-lg transition-colors"
                 >
-                  Logg ut
+                  <NavIcon name="menu" className="w-6 h-6" />
                 </button>
-              </div>
-            )}
+              )}
+              <Link href="/dashboard" className="hidden lg:block ml-1">
+                <Image src="/logo.png" alt="Søm & Snitt" width={0} height={0} sizes="100vw"
+                  className="h-10 w-auto" priority />
+              </Link>
+            </div>
+
+            {/* Account dropdown */}
+            <div ref={menuRef} className="relative">
+              <button
+                onClick={() => setMenuOpen(o => !o)}
+                aria-expanded={menuOpen}
+                aria-haspopup="true"
+                className="flex items-center gap-1 px-2.5 py-1.5 text-xs sm:text-sm text-stone-500 hover:bg-stone-100 rounded-lg transition-colors min-h-[44px]"
+              >
+                {/* Person icon — shown on mobile in place of name */}
+                <svg className="w-4 h-4 sm:hidden flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                    d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                </svg>
+                <span className="hidden sm:inline">{userName}</span>
+                <svg className="w-3 h-3 flex-shrink-0 transition-transform duration-150"
+                  style={{ transform: menuOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}
+                  fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+
+              {menuOpen && (
+                <div className="absolute right-0 top-full mt-1 w-44 bg-white rounded-xl border border-stone-200 shadow-lg py-1 z-30">
+                  <Link
+                    href="/dashboard/settings"
+                    onClick={() => setMenuOpen(false)}
+                    className="flex items-center px-4 py-2.5 text-sm text-stone-700 hover:bg-stone-50 transition-colors"
+                  >
+                    Innstillinger
+                  </Link>
+                  <div className="border-t border-stone-100 my-1" />
+                  <button
+                    onClick={() => { setMenuOpen(false); handleLogout() }}
+                    className="w-full text-left flex items-center px-4 py-2.5 text-sm text-stone-700 hover:bg-stone-50 transition-colors"
+                  >
+                    Logg ut
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
 
-        {/* Nav tabs — h-10 = 40px; total header = 88px */}
-        <div className="relative border-t border-stone-100">
-          <nav
-            ref={navRef}
-            className="flex overflow-x-auto h-10"
-            style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
-          >
-            {TABS.map(tab => {
-              const isActive = pathname === tab.href || pathname.startsWith(tab.href + '/')
-              return (
-                <Link
-                  key={tab.href}
-                  href={tab.href}
-                  data-active={String(isActive)}
-                  className={`flex-shrink-0 flex items-center px-3 sm:px-7 h-full text-xs sm:text-sm transition-all border-b-2 whitespace-nowrap ${
-                    isActive
-                      ? 'text-stone-800 border-[#C9A57A] font-semibold'
-                      : 'text-stone-400 border-transparent hover:text-stone-600 hover:border-stone-200'
-                  }`}
-                >
-                  {tab.label}
-                </Link>
-              )
-            })}
-          </nav>
-          {/* Fade indicator — hidden on sm+ where all tabs typically fit */}
-          <div className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-[#FAF7F4] to-transparent sm:hidden" />
-        </div>
-      </header>
+          {/* Mobil: logo sentrert uavhengig av hamburger/kontomeny-bredden på sidene */}
+          <Link href="/dashboard" className="lg:hidden absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+            <Image src="/logo.png" alt="Søm & Snitt" width={0} height={0} sizes="100vw"
+              className="h-10 w-auto" priority />
+          </Link>
+        </header>
 
-      {children}
+        <main className="flex-1 min-w-0">{children}</main>
+      </div>
     </div>
   )
 }
