@@ -2,7 +2,7 @@
 
 export const dynamic = 'force-dynamic'
 
-import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
+import { Suspense, useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useHistoryVisning } from '../_shared/useHistoryVisning'
 import { RecipePicker, type PickerRecipe } from '../_shared/RecipePicker'
@@ -1316,6 +1316,17 @@ function kategoriFraSok(value: string | null): Kategori | null {
 }
 
 export default function InventoryPage() {
+  return (
+    <Suspense fallback={null}>
+      <InventoryPageInner />
+    </Suspense>
+  )
+}
+
+// useSearchParams() (kategori-fanen, se under) krever en Suspense-grense ved statisk
+// prerendering, ellers feiler "npm run build" med "missing-suspense-with-csr-bailout" —
+// `export const dynamic = 'force-dynamic'` over er IKKE nok i en 'use client'-side.
+function InventoryPageInner() {
   const pathname = usePathname()
   const router = useRouter()
   const searchParams = useSearchParams()

@@ -3,7 +3,7 @@
 export const dynamic = 'force-dynamic'
 
 import '@/lib/readable-stream-async-iterator-polyfill'
-import { useState, useEffect, useCallback, useRef, type ReactNode, type ChangeEvent } from 'react'
+import { Suspense, useState, useEffect, useCallback, useRef, type ReactNode, type ChangeEvent } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import ReactMarkdown from 'react-markdown'
 import { supabase } from '@/lib/supabase'
@@ -2911,6 +2911,16 @@ function statusFraSok(value: string | null): Status | null {
 }
 
 export default function ProjectsPage() {
+  return (
+    <Suspense fallback={null}>
+      <ProjectsPageInner />
+    </Suspense>
+  )
+}
+
+// Se samme kommentar i inventory/page.tsx: useSearchParams() (statusFilter under)
+// krever en Suspense-grense ved statisk prerendering.
+function ProjectsPageInner() {
   const pathname = usePathname()
   const router = useRouter()
   const searchParams = useSearchParams()
