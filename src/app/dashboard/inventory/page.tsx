@@ -3,7 +3,7 @@
 export const dynamic = 'force-dynamic'
 
 import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
-import { useRouter } from 'next/navigation'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useHistoryVisning } from '../_shared/useHistoryVisning'
 import { RecipePicker, type PickerRecipe } from '../_shared/RecipePicker'
 import { ProjectPicker, type PickerProject } from '../_shared/ProjectPicker'
@@ -1311,10 +1311,18 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
 
 type InvVisning = { v: 'liste' } | { v: 'item'; id: string } | { v: 'ny' }
 
+function kategoriFraSok(value: string | null): Kategori | null {
+  return value === 'Stoff' || value === 'Tilbehør' || value === 'Utstyr' ? value : null
+}
+
 export default function InventoryPage() {
+  const pathname = usePathname()
+  const router = useRouter()
+  const searchParams = useSearchParams()
+
   const [items, setItems]           = useState<InventoryItem[]>([])
   const [loading, setLoading]       = useState(true)
-  const [tab, setTab]               = useState<Kategori>('Stoff')
+  const [tab, setTabState]          = useState<Kategori>(() => kategoriFraSok(searchParams.get('kategori')) ?? 'Stoff')
   const [search, setSearch]                   = useState('')
   const [typeFilter, setTypeFilter]           = useState<string>('Alle')
   const [sort, setSort]                       = useState<SortOrder>('newest')
@@ -1332,6 +1340,19 @@ export default function InventoryPage() {
   const [selectedIds, setSelectedIds]         = useState<Set<string>>(new Set())
   const [moving, setMoving]                   = useState(false)
   const [visArkiverte, setVisArkiverte]       = useState(false)
+
+  // Fanen speiles i URL-en (?kategori=) slik at sidemenyens Lager-undermeny treffer
+  // riktig fane ved direkte oppslag — samme mønster som statusFilter i projects/page.tsx.
+  useEffect(() => {
+    const fraUrl = kategoriFraSok(searchParams.get('kategori'))
+    if (fraUrl && fraUrl !== tab) setTabState(fraUrl)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
+
+  function setTab(k: Kategori) {
+    setTabState(k)
+    router.replace(`${pathname}?kategori=${encodeURIComponent(k)}`)
+  }
 
   useEffect(() => {
     if (!typeDropdownOpen) return

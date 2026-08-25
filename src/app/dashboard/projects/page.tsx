@@ -4,6 +4,7 @@ export const dynamic = 'force-dynamic'
 
 import '@/lib/readable-stream-async-iterator-polyfill'
 import { useState, useEffect, useCallback, useRef, type ReactNode, type ChangeEvent } from 'react'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import ReactMarkdown from 'react-markdown'
 import { supabase } from '@/lib/supabase'
 import { useHistoryVisning } from '../_shared/useHistoryVisning'
@@ -2905,14 +2906,22 @@ function DeleteDialog({ onConfirm, onCancel }: { onConfirm: () => void; onCancel
 
 type ProjectVisning = { v: 'liste' } | { v: 'item'; id: string } | { v: 'ny' }
 
+function statusFraSok(value: string | null): Status | null {
+  return value === 'Aktiv' || value === 'Planlagt' || value === 'Fullført' ? value : null
+}
+
 export default function ProjectsPage() {
+  const pathname = usePathname()
+  const router = useRouter()
+  const searchParams = useSearchParams()
+
   const [projects, setProjects]             = useState<Project[]>([])
   const [loading, setLoading]               = useState(true)
   const [showDetail, setShowDetail]         = useState(false)
   const [currentProject, setCurrentProject] = useState<Project | null>(null)
   const [showNewModal, setShowNewModal]     = useState(false)
   const [deleteId, setDeleteId]             = useState<string | null>(null)
-  const [statusFilter, setStatusFilter]     = useState<Status>('Aktiv')
+  const [statusFilter, setStatusFilterState] = useState<Status>(() => statusFraSok(searchParams.get('status')) ?? 'Aktiv')
   const [catFilter, setCatFilter]           = useState<Category | 'Alle'>('Alle')
   const [sortBy, setSortBy]                 = useState<'Manuell' | 'Nyeste' | 'Eldste' | 'Navn'>('Manuell')
   const [orderSaving, setOrderSaving]       = useState(false)
@@ -2926,6 +2935,20 @@ export default function ProjectsPage() {
   const listPdfViewerRef = useRef<{ project: Project; pdf: PdfItem } | null>(null)
   const catDropdownRef  = useRef<HTMLDivElement>(null)
   const sortDropdownRef = useRef<HTMLDivElement>(null)
+
+  // Fanen speiles i URL-en (?status=) slik at sidemenyens Prosjekter-undermeny treffer
+  // riktig fane ved direkte oppslag, og slik at et klikk der oppdaterer denne fanen uten
+  // full omlasting. replace, ikke push — å bytte fane skal ikke fylle historikken.
+  useEffect(() => {
+    const fraUrl = statusFraSok(searchParams.get('status'))
+    if (fraUrl && fraUrl !== statusFilter) setStatusFilterState(fraUrl)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
+
+  function setStatusFilter(s: Status) {
+    setStatusFilterState(s)
+    router.replace(`${pathname}?status=${encodeURIComponent(s)}`)
+  }
 
   useEffect(() => {
     if (!catDropdownOpen) return
