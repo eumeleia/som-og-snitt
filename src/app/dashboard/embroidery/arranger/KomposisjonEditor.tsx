@@ -8,6 +8,7 @@ import { ErrorDetailsView } from '@/components/ErrorDetailsView'
 import { roterLokalePunkter, plassertBbox, kombinerBbox } from './geometri'
 import { synkroniserSekvens, byggFargePerBlokk, tellSting, tellOmtredninger, type SekvensKontekst } from './sekvens'
 import { byggMiniatyrSvg } from './miniatyr'
+import { erEndret, type KomposisjonSnapshot } from './lagreSnapshot'
 import { hentMineTrader, byggPecTilEkteMap, type MinTrad } from './minTraadpalett'
 import { SekvensPanel } from './SekvensPanel'
 import { EksportPanel } from './EksportPanel'
@@ -62,6 +63,18 @@ function erUtenforRamme(bbox: BroderiBbox): boolean {
     bbox.min_x < -RAMME_HALV_TIENDEDEL_MM || bbox.max_x > RAMME_HALV_TIENDEDEL_MM ||
     bbox.min_y < -RAMME_HALV_TIENDEDEL_MM || bbox.max_y > RAMME_HALV_TIENDEDEL_MM
   )
+}
+
+// Styrer AUTOlagring (navnefeltets onBlur, tilbakeknappen, avmontering, beforeunload) —
+// aldri den direkte "Lagre"/"Lagre som komposisjon"-knappen, som alltid går rett til
+// lagre() uansett disse to reglene:
+//  - En helt ny, tom komposisjon skal aldri opprettes av seg selv (id null + ingen motiver).
+//  - Et enkeltmotiv åpnet fra biblioteket (startMotiv) skal aldri bli en lagret komposisjon
+//    av seg selv — bare et eksplisitt knappetrykk skal kunne opprette den raden.
+function skalAutolagre(snap: { id: string | null; antallMotiver: number; startMotivSatt: boolean }): boolean {
+  if (snap.id === null && snap.antallMotiver === 0) return false
+  if (snap.startMotivSatt && snap.id === null) return false
+  return true
 }
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
@@ -151,6 +164,25 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
   const [mineTrader, setMineTrader] = useState<MinTrad[]>([])
   useEffect(() => { hentMineTrader().then(setMineTrader) }, [])
   const pecTilEkte = useMemo(() => byggPecTilEkteMap(mineTrader), [mineTrader])
+
+  // ── Utgangslagring (tilbakeknapp, browser-navigasjon, fanelukking) ────────────────
+  // latestRef holder de ferskeste verdiene av alt lagre() trenger, oppdatert etter HVER
+  // rendring (ingen dependency-liste) — se lagre()-kommentaren under for hvorfor: en
+  // avmonteringseffekt sin cleanup kan kalles fra en closure satt opp ved MOUNT, og en
+  // lukket variabel derfra ville vært det aller første øyeblikksbildet, ikke det siste.
+  const latestRef = useRef({ id, navn, motiver, sekvens, resolved, pecTilEkte, startMotiv })
+  useEffect(() => {
+    latestRef.current = { id, navn, motiver, sekvens, resolved, pecTilEkte, startMotiv }
+  })
+
+  // Siste vellykkede lagring — DEN ENE sannheten om "endret", se lagreSnapshot.ts.
+  const lagretSnapshotRef = useRef<KomposisjonSnapshot>({ navn, motiver, sekvens })
+  // Én lagring om gangen: et nytt lagre()-kall mens en pågående fetch ikke er ferdig
+  // venter på DEN i stedet for å starte sin egen — se lagre() under for hullet dette
+  // tetter (navnefeltets onBlur og en utgangslagring som treffer samtidig).
+  const pendingSaveRef = useRef<Promise<boolean> | null>(null)
+  // Siste miniatyr bygget fra et KOMPLETT sett tolkede motiver — se lagre() under.
+  const sisteKomplettMiniatyrRef = useRef<string | undefined>(komposisjon?.data.miniatyrSvg)
 
   const svgRef = useRef<SVGSVGElement>(null)
   const dragRef = useRef<{
@@ -405,25 +437,32 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
   }
 
   // ── Lagre ────────────────────────────────────────────────────────────────────
-  // lagretNavnRef holder navnet slik det sto ved siste vellykkede lagring — brukes av
-  // navnefeltets onBlur til å avgjøre om det er noe å lagre. Uten denne var "Lagre" den
-  // ENESTE veien til å lagre et nytt navn: skrev man et navn og navigerte bort (f.eks.
-  // tilbake-knappen) uten å klikke "Lagre" selv, ble navnet aldri sendt til serveren —
-  // ikke fordi lagre()/PUT-ruta var ødelagt, men fordi ingenting kalte lagre() i det
-  // hele tatt for navnefeltet alene.
-  const lagretNavnRef = useRef(navn)
+  // Selve nettverkskallet — leser ALLTID fra latestRef, aldri fra motiver/navn/sekvens
+  // direkte i denne funksjonens egen closure. Det er det som gjør det trygt å kalle
+  // lagre() fra en avmonteringseffekt sin cleanup, som kan kjøre en closure satt opp
+  // ved mount: funksjonen selv har ingen utdatert tilstand å være uenig med seg selv om.
+  async function lagreNaa(): Promise<boolean> {
+    const snap = latestRef.current
+    // Aldri opprett en tom rad — se skalAutolagre-kommentaren. Gjelder OGSÅ det
+    // eksplisitte knappetrykket: en tom, ny komposisjon er ingenting å lagre.
+    if (snap.id === null && snap.motiver.length === 0) return true
 
-  async function lagre() {
     setSaveStatus('saving')
     setSaveErrorDetails(null)
     try {
-      // Miniatyren regnes ut HER, ved lagring — aldri når komposisjonslista bare vises. Bruker
-      // resolved slik den står akkurat nå (motiver som ikke er tolket ferdig ennå mangler
-      // rett og slett fra miniatyren, i stedet for å blokkere selve lagringen).
-      const miniatyrSvg = byggMiniatyrSvg(motiver, resolved, sekvens, pecTilEkte)
-      const body = { data: { navn, motiver, sekvens, miniatyrSvg } }
-      const res = id
-        ? await fetch(`/api/broderi-komposisjon/${id}`, {
+      // Miniatyren regnes ut HER, ved lagring — aldri når komposisjonslista bare vises.
+      // Er ikke ALLE motiver tolket ferdig ennå (resolved mangler en eller flere), ville
+      // byggMiniatyrSvg bygget en miniatyr med hull (den hopper stille over det som
+      // mangler, se miniatyr.ts) — i stedet beholdes forrige komplette miniatyr uendret,
+      // eller ingen (for en helt ny komposisjon: den regnes uansett på nytt ved neste
+      // lagring, en manglende miniatyr nå er ikke tapt informasjon).
+      const komplett = snap.motiver.every(pm => !!snap.resolved[motivKey(pm.embroideryId, pm.sizeId)])
+      const miniatyrSvg = komplett
+        ? byggMiniatyrSvg(snap.motiver, snap.resolved, snap.sekvens, snap.pecTilEkte)
+        : sisteKomplettMiniatyrRef.current
+      const body = { data: { navn: snap.navn, motiver: snap.motiver, sekvens: snap.sekvens, miniatyrSvg } }
+      const res = snap.id
+        ? await fetch(`/api/broderi-komposisjon/${snap.id}`, {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
           })
         : await fetch('/api/broderi-komposisjon', {
@@ -431,23 +470,98 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
           })
       const responseBody = await res.json()
       if (!res.ok) throw new Error(responseBody.error ?? 'Klarte ikke lagre')
-      if (!id) setId(responseBody.id)
-      lagretNavnRef.current = navn
+      if (!snap.id) setId(responseBody.id)
+      if (komplett) sisteKomplettMiniatyrRef.current = miniatyrSvg
+      lagretSnapshotRef.current = { navn: snap.navn, motiver: snap.motiver, sekvens: snap.sekvens }
       setSaveStatus('saved')
       setTimeout(() => setSaveStatus('idle'), 1500)
+      return true
     } catch (err) {
       setSaveErrorDetails(describeError(err))
       setSaveStatus('error')
+      return false
     }
+  }
+
+  // Ytre innpakning for hull 1: navnefeltets onBlur fyrer PÅ VEI UT av feltet, og for en
+  // ny komposisjon (id null) rett før tilbakeknappens egen utgangslagring — uten denne
+  // ville begge startet sin egen fetch, og «id er satt» kappløpet ville gitt to POST-er
+  // og to rader. Én lagring om gangen: et kall mens en annen fetch pågår venter på DEN i
+  // stedet for å starte sitt eget (dekker også dobbelttrykk på tilbakeknappen/Lagre).
+  async function lagre(): Promise<boolean> {
+    if (pendingSaveRef.current) return pendingSaveRef.current
+    const promise = lagreNaa()
+    pendingSaveRef.current = promise
+    try {
+      return await promise
+    } finally {
+      pendingSaveRef.current = null
+    }
+  }
+
+  // Har noe som faktisk skal lagres endret seg siden forrige vellykkede lagring? Ren
+  // sammenligning av hele øyeblikksbildet (lagreSnapshot.ts) — IKKE et dirty-flagg satt
+  // av hver enkelt handling, som alltid før eller senere glemmer én.
+  function harUlagredeEndringer(): boolean {
+    const snap = latestRef.current
+    return erEndret(lagretSnapshotRef.current, { navn: snap.navn, motiver: snap.motiver, sekvens: snap.sekvens })
   }
 
   // Lagrer automatisk når navnefeltet forlates, IKKE bare på trykk av "Lagre" — samme
   // lagre()-kall (motiver/sekvens følger med, siden data er én sammenhengende jsonb),
-  // bare utløst av et annet event. Sjekker mot lagretNavnRef, ikke bare "har det endret
-  // seg siden forrige tegn", for å unngå et unødvendig kall når feltet bare klikkes i og
-  // ut av uten redigering.
+  // bare utløst av et annet event.
   function onNavnBlur() {
-    if (navn !== lagretNavnRef.current) lagre()
+    if (!skalAutolagre({ id, antallMotiver: motiver.length, startMotivSatt: !!startMotiv })) return
+    if (harUlagredeEndringer()) lagre()
+  }
+
+  // Enkeltmotiv fra biblioteket, ikke lagret som komposisjon ennå — se skalAutolagre.
+  const kunUlagretEnkeltmotiv = !!startMotiv && id === null
+
+  // ── Utgangslagring ved navigasjon ─────────────────────────────────────────────────
+  // Nettleserens tilbakeknapp og sidemeny-navigasjon går IKKE via onBack — de avmonterer
+  // KomposisjonEditor direkte (useHistoryVisning i arranger/page.tsx bytter visning,
+  // eller en Link i sidemenyen navigerer bort). Denne effektens cleanup er derfor den
+  // ENESTE krok som fanger dem begge. "Fire and forget": en cleanup kan ikke være async
+  // eller stanse avmonteringen, så lagre() sendes uten å vente — feiler den, mister
+  // brukeren de aller siste endringene på nøyaktig den ene turen, men det er likevel
+  // langt bedre enn å aldri prøve i det hele tatt.
+  useEffect(() => {
+    return () => {
+      const snap = latestRef.current
+      if (!skalAutolagre({ id: snap.id, antallMotiver: snap.motiver.length, startMotivSatt: !!snap.startMotiv })) return
+      if (!erEndret(lagretSnapshotRef.current, { navn: snap.navn, motiver: snap.motiver, sekvens: snap.sekvens })) return
+      lagre()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // ── Fanelukking ────────────────────────────────────────────────────────────────────
+  // beforeunload kan ikke vente på en fetch (og sendBeacon kan bare POST-e — å oppdatere
+  // en eksisterende komposisjon er en PUT), så dette varsler i stedet: nettleseren spør
+  // brukeren om hen vil forlate siden når det finnes ulagrede endringer.
+  useEffect(() => {
+    function onBeforeUnload(e: BeforeUnloadEvent) {
+      const snap = latestRef.current
+      if (!skalAutolagre({ id: snap.id, antallMotiver: snap.motiver.length, startMotivSatt: !!snap.startMotiv })) return
+      if (!erEndret(lagretSnapshotRef.current, { navn: snap.navn, motiver: snap.motiver, sekvens: snap.sekvens })) return
+      e.preventDefault()
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [])
+
+  // ── Tilbakeknappen i editoren ──────────────────────────────────────────────────────
+  // Gjør onBack-veien asynkron: lagrer først (om reglene tillater det og noe er endret),
+  // og navigerer bare videre om det gikk bra. Feiler lagringen, blir brukeren stående i
+  // editoren med feilen synlig (saveErrorDetails/ErrorDetailsView under) — å navigere
+  // bort etter en feilet lagring er nøyaktig det tapet denne oppgaven skal fjerne.
+  async function handleTilbake() {
+    if (skalAutolagre({ id, antallMotiver: motiver.length, startMotivSatt: !!startMotiv }) && harUlagredeEndringer()) {
+      const ok = await lagre()
+      if (!ok) return
+    }
+    onBack()
   }
 
   const valgtMotiv = motiver.find(pm => pm.id === valgtId) ?? null
@@ -549,10 +663,18 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
   return (
     <div className="w-full max-w-3xl lg:max-w-6xl mx-auto px-4 sm:px-6 py-3 pb-24">
       <div className="flex items-center gap-3 mb-4">
-        <button onClick={onBack} className="p-2 rounded-xl hover:bg-stone-100 text-stone-500 transition-colors">
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 19l-7-7 7-7" />
-          </svg>
+        <button
+          onClick={handleTilbake}
+          disabled={saveStatus === 'saving'}
+          className="p-2 rounded-xl hover:bg-stone-100 text-stone-500 transition-colors disabled:opacity-50 flex items-center gap-1.5 flex-shrink-0"
+        >
+          {saveStatus === 'saving' ? (
+            <span className="text-sm px-1 whitespace-nowrap">Lagrer…</span>
+          ) : (
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 19l-7-7 7-7" />
+            </svg>
+          )}
         </button>
         <input
           value={navn}
@@ -566,7 +688,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
           disabled={saveStatus === 'saving'}
           className="h-9 px-4 rounded-xl bg-stone-800 text-white text-sm hover:bg-stone-700 transition-colors disabled:opacity-50 flex-shrink-0"
         >
-          {saveStatus === 'saving' ? 'Lagrer…' : saveStatus === 'saved' ? 'Lagret ✓' : 'Lagre'}
+          {saveStatus === 'saving' ? 'Lagrer…' : saveStatus === 'saved' ? 'Lagret ✓' : kunUlagretEnkeltmotiv ? 'Lagre som komposisjon' : 'Lagre'}
         </button>
       </div>
 
