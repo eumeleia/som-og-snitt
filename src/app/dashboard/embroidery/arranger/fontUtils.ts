@@ -141,6 +141,11 @@ export function buildFontData(
 export interface LayoutBokstav {
   tegn: string
   info: FontTegn
+  // Posisjonen i den ORIGINALE tekst-strengen (mellomrom talt med i tellingen, men får
+  // ingen egen bokstav) — se PlassertMotiv.fontKilde.indeks i types.ts for hvorfor: et
+  // hopp større enn 1 mellom to plasserte bokstaver avslører et ordmellomrom uten noe
+  // eget flagg.
+  indeksITekst: number
   posXTiendedelMm: number  // center of bbox, in 1/10mm from canvas origin
   posYTiendedelMm: number  // center of bbox, in 1/10mm from canvas origin (baseline at y=0)
 }
@@ -180,11 +185,12 @@ export function layoutTekst(
   let cursor = -totalWidth / 2
   const bokstaver: LayoutBokstav[] = []
   prevWasChar = false
+  let indeksITekst = 0
 
   for (const ch of tekst) {
-    if (ch === ' ') { cursor += mellomromMm; prevWasChar = false; continue }
+    if (ch === ' ') { cursor += mellomromMm; prevWasChar = false; indeksITekst++; continue }
     const info = tegn[ch]
-    if (!info) continue
+    if (!info) { indeksITekst++; continue }
     if (prevWasChar) cursor += opts.tracking
 
     // Top of file is at (baseline_y - bifMm) = (0 - bifMm) = -bifMm in canvas coords.
@@ -192,11 +198,13 @@ export function layoutTekst(
     bokstaver.push({
       tegn: ch,
       info,
+      indeksITekst,
       posXTiendedelMm: Math.round((cursor + info.widthMm / 2) * 10),
       posYTiendedelMm: Math.round((info.heightMm / 2 - info.bifMm) * 10),
     })
     cursor += info.widthMm
     prevWasChar = true
+    indeksITekst++
   }
 
   // Vertical extent based on actual characters used, not theoretical maximum
@@ -213,4 +221,76 @@ export function layoutTekst(
     totalBreddeMm: totalWidth,
     totalHøydeMm: topExtentMm + bottomExtentMm,
   }
+}
+
+// ── Mellomrom-glideren PÅ LERRETET (punkt E, docs/onsker-2026-09-08.md) ────────────────
+// To rene funksjoner: den ene måler HVA som allerede står der (til å sette gliderens
+// startverdi uten å gjette), den andre regner NYE X-posisjoner fra en valgt verdi. Ingen
+// av dem rører Y — grunnlinjejustering skal overleve en mellomrom-endring.
+
+export interface TekstleddInput {
+  id: string
+  widthMm: number
+  // Posisjon i den originale teksten (fontKilde.indeks) — null for eldre komposisjoner
+  // uten feltet, der ordgrenser ikke kan skilles fra bokstavgrenser (se malSporingFraPosisjoner
+  // og omplasserTekstgruppe: et par der EN av dem er null blir alltid behandlet som
+  // "samme ord", aldri som en gjettet ordgrense).
+  indeks: number | null
+}
+
+function erOrdgrense(forrige: number | null, denne: number | null): boolean {
+  return forrige != null && denne != null && denne - forrige > 1
+}
+
+function median(tall: number[]): number | null {
+  if (tall.length === 0) return null
+  const sortert = [...tall].sort((a, b) => a - b)
+  return sortert[Math.floor(sortert.length / 2)]
+}
+
+// Måler bokstav- og ordmellomrommet SLIK DET FAKTISK STÅR på lerretet nå — medianen av
+// gapene mellom nabobokstaver, delt i to grupper etter erOrdgrense. Brukes til å sette
+// mellomrom-glideren sin startverdi UTEN å gjette: reproduserer man akkurat denne verdien
+// tilbake gjennom omplasserTekstgruppe, får bokstavene nøyaktig den x-posisjonen de har
+// nå (opp til avrunding). null for en gruppe betyr «ingen slike gap å måle» (for eksempel
+// bare ett tegn, eller ingen ordgrenser i teksten).
+export function malSporingFraPosisjoner(
+  ledd: Array<{ posisjonXTiendedelMm: number; widthMm: number; indeks: number | null }>,
+): { sporingMm: number | null; mellomromMm: number | null } {
+  const bokstavGap: number[] = []
+  const ordGap: number[] = []
+  for (let i = 1; i < ledd.length; i++) {
+    const venstreKant = ledd[i - 1].posisjonXTiendedelMm + (ledd[i - 1].widthMm * 10) / 2
+    const høyreKant = ledd[i].posisjonXTiendedelMm - (ledd[i].widthMm * 10) / 2
+    const gapMm = (høyreKant - venstreKant) / 10
+    const liste = erOrdgrense(ledd[i - 1].indeks, ledd[i].indeks) ? ordGap : bokstavGap
+    liste.push(gapMm)
+  }
+  return { sporingMm: median(bokstavGap), mellomromMm: median(ordGap) }
+}
+
+// Regner NYE X-posisjoner for en gruppe bokstaver fra samme tekst — ekte re-plassering,
+// ikke bare et forhåndsvisningstall. `ledd` må allerede stå i lesereferanse. Senteret
+// (sentrumTiendedelMm, målt FØR denne omplasseringen) holdes fast: gruppens egen bredde
+// endres fritt, men midtpunktet flytter seg ikke, så ordet ikke vandrer ut av rammen mens
+// glideren dras. Returnerer BARE X — Y er kallerens ansvar (røres aldri her).
+export function omplasserTekstgruppe(
+  ledd: TekstleddInput[],
+  sporingMm: number,
+  mellomromMm: number,
+  sentrumTiendedelMm: number,
+): Array<{ id: string; posisjonXTiendedelMm: number }> {
+  if (ledd.length === 0) return []
+  let cursorMm = 0
+  const senterMm: number[] = []
+  for (let i = 0; i < ledd.length; i++) {
+    if (i > 0) cursorMm += erOrdgrense(ledd[i - 1].indeks, ledd[i].indeks) ? mellomromMm : sporingMm
+    senterMm.push(cursorMm + ledd[i].widthMm / 2)
+    cursorMm += ledd[i].widthMm
+  }
+  const offsetTiendedelMm = sentrumTiendedelMm - Math.round((cursorMm / 2) * 10)
+  return ledd.map((l, i) => ({
+    id: l.id,
+    posisjonXTiendedelMm: Math.round(senterMm[i] * 10) + offsetTiendedelMm,
+  }))
 }

@@ -8,7 +8,7 @@ import { ErrorDetailsView } from '@/components/ErrorDetailsView'
 import { roterLokalePunkter, plassertBbox, kombinerBbox } from './geometri'
 import { synkroniserSekvens, byggFargePerBlokk, tellSting, tellOmtredninger, type SekvensKontekst } from './sekvens'
 import { byggMiniatyrSvg } from './miniatyr'
-import { erEndret, type KomposisjonSnapshot } from './lagreSnapshot'
+import { erEndret, serialiserSnapshot, type KomposisjonSnapshot } from './lagreSnapshot'
 import { hentMineTrader, byggPecTilEkteMap, type MinTrad } from './minTraadpalett'
 import { SekvensPanel } from './SekvensPanel'
 import { EksportPanel } from './EksportPanel'
@@ -19,7 +19,10 @@ import {
   type EmbroideryBundleData, type VirtuelMotiv, type VirtuelStorrelse, type FontMetrikk,
   getBundleCoverImage, getKats,
 } from './types'
-import { buildFontData, layoutTekst, klassifiser, type FontData, type TextLayout } from './fontUtils'
+import {
+  buildFontData, layoutTekst, klassifiser, malSporingFraPosisjoner, omplasserTekstgruppe,
+  type FontData, type TextLayout,
+} from './fontUtils'
 import {
   RAMME_MM, RAMME_GRENSE_MM, type BboxMm,
   velgStandardStorrelse, byggVirtuelleMotiver, beregnRutenettPosisjoner, beregnRutenettCelle,
@@ -40,6 +43,11 @@ function uid() {
 function motivKey(embroideryId: string, sizeId: string): string {
   return `${embroideryId}:${sizeId}`
 }
+
+// Reserveverdi bare for mellomrom-glidernes område/andel-omregning når ikke ETT tegn i
+// bundlen har en resolved bbox å måle x-høyde fra (bør aldri treffe i praksis — tekstGrupper
+// under krever selv resolved bbox på minst to tegn for at en gruppe skal vises).
+const XHEIGHT_FALLBACK_MM = 1.6
 
 const ROTASJON_SNAPP_PUNKTER = [-180, -90, 0, 90, 180]
 const ROTASJON_SNAPP_TERSKEL = 4
@@ -127,8 +135,14 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
     return []
   })
   const [sekvens, setSekvens] = useState<SekvensElement[]>(komposisjon?.data.sekvens ?? [])
-  const [undoStack, setUndoStack] = useState<SekvensElement[][]>([])
-  const [redoStack, setRedoStack] = useState<SekvensElement[][]>([])
+  // Angring dekker BÅDE motiver og sekvens (punkt C, docs/onsker-2026-09-08.md) — en
+  // flytting, tilføying eller sletting er like mye en angrebar handling som en
+  // sekvensendring. Push skjer bare ved DISKRETE handlinger (slutten av et dra, et
+  // forlatt tallfelt, tilføying, sletting, sekvensendring) — se pushUndoHvisEndret,
+  // aldri per pointermove/onChange-steg. navn er MED VILJE utenfor: å skrive om navnet
+  // er ikke en angrebar handling her.
+  const [undoStack, setUndoStack] = useState<KomposisjonSnapshot[]>([])
+  const [redoStack, setRedoStack] = useState<KomposisjonSnapshot[]>([])
   const [valgtId, setValgtId] = useState<string | null>(null)
   const [showPicker, setShowPicker] = useState(false)
   // Satt av leggTilValgte (via onVelgFlere) når flervalgets rutenett IKKE kunne holde
@@ -152,6 +166,14 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
   const [kalibreringInkludert, setKalibreringInkludert] = useState<Record<string, boolean>>({})
   const [kalibreringLagrer, setKalibreringLagrer] = useState<string | null>(null)
   const [kalibreringFeil, setKalibreringFeil] = useState<ErrorDetails | null>(null)
+
+  // ── Mellomrom bokstaver/ord PÅ LERRETET ("Lagre som standard for denne fonten") ────
+  // Se punkt E i docs/onsker-2026-09-08.md — samme prinsipp som grunnlinje-kalibreringen
+  // over, men for x-avstand i stedet for y. mellomromLagrer/-Feil er nøkkelet på
+  // gruppens key (tekst:<tekstId> eller bundle:<bundleId>), ikke bundleId alene, siden
+  // flere tekster fra samme bundle kan stå på lerretet samtidig.
+  const [mellomromLagrer, setMellomromLagrer] = useState<string | null>(null)
+  const [mellomromFeil, setMellomromFeil] = useState<{ key: string; feil: ErrorDetails } | null>(null)
 
   const [resolved, setResolved] = useState<Record<string, BroderiMotivData>>({})
   const [fetchErrors, setFetchErrors] = useState<Record<string, string>>({})
@@ -192,27 +214,45 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
     startPosX: number
     startPosY: number
   } | null>(null)
+  // Øyeblikksbilde tatt ved dra-START (pointerdown/pointerdown på rotasjonsglideren) —
+  // sammenlignet mot NÅ-tilstanden ved dra-SLUTT, én angre-push per dra, aldri per steg.
+  const dragUndoRef = useRef<KomposisjonSnapshot | null>(null)
+
+  // Skipper push-en når "før" og "etter" faktisk serialiserer likt (et forlatt tallfelt
+  // som ikke endret verdien, et dra som endte der det startet) — se
+  // KomposisjonSnapshot/serialiserSnapshot i lagreSnapshot.ts. Samme navn på begge sider
+  // med vilje: navn er ikke en angrebar handling her, og skal aldri i seg selv utløse
+  // en push.
+  function pushUndoHvisEndret(
+    forrige: { motiver: PlassertMotiv[]; sekvens: SekvensElement[] },
+    na: { motiver: PlassertMotiv[]; sekvens: SekvensElement[] },
+  ) {
+    if (serialiserSnapshot({ navn, ...forrige }) === serialiserSnapshot({ navn, ...na })) return
+    setUndoStack(u => [...u.slice(-29), { navn, ...forrige }])
+    setRedoStack([])
+  }
 
   function handleSekvensChange(ny: SekvensElement[]) {
-    setUndoStack(u => [...u.slice(-30), sekvens])
-    setRedoStack([])
+    pushUndoHvisEndret({ motiver, sekvens }, { motiver, sekvens: ny })
     setSekvens(ny)
   }
 
   function handleUndo() {
     if (undoStack.length === 0) return
     const prev = undoStack[undoStack.length - 1]
-    setRedoStack(r => [sekvens, ...r.slice(0, 29)])
+    setRedoStack(r => [{ navn, motiver, sekvens }, ...r.slice(0, 29)])
     setUndoStack(u => u.slice(0, -1))
-    setSekvens(prev)
+    setMotiver(prev.motiver)
+    setSekvens(prev.sekvens)
   }
 
   function handleRedo() {
     if (redoStack.length === 0) return
     const next = redoStack[0]
-    setUndoStack(u => [...u.slice(-29), sekvens])
+    setUndoStack(u => [...u.slice(-29), { navn, motiver, sekvens }])
     setRedoStack(r => r.slice(1))
-    setSekvens(next)
+    setMotiver(next.motiver)
+    setSekvens(next.sekvens)
   }
 
   function handleTilbakestill() {
@@ -266,19 +306,21 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
     setSekvens(s => synkroniserSekvens(s, { motiver, resolved }))
   }, [motiver, resolved])
 
-  function leggTilMotiv(embroideryId: string, sizeId: string, navn: string) {
+  function leggTilMotiv(embroideryId: string, sizeId: string, navnParam: string) {
     const nyId = uid()
     const kaskade = motiver.length * 50 // 5 mm forskyvning per nytt motiv, så de ikke stables eksakt
     const ny: PlassertMotiv = {
       id: nyId,
       embroideryId,
       sizeId,
-      navn,
+      navn: navnParam,
       posisjonXTiendedelMm: kaskade,
       posisjonYTiendedelMm: kaskade,
       rotasjonGrader: 0,
     }
-    setMotiver(m => [...m, ny])
+    const nyeMotiver = [...motiver, ny]
+    pushUndoHvisEndret({ motiver, sekvens }, { motiver: nyeMotiver, sekvens })
+    setMotiver(nyeMotiver)
     setValgtId(nyId)
     setShowPicker(false)
     setRutenettAdvarsel(false)
@@ -288,7 +330,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
   function leggTilMotiverBolk(
     items: Array<{
       embroideryId: string; sizeId: string; navn: string; x: number; y: number
-      fontKilde?: { bundleId: string; bundleNavn: string; tegn: string }
+      fontKilde?: { bundleId: string; bundleNavn: string; tegn: string; tekstId?: string; indeks?: number }
     }>,
     rutenettUmulig?: boolean,
   ) {
@@ -303,20 +345,33 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
       rotasjonGrader: 0,
       fontKilde: item.fontKilde,
     }))
-    setMotiver(m => [...m, ...nye])
+    const nyeMotiver = [...motiver, ...nye]
+    pushUndoHvisEndret({ motiver, sekvens }, { motiver: nyeMotiver, sekvens })
+    setMotiver(nyeMotiver)
     setValgtId(null)
     setShowPicker(false)
     setRutenettAdvarsel(!!rutenettUmulig)
     for (const item of items) sikreMotivData(item.embroideryId, item.sizeId)
   }
 
+  // Fortløpende (rotasjonsglideren mens den dras) — INGEN angre-push her, se
+  // oppdaterValgtMedAngre for den diskrete varianten (tallfelt-commit, glider-slipp).
   function oppdaterValgt(patch: Partial<PlassertMotiv>) {
     if (!valgtId) return
     setMotiver(m => m.map(pm => pm.id === valgtId ? { ...pm, ...patch } : pm))
   }
 
+  function oppdaterValgtMedAngre(patch: Partial<PlassertMotiv>) {
+    if (!valgtId) return
+    const nyeMotiver = motiver.map(pm => pm.id === valgtId ? { ...pm, ...patch } : pm)
+    pushUndoHvisEndret({ motiver, sekvens }, { motiver: nyeMotiver, sekvens })
+    setMotiver(nyeMotiver)
+  }
+
   function slett(id: string) {
-    setMotiver(m => m.filter(pm => pm.id !== id))
+    const nyeMotiver = motiver.filter(pm => pm.id !== id)
+    pushUndoHvisEndret({ motiver, sekvens }, { motiver: nyeMotiver, sekvens })
+    setMotiver(nyeMotiver)
     if (valgtId === id) setValgtId(null)
   }
 
@@ -328,13 +383,15 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
       if (tag === 'input' || tag === 'textarea') return
       if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault()
-        setMotiver(m => m.filter(pm => pm.id !== valgtId))
+        const nyeMotiver = motiver.filter(pm => pm.id !== valgtId)
+        pushUndoHvisEndret({ motiver, sekvens }, { motiver: nyeMotiver, sekvens })
+        setMotiver(nyeMotiver)
         setValgtId(null)
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [valgtId])
+  }, [valgtId, motiver, sekvens, navn, pushUndoHvisEndret])
 
   const undoRedoRef = useRef<{ handleUndo: () => void; handleRedo: () => void }>({ handleUndo, handleRedo })
   undoRedoRef.current = { handleUndo, handleRedo }
@@ -416,6 +473,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
       startPosX: pm.posisjonXTiendedelMm,
       startPosY: pm.posisjonYTiendedelMm,
     }
+    dragUndoRef.current = { navn, motiver, sekvens }
     ;(e.target as Element).setPointerCapture(e.pointerId)
   }
 
@@ -434,6 +492,30 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
 
   function onPointerUpSvg() {
     dragRef.current = null
+    if (dragUndoRef.current) {
+      pushUndoHvisEndret(dragUndoRef.current, { motiver, sekvens })
+      dragUndoRef.current = null
+    }
+  }
+
+  // ── Mellomrom bokstaver/ord PÅ LERRETET (punkt E) — deler dragUndoRef med
+  // rotasjonsglideren over, siden bare ett dra kan pågå om gangen. Selve re-plasseringen
+  // (onOmplasserTekstgruppe) er den fortløpende, IKKE angre-sporede delen — bare X endres,
+  // aldri Y, se omplasserTekstgruppe i fontUtils.ts.
+  function onTekstgruppeDragStart() {
+    dragUndoRef.current = { navn, motiver, sekvens }
+  }
+
+  function onTekstgruppeDragEnd() {
+    if (dragUndoRef.current) {
+      pushUndoHvisEndret(dragUndoRef.current, { motiver, sekvens })
+      dragUndoRef.current = null
+    }
+  }
+
+  function onOmplasserTekstgruppe(nye: Array<{ id: string; posisjonXTiendedelMm: number }>) {
+    const nyeX = new Map(nye.map(n => [n.id, n.posisjonXTiendedelMm]))
+    setMotiver(m => m.map(pm => nyeX.has(pm.id) ? { ...pm, posisjonXTiendedelMm: nyeX.get(pm.id)! } : pm))
   }
 
   // ── Lagre ────────────────────────────────────────────────────────────────────
@@ -644,7 +726,11 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
         const verdiMm = kalibreringOverride[key] ?? rad.draggedDiffMm
         nyttTegnOppslag[rad.tegn] = { underlengdeAndel: verdiMm / rad.heightMm, kilde: 'manuell' as const, oppdatert: now }
       }
-      const nyData = { ...bundleRow.data, fontMetrikk: { tegn: nyttTegnOppslag } }
+      // Spre inn EKSISTERENDE fontMetrikk (sporingAndel/mellomromAndel hører til
+      // mellomrom-lagringen, punkt E) før tegn overskrives — ellers sletter denne
+      // lagringen mellomrom-innstillingene, og omvendt.
+      const eksisterendeFontMetrikk = (bundleRow.data as EmbroideryBundleData).fontMetrikk
+      const nyData = { ...bundleRow.data, fontMetrikk: { ...eksisterendeFontMetrikk, tegn: nyttTegnOppslag } }
       const { error: saveErr } = await supabase.from('embroidery_bundles').update({ data: nyData }).eq('id', gruppe.bundleId)
       if (saveErr) throw new Error(saveErr.message)
       setKalibreringApneBundles(s => { const n = new Set(s); n.delete(gruppe.bundleId); return n })
@@ -657,6 +743,105 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
       setKalibreringFeil(describeError(err))
     } finally {
       setKalibreringLagrer(null)
+    }
+  }
+
+  // ── Mellomrom bokstaver/ord PÅ LERRETET (punkt E, docs/onsker-2026-09-08.md) ───────
+  // Grupperer plasserte motiver med fontKilde etter HVILKEN TEKST de kommer fra
+  // (fontKilde.tekstId), IKKE bare bundle — «Ellinor» og en senere, separat innsatt
+  // «Test» fra samme font skal justeres hver for seg. Eldre komposisjoner uten tekstId
+  // faller tilbake til ÉN gruppe per bundle, sortert på x (kjenteIndekser: false) — se
+  // omplasserTekstgruppe/malSporingFraPosisjoner i fontUtils.ts. Grupper med under to
+  // tegn har ingenting å justere og vises ikke.
+  const tekstGrupper = useMemo(() => {
+    type Ledd = { id: string; posisjonXTiendedelMm: number; widthMm: number; indeks: number | null }
+    type Akk = { bundleId: string; bundleNavn: string; kjenteIndekser: boolean; ledd: Ledd[] }
+    const perGruppe = new Map<string, Akk>()
+    for (const pm of motiver) {
+      if (!pm.fontKilde) continue
+      const data = resolved[motivKey(pm.embroideryId, pm.sizeId)]
+      if (!data?.bbox) continue
+      const widthMm = (data.bbox.max_x - data.bbox.min_x) / 10
+      const kjentIndeks = pm.fontKilde.tekstId != null && pm.fontKilde.indeks != null
+      const key = kjentIndeks ? `tekst:${pm.fontKilde.tekstId}` : `bundle:${pm.fontKilde.bundleId}`
+      const g = perGruppe.get(key) ?? {
+        bundleId: pm.fontKilde.bundleId, bundleNavn: pm.fontKilde.bundleNavn,
+        kjenteIndekser: kjentIndeks, ledd: [],
+      }
+      g.ledd.push({
+        id: pm.id, posisjonXTiendedelMm: pm.posisjonXTiendedelMm, widthMm,
+        indeks: kjentIndeks ? pm.fontKilde.indeks! : null,
+      })
+      perGruppe.set(key, g)
+    }
+    return Array.from(perGruppe.entries())
+      .map(([key, g]) => {
+        const ledd = [...g.ledd].sort((a, b) =>
+          g.kjenteIndekser ? (a.indeks! - b.indeks!) : (a.posisjonXTiendedelMm - b.posisjonXTiendedelMm),
+        )
+        const { sporingMm, mellomromMm } = malSporingFraPosisjoner(ledd)
+        return { key, bundleId: g.bundleId, bundleNavn: g.bundleNavn, kjenteIndekser: g.kjenteIndekser, ledd, sporingMm, mellomromMm }
+      })
+      .filter(g => g.sporingMm != null)
+  }, [motiver, resolved])
+
+  // Median høyde av x-høyde-klassifiserte tegn fra denne bundlen SOM STÅR PÅ LERRETET nå
+  // (samme idé som buildFontData sin xHeight-måling, bare mot det plasserte utvalget i
+  // stedet for hele fontbiblioteket — bundlerMap/vms finnes bare inne i MotivPicker, se
+  // KomposisjonEditor-toppnivået). Faller tilbake til medianen av ALLE tegn fra bundlen
+  // hvis ingen x-høyde-tegn er plassert ennå (f.eks. bare VERSALER så langt).
+  const bundleXHeightMm = useMemo(() => {
+    const perBundleXHoyde = new Map<string, number[]>()
+    const perBundleAlle = new Map<string, number[]>()
+    for (const pm of motiver) {
+      if (!pm.fontKilde) continue
+      const data = resolved[motivKey(pm.embroideryId, pm.sizeId)]
+      if (!data?.bbox) continue
+      const heightMm = (data.bbox.max_y - data.bbox.min_y) / 10
+      if (heightMm <= 0) continue
+      const alle = perBundleAlle.get(pm.fontKilde.bundleId) ?? []
+      alle.push(heightMm)
+      perBundleAlle.set(pm.fontKilde.bundleId, alle)
+      if (klassifiser(pm.fontKilde.tegn) === 'x-hoyde') {
+        const xh = perBundleXHoyde.get(pm.fontKilde.bundleId) ?? []
+        xh.push(heightMm)
+        perBundleXHoyde.set(pm.fontKilde.bundleId, xh)
+      }
+    }
+    function medianAv(tall: number[]): number {
+      const s = [...tall].sort((a, b) => a - b)
+      return s[Math.floor(s.length / 2)]
+    }
+    const result = new Map<string, number>()
+    for (const bundleId of perBundleAlle.keys()) {
+      const xh = perBundleXHoyde.get(bundleId)
+      result.set(bundleId, xh && xh.length > 0 ? medianAv(xh) : medianAv(perBundleAlle.get(bundleId)!))
+    }
+    return result
+  }, [motiver, resolved])
+
+  async function lagreMellomromStandard(bundleId: string, gruppeKey: string, sporingMm: number, mellomromMm: number | null, xHeightMm: number) {
+    setMellomromLagrer(gruppeKey)
+    setMellomromFeil(null)
+    try {
+      const { data: bundleRow, error } = await supabase
+        .from('embroidery_bundles').select('data').eq('id', bundleId).single()
+      if (error || !bundleRow) throw new Error(error?.message ?? 'Fant ikke fontbunten')
+      // Spre inn eksisterende fontMetrikk.tegn (grunnlinje-kalibreringen, se lagreGrunnlinje
+      // over) — denne lagringen rører bare sporingAndel/mellomromAndel.
+      const eksisterende = (bundleRow.data as EmbroideryBundleData).fontMetrikk
+      const nyFontMetrikk: FontMetrikk = {
+        tegn: eksisterende?.tegn ?? {},
+        sporingAndel: xHeightMm > 0 ? sporingMm / xHeightMm : eksisterende?.sporingAndel,
+        mellomromAndel: mellomromMm != null && xHeightMm > 0 ? mellomromMm / xHeightMm : eksisterende?.mellomromAndel,
+      }
+      const nyData = { ...bundleRow.data, fontMetrikk: nyFontMetrikk }
+      const { error: saveErr } = await supabase.from('embroidery_bundles').update({ data: nyData }).eq('id', bundleId)
+      if (saveErr) throw new Error(saveErr.message)
+    } catch (err) {
+      setMellomromFeil({ key: gruppeKey, feil: describeError(err) })
+    } finally {
+      setMellomromLagrer(null)
     }
   }
 
@@ -802,6 +987,27 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
         + Legg til motiv
       </button>
 
+      {tekstGrupper.map(gruppe => (
+        <TekstMellomromKontroll
+          key={gruppe.key}
+          bundleNavn={gruppe.bundleNavn}
+          ledd={gruppe.ledd}
+          kjenteIndekser={gruppe.kjenteIndekser}
+          sporingMaalt={gruppe.sporingMm!}
+          mellomromMaalt={gruppe.mellomromMm}
+          xHeightMm={bundleXHeightMm.get(gruppe.bundleId) ?? XHEIGHT_FALLBACK_MM}
+          onOmplasser={onOmplasserTekstgruppe}
+          onDragStart={onTekstgruppeDragStart}
+          onDragEnd={onTekstgruppeDragEnd}
+          onLagreStandard={(sporingMm, mellomromMm) => lagreMellomromStandard(
+            gruppe.bundleId, gruppe.key, sporingMm, mellomromMm,
+            bundleXHeightMm.get(gruppe.bundleId) ?? XHEIGHT_FALLBACK_MM,
+          )}
+          lagrer={mellomromLagrer === gruppe.key}
+          feil={mellomromFeil?.key === gruppe.key ? mellomromFeil.feil : null}
+        />
+      ))}
+
       {kalibreringsGrupper.map(gruppe => (
         <div key={gruppe.bundleId} className="bg-white rounded-2xl border border-stone-200 shadow-sm p-4 mb-4">
           {!kalibreringApneBundles.has(gruppe.bundleId) ? (
@@ -901,7 +1107,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
               <TallFelt
                 step={0.1}
                 value={valgtMotiv.posisjonXTiendedelMm / 10 + RAMME_MM / 2}
-                onCommit={visX => oppdaterValgt({ posisjonXTiendedelMm: Math.round((visX - RAMME_MM / 2) * 10) })}
+                onCommit={visX => oppdaterValgtMedAngre({ posisjonXTiendedelMm: Math.round((visX - RAMME_MM / 2) * 10) })}
                 className="w-full px-2.5 py-1.5 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300"
               />
             </label>
@@ -910,7 +1116,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
               <TallFelt
                 step={0.1}
                 value={valgtMotiv.posisjonYTiendedelMm / 10 + RAMME_MM / 2}
-                onCommit={visY => oppdaterValgt({ posisjonYTiendedelMm: Math.round((visY - RAMME_MM / 2) * 10) })}
+                onCommit={visY => oppdaterValgtMedAngre({ posisjonYTiendedelMm: Math.round((visY - RAMME_MM / 2) * 10) })}
                 className="w-full px-2.5 py-1.5 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300"
               />
             </label>
@@ -919,7 +1125,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
               <TallFelt
                 step={1}
                 value={valgtMotiv.rotasjonGrader}
-                onCommit={n => oppdaterValgt({ rotasjonGrader: n })}
+                onCommit={n => oppdaterValgtMedAngre({ rotasjonGrader: n })}
                 className="w-full px-2.5 py-1.5 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300"
               />
             </label>
@@ -928,7 +1134,14 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
             <input
               type="range" min={-180} max={180} step={1}
               value={normaliserForGlider(valgtMotiv.rotasjonGrader)}
+              onPointerDown={() => { dragUndoRef.current = { navn, motiver, sekvens } }}
               onChange={e => oppdaterValgt({ rotasjonGrader: snappRotasjon(Number(e.target.value)) })}
+              onPointerUp={() => {
+                if (dragUndoRef.current) {
+                  pushUndoHvisEndret(dragUndoRef.current, { motiver, sekvens })
+                  dragUndoRef.current = null
+                }
+              }}
               className="w-full accent-[#C9A57A]"
             />
             <div className="flex justify-between text-[10px] text-stone-400 px-0.5">
@@ -1180,6 +1393,111 @@ function PlassertMotivGruppe({ pm, data, bbox, valgt, utenforRamme, aktivKjoring
   )
 }
 
+// ── Mellomrom bokstaver/ord PÅ LERRETET (punkt E, docs/onsker-2026-09-08.md) ───────────
+
+function TekstMellomromKontroll({
+  bundleNavn, ledd, kjenteIndekser, sporingMaalt, mellomromMaalt, xHeightMm,
+  onOmplasser, onDragStart, onDragEnd, onLagreStandard, lagrer, feil,
+}: {
+  bundleNavn: string
+  ledd: Array<{ id: string; posisjonXTiendedelMm: number; widthMm: number; indeks: number | null }>
+  kjenteIndekser: boolean
+  sporingMaalt: number
+  mellomromMaalt: number | null
+  xHeightMm: number
+  onOmplasser: (nye: Array<{ id: string; posisjonXTiendedelMm: number }>) => void
+  onDragStart: () => void
+  onDragEnd: () => void
+  onLagreStandard: (sporingMm: number, mellomromMm: number | null) => void
+  lagrer: boolean
+  feil: ErrorDetails | null
+}) {
+  // Startverdi MÅLT fra det som faktisk står der (se malSporingFraPosisjoner) — ikke et
+  // gjett. useState leser dette bare ved MOUNT (React ignorerer argumentet ved senere
+  // rendringer så lenge komponenten beholder identitet via key=gruppe.key), så glideren
+  // fanges ikke i en løkke med foreldrekomponentens egen re-måling under dra.
+  const [tracking, setTracking] = useState(sporingMaalt)
+  const [mellomrom, setMellomrom] = useState(mellomromMaalt ?? 0)
+  // Øyeblikksbilde av gruppens senter, tatt ved dra-START — se omplasserTekstgruppe i
+  // fontUtils.ts og B2-regelen i docs/onsker-2026-09-08.md (samme anti-drift-prinsipp).
+  const senterRef = useRef<number | null>(null)
+
+  function start() {
+    senterRef.current = ledd.length > 0
+      ? Math.round((ledd[0].posisjonXTiendedelMm + ledd[ledd.length - 1].posisjonXTiendedelMm) / 2)
+      : 0
+    onDragStart()
+  }
+
+  function slutt() {
+    senterRef.current = null
+    onDragEnd()
+  }
+
+  function omplasser(nySporingMm: number, nyMellomromMm: number) {
+    if (senterRef.current == null) return
+    const input = ledd.map(l => ({ id: l.id, widthMm: l.widthMm, indeks: l.indeks }))
+    onOmplasser(omplasserTekstgruppe(input, nySporingMm, nyMellomromMm, senterRef.current))
+  }
+
+  const harOrdgrense = mellomromMaalt != null
+
+  return (
+    <div className="bg-white rounded-2xl border border-stone-200 shadow-sm p-4 mb-4">
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <p className="text-sm font-medium text-stone-700 truncate">Mellomrom for teksten fra {bundleNavn}</p>
+        <button
+          onClick={() => onLagreStandard(tracking, harOrdgrense ? mellomrom : null)}
+          disabled={lagrer}
+          className="flex-shrink-0 px-3 py-1.5 text-xs bg-stone-800 text-white rounded-lg hover:bg-stone-700 disabled:opacity-50 transition-colors"
+        >
+          {lagrer ? 'Lagrer…' : 'Lagre som standard for denne fonten'}
+        </button>
+      </div>
+      {!kjenteIndekser && (
+        <p className="text-xs text-stone-400 mb-3">
+          Eldre tekst uten lagret rekkefølge — glideren gjelder bokstavene slik de står nå, sortert fra venstre til høyre.
+        </p>
+      )}
+      {feil && (
+        <div className="mb-3">
+          <ErrorDetailsView details={feil} context="Lagre mellomrom for denne fonten" />
+        </div>
+      )}
+      <div className="space-y-4">
+        <div>
+          <div className="flex justify-between text-xs text-stone-500 mb-1.5">
+            <span>Mellomrom bokstaver</span>
+            <span>{tracking >= 0 ? '+' : ''}{tracking.toFixed(1)} mm</span>
+          </div>
+          <input type="range"
+            min={-0.7 * xHeightMm} max={0.5 * xHeightMm} step={0.1}
+            value={tracking}
+            onPointerDown={start}
+            onChange={e => { const v = parseFloat(e.target.value); setTracking(v); omplasser(v, mellomrom) }}
+            onPointerUp={slutt}
+            className="w-full accent-[#C9A57A]" />
+        </div>
+        {harOrdgrense && (
+          <div>
+            <div className="flex justify-between text-xs text-stone-500 mb-1.5">
+              <span>Mellomrom ord</span>
+              <span>{mellomrom.toFixed(1)} mm</span>
+            </div>
+            <input type="range"
+              min={0.3 * xHeightMm} max={1.2 * xHeightMm} step={0.1}
+              value={mellomrom}
+              onPointerDown={start}
+              onChange={e => { const v = parseFloat(e.target.value); setMellomrom(v); omplasser(tracking, v) }}
+              onPointerUp={slutt}
+              className="w-full accent-[#C9A57A]" />
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Tekstverktøy ─────────────────────────────────────────────────────────────
 
 function TextVerktoy({ bundleId, bundleNavn, fontMetrikk, vms, biblioteket, onLeggTil, onBack, onEnkelttegn }: {
@@ -1190,7 +1508,7 @@ function TextVerktoy({ bundleId, bundleNavn, fontMetrikk, vms, biblioteket, onLe
   biblioteket: Embroidery[]
   onLeggTil: (items: Array<{
     embroideryId: string; sizeId: string; navn: string; x: number; y: number
-    fontKilde?: { bundleId: string; bundleNavn: string; tegn: string }
+    fontKilde?: { bundleId: string; bundleNavn: string; tegn: string; tekstId?: string; indeks?: number }
   }>) => void
   onBack: () => void
   // Vei ut av tekstmodus for en font-bundle: samme tegn kan brukes som ETT motiv, ikke bare
@@ -1208,17 +1526,37 @@ function TextVerktoy({ bundleId, bundleNavn, fontMetrikk, vms, biblioteket, onLe
     return Array.from(set).sort((a, b) => parseFloat(a) - parseFloat(b))
   }, [vms])
 
+  // Ingen gjettet standard lenger (punkt E, docs/onsker-2026-09-08.md) — 0,08 × x-høyde
+  // var begrunnet for en OPPREIST font (ingen sidelagre i filene, min_x = 0), men
+  // Seraphine er kursiv: en skråstilt bboks er bredere enn der bokstaven faktisk møter
+  // den neste, så hullet blir stort selv ved 0 mm — gjetningen traff aldri der. Uten en
+  // lagret sporingAndel for fonten starter glideren derfor rett og slett på 0; den
+  // egentlige startverdien kommer nå fra dra-og-lagre på LERRETET (se
+  // omplasserTekstgruppe/malSporingFraPosisjoner i fontUtils.ts og glideren under
+  // lerretet i hovedkomponenten), ikke fra denne dialogen. sporingAndel er lagret som
+  // andel av x-høyden nettopp for å gjelde i ALLE tommestørrelser — regnes derfor om til
+  // mm på nytt for den tommen som faktisk er valgt, se beregnSporingMm under.
+  function beregnSporingMm(t: string): number {
+    if (!t || fontMetrikk?.sporingAndel == null) return 0
+    const fd = buildFontData(vms, t, biblioteket, fontMetrikk)
+    return Math.round(fontMetrikk.sporingAndel * fd.metrics.xHeight * 10) / 10
+  }
+
   const [tomme, setTomme] = useState<string>(tilgjengeligeTommes[0] ?? '')
   const [tekst, setTekst] = useState('')
-  // Standard 0,08 × x-høyde (≈1,3 mm ved 2"), ikke 0 — filene har ingen sidelagre
-  // (min_x = 0 for alle tegn), så 0 mm gir bokstaver som berører hverandre. Et
-  // utgangspunkt, ikke en sannhet — glideren justerer fritt videre herfra.
-  const [tracking, setTracking] = useState(() => {
-    if (!tomme) return 0
-    const fd = buildFontData(vms, tomme, biblioteket, fontMetrikk)
-    return Math.round(fd.metrics.xHeight * 0.08 * 10) / 10
-  })
-  const [mellomromFaktor, setMellomromFaktor] = useState(0.6)
+  const [tracking, setTracking] = useState(() => beregnSporingMm(tilgjengeligeTommes[0] ?? ''))
+  // mellomromAndel er allerede en x-høyde-andel (samme enhet som mellomromFaktor), så
+  // den brukes uendret — se FontMetrikk i types.ts.
+  const [mellomromFaktor, setMellomromFaktor] = useState(() => fontMetrikk?.mellomromAndel ?? 0.6)
+
+  // Bytt størrelse → regn tracking om til mm på nytt for den nye tommen (samme andel,
+  // annet tall) — «justert under rendring», IKKE en useEffect (unngår et synlig
+  // 0 mm-glimt før korrigering, og trigger-avhengigheten er allerede eksplisitt her).
+  const [forrigeTomme, setForrigeTomme] = useState(tomme)
+  if (tomme !== forrigeTomme) {
+    setForrigeTomme(tomme)
+    setTracking(beregnSporingMm(tomme))
+  }
 
   const fontData: FontData | null = useMemo(
     () => tomme ? buildFontData(vms, tomme, biblioteket, fontMetrikk) : null,
@@ -1248,13 +1586,18 @@ function TextVerktoy({ bundleId, bundleNavn, fontMetrikk, vms, biblioteket, onLe
 
   function leggTil() {
     if (!layout || !fontData || !tekst.trim() || layout.bokstaver.length === 0) return
+    // Én tekstId for HELE denne innsettingen — sammen med indeks (posisjonen i den
+    // originale strengen) er det slik mellomrom-glideren på lerretet vet hvilke motiver
+    // som hører til samme tekst og i hvilken rekkefølge, uten å gjette fra x-posisjon
+    // (punkt E, docs/onsker-2026-09-08.md).
+    const tekstId = uid()
     onLeggTil(layout.bokstaver.map(b => ({
       embroideryId: b.info.embroideryId,
       sizeId: b.info.sizeId,
       navn: `${b.tegn} – ${tomme}" (${bundleNavn})`,
       x: b.posXTiendedelMm,
       y: b.posYTiendedelMm,
-      fontKilde: { bundleId, bundleNavn, tegn: b.tegn },
+      fontKilde: { bundleId, bundleNavn, tegn: b.tegn, tekstId, indeks: b.indeksITekst },
     })))
   }
 
@@ -1315,16 +1658,21 @@ function TextVerktoy({ bundleId, bundleNavn, fontMetrikk, vms, biblioteket, onLe
         <div className="space-y-4">
           <div>
             <div className="flex justify-between text-xs text-stone-500 mb-1.5">
-              <span>Sporing</span>
+              <span>Mellomrom bokstaver</span>
               <span>{tracking >= 0 ? '+' : ''}{tracking.toFixed(1)} mm</span>
             </div>
-            <input type="range" min={-3} max={5} step={0.1} value={tracking}
+            {/* Området er relativt til fontens x-høyde, ikke et fast mm-tall (punkt E) —
+               en stor font trenger et større sprik enn en liten for samme visuelle
+               tetthet. mm-visningen er uendret, bare grensene skalerer med fonten. */}
+            <input type="range"
+              min={-0.7 * (fontData?.metrics.xHeight ?? 0)} max={0.5 * (fontData?.metrics.xHeight ?? 0)}
+              step={0.1} value={tracking}
               onChange={e => setTracking(parseFloat(e.target.value))}
               className="w-full accent-[#C9A57A]" />
           </div>
           <div>
             <div className="flex justify-between text-xs text-stone-500 mb-1.5">
-              <span>Mellomrom (space)</span>
+              <span>Mellomrom ord</span>
               <span>{mellomromFaktor.toFixed(1)}× x-høyde</span>
             </div>
             <input type="range" min={0.3} max={1.2} step={0.05} value={mellomromFaktor}
@@ -1520,7 +1868,7 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
   onVelgFlere: (
     items: Array<{
       embroideryId: string; sizeId: string; navn: string; x: number; y: number
-      fontKilde?: { bundleId: string; bundleNavn: string; tegn: string }
+      fontKilde?: { bundleId: string; bundleNavn: string; tegn: string; tekstId?: string; indeks?: number }
     }>,
     rutenettUmulig?: boolean,
   ) => void

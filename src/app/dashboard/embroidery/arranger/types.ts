@@ -60,7 +60,16 @@ export interface Embroidery {
 // den NAIVE standarden (bif = heightMm, andel 0) — se KomposisjonEditor sin
 // "Lagre grunnlinje"-handling — så gjentatt kalibrering overskriver i stedet for å
 // akkumulere.
+// sporingAndel/mellomromAndel (punkt E, docs/onsker-2026-09-08.md): mellomrom mellom
+// bokstaver/ord, kalibrert med øyet på LERRETET (ekte re-plassering), lagret som andel av
+// x-høyden — gjelder derfor i alle tommestørrelser, samme prinsipp som underlengdeAndel.
+// sporingAndel × xHeight = mm mellom bokstaver i samme ord; mellomromAndel × xHeight = mm
+// mellom ord (mellomromAndel er ALLEREDE en x-høyde-andel internt i layoutTekst, så den
+// lagres uendret, uten om- og tilbakeregning). Ingen lagret verdi → glideren starter på 0
+// (sporing) / dagens standard 0,6 (mellomrom) — se buildFontData/TextVerktoy.
 export interface FontMetrikk {
+  sporingAndel?: number
+  mellomromAndel?: number
   tegn: { [tegn: string]: { underlengdeAndel: number; kilde: 'manuell'; oppdatert: string } }
 }
 
@@ -129,7 +138,13 @@ export interface PlassertMotiv {
   // fonten" (KomposisjonEditor): hvilke motiver på lerretet er kalibreringskandidater,
   // og for hvilket tegn i hvilken bundle. bundleNavn ligger med her (ikke bare bundleId)
   // for å slippe et eget oppslag i lagringspanelet — TextVerktoy har den allerede.
-  fontKilde?: { bundleId: string; bundleNavn: string; tegn: string }
+  // tekstId/indeks (punkt E, docs/onsker-2026-09-08.md): hvilke bokstaver som hører til
+  // SAMME tekst, og deres rekkefølge — indeks er posisjonen i den ORIGINALE tekststrengen
+  // (mellomrom talt med, men uten egen rad), så et hopp større enn 1 mellom to naboer
+  // AVSLØRER et ordmellomrom uten noe eget flagg. Uten disse (eldre komposisjoner) kan
+  // mellomrom-glideren på lerretet bare falle tilbake til sortering på x, og aldri skille
+  // et bokstav- fra et ordmellomrom.
+  fontKilde?: { bundleId: string; bundleNavn: string; tegn: string; tekstId?: string; indeks?: number }
 }
 
 // Sekvensen er den flate, faktiske sylisten på tvers av alle plasserte motiver —
