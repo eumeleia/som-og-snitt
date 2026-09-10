@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { buildFontData, layoutTekst, klassifiser, malSporingFraPosisjoner, omplasserTekstgruppe } from './fontUtils'
+import {
+  buildFontData, layoutTekst, klassifiser, malSporingFraPosisjoner, omplasserTekstgruppe,
+  trekkFraFellesForskyvning,
+} from './fontUtils'
 import type { Embroidery, VirtuelMotiv } from './types'
 
 // Ekte, målte bbokser fra Seraphine 2" (docs/fontmaling-2026-08-13.md), bredde×høyde i mm.
@@ -224,5 +227,77 @@ describe('omplasserTekstgruppe', () => {
 
   it('tomt utvalg gir tom liste, krasjer ikke', () => {
     expect(omplasserTekstgruppe([], 0, 0, 0)).toEqual([])
+  })
+})
+
+// Punkt A i docs/onsker-2026-09-08.md — feilen var at draggedDiffMm ble målt mot y = 0
+// (rammens midtlinje), så en flytting av HELE ordet ble lest som manglende grunnlinje på
+// alle bokstavene. Medianen av gruppens diffMm ER ordets plassering; det som står igjen
+// etter fratrekk er den ekte grunnlinjefeilen.
+describe('trekkFraFellesForskyvning', () => {
+  it('ord flyttet 40 mm samlet: alle avvik ≈ 0 etter fratrekk', () => {
+    const rader = [
+      { tegn: 'a', heightMm: 20, diffMm: 40 },
+      { tegn: 'b', heightMm: 20, diffMm: 40 },
+      { tegn: 'c', heightMm: 20, diffMm: 40 },
+    ]
+    const { rader: nye, fellesForskyvningMm, advarselTegn } = trekkFraFellesForskyvning(rader)
+    expect(fellesForskyvningMm).toBe(40)
+    for (const r of nye) expect(r.diffMm).toBeCloseTo(0, 10)
+    expect(advarselTegn.size).toBe(0)
+  })
+
+  it('ord med én ekte underlengde: bare det tegnet avviker etter fratrekk', () => {
+    // Fem bokstaver flyttet 40 mm samlet (med litt naturlig støy), én bokstav («p») har i
+    // tillegg en EKTE grunnlinjefeil på 2,5 mm oven på den samme flyttingen.
+    const rader = [
+      { tegn: 'a', heightMm: 20, diffMm: 40.1 },
+      { tegn: 'e', heightMm: 20, diffMm: 39.9 },
+      { tegn: 'o', heightMm: 20, diffMm: 40.0 },
+      { tegn: 'n', heightMm: 20, diffMm: 40.0 },
+      { tegn: 'p', heightMm: 20, diffMm: 42.5 },
+    ]
+    const { rader: nye } = trekkFraFellesForskyvning(rader)
+    const p = nye.find(r => r.tegn === 'p')!
+    for (const r of nye) if (r.tegn !== 'p') expect(Math.abs(r.diffMm)).toBeLessThan(0.2)
+    expect(p.diffMm).toBeCloseTo(2.5, 5)
+  })
+
+  it('gjenskaper det oppgitte «Ellinor»-eksemplet nøyaktig', () => {
+    // E · i · l · n · o · r (alfabetisk, som kalibreringsGrupper sorterer radene).
+    const rader = [
+      { tegn: 'E', heightMm: 100, diffMm: 40.9 },
+      { tegn: 'i', heightMm: 100, diffMm: 40.3 },
+      { tegn: 'l', heightMm: 100, diffMm: 40.4 },
+      { tegn: 'n', heightMm: 100, diffMm: 39.9 },
+      { tegn: 'o', heightMm: 100, diffMm: 40.3 },
+      { tegn: 'r', heightMm: 100, diffMm: 40.0 },
+    ]
+    const { rader: nye, fellesForskyvningMm } = trekkFraFellesForskyvning(rader)
+    expect(fellesForskyvningMm).toBeCloseTo(40.3, 5)
+    const ved = (tegn: string) => nye.find(r => r.tegn === tegn)!.diffMm
+    expect(ved('E')).toBeCloseTo(0.6, 5)
+    expect(ved('i')).toBeCloseTo(0.0, 5)
+    expect(ved('l')).toBeCloseTo(0.1, 5)
+    expect(ved('n')).toBeCloseTo(-0.4, 5)
+    expect(ved('o')).toBeCloseTo(0.0, 5)
+    expect(ved('r')).toBeCloseTo(-0.3, 5)
+  })
+
+  it('bare ETT tegn i gruppen: plassering og grunnlinje kan ikke skilles — ingen fratrekk', () => {
+    const rader = [{ tegn: 'a', heightMm: 20, diffMm: 40 }]
+    const resultat = trekkFraFellesForskyvning(rader)
+    expect(resultat.fellesForskyvningMm).toBeNull()
+    expect(resultat.rader).toEqual(rader)
+  })
+
+  it('advarer ved avvik over 30 % av tegnets egen høyde, etter fratrekk', () => {
+    const rader = [
+      { tegn: 'a', heightMm: 20, diffMm: 40 },   // felles, ingen reell feil
+      { tegn: 'b', heightMm: 20, diffMm: 40 },
+      { tegn: 'p', heightMm: 20, diffMm: 47 },   // 7 mm avvik = 35 % av 20 mm → advarsel
+    ]
+    const { advarselTegn } = trekkFraFellesForskyvning(rader)
+    expect(advarselTegn).toEqual(new Set(['p']))
   })
 })

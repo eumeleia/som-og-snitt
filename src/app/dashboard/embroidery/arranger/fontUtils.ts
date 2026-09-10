@@ -294,3 +294,37 @@ export function omplasserTekstgruppe(
     posisjonXTiendedelMm: Math.round(senterMm[i] * 10) + offsetTiendedelMm,
   }))
 }
+
+// ── Grunnlinje-kalibrering: felles forskyvning (punkt A, docs/onsker-2026-09-08.md) ────
+// Bugen: draggedDiffMm ble målt mot y = 0 (rammens midtlinje), så en flytting av HELE
+// ordet leses som om alle bokstavene manglet grunnlinje like mye. Medianen av gruppens
+// diffMm er ordets plassering (de fleste tegn i et ord trenger ikke korreksjon); det som
+// står igjen ETTER at medianen er trukket fra, er den faktiske grunnlinjeavviket per tegn.
+// Med bare ETT tegn i gruppen kan plassering og grunnlinje ikke skilles fra hverandre —
+// fellesForskyvningMm blir null, og kalleren skal la være å lagre.
+
+export interface KalibreringsRad {
+  tegn: string
+  heightMm: number
+  diffMm: number
+}
+
+export interface KalibreringsResultat {
+  // diffMm er her NETTOAVVIKET — felles forskyvning allerede trukket fra.
+  rader: KalibreringsRad[]
+  fellesForskyvningMm: number | null
+  // Tegn der |nettoavvik| > 30 % av tegnets egen høyde, ETTER fratrekk.
+  advarselTegn: Set<string>
+}
+
+export function trekkFraFellesForskyvning(rader: KalibreringsRad[]): KalibreringsResultat {
+  if (rader.length <= 1) {
+    return { rader, fellesForskyvningMm: null, advarselTegn: new Set() }
+  }
+  const felles = median(rader.map(r => r.diffMm))!
+  const nyeRader = rader.map(r => ({ ...r, diffMm: r.diffMm - felles }))
+  const advarselTegn = new Set(
+    nyeRader.filter(r => r.heightMm > 0 && Math.abs(r.diffMm) > 0.3 * r.heightMm).map(r => r.tegn),
+  )
+  return { rader: nyeRader, fellesForskyvningMm: felles, advarselTegn }
+}

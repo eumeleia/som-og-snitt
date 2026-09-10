@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase'
 import { hentAllePaginert } from '@/lib/supabasePaginering'
 import { describeError, type ErrorDetails } from '@/lib/error-details'
 import { ErrorDetailsView } from '@/components/ErrorDetailsView'
-import { roterLokalePunkter, plassertBbox, kombinerBbox } from './geometri'
+import { roterLokalePunkter, plassertBbox, kombinerBbox, lagRotasjon } from './geometri'
 import { synkroniserSekvens, byggFargePerBlokk, tellSting, tellOmtredninger, type SekvensKontekst } from './sekvens'
 import { byggMiniatyrSvg } from './miniatyr'
 import { erEndret, serialiserSnapshot, type KomposisjonSnapshot } from './lagreSnapshot'
@@ -21,7 +21,7 @@ import {
 } from './types'
 import {
   buildFontData, layoutTekst, klassifiser, malSporingFraPosisjoner, omplasserTekstgruppe,
-  type FontData, type TextLayout,
+  trekkFraFellesForskyvning, type FontData, type TextLayout,
 } from './fontUtils'
 import {
   RAMME_MM, RAMME_GRENSE_MM, type BboxMm,
@@ -143,7 +143,16 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
   // er ikke en angrebar handling her.
   const [undoStack, setUndoStack] = useState<KomposisjonSnapshot[]>([])
   const [redoStack, setRedoStack] = useState<KomposisjonSnapshot[]>([])
-  const [valgtId, setValgtId] = useState<string | null>(null)
+  // Punkt B1, docs/onsker-2026-09-08.md: markering av FLERE motiver, ikke bare bokstaver.
+  // Klikk = velg ett (erstatter settet); shift/cmd/ctrl-klikk = legg til eller fjern; klikk
+  // på tom lerretsflate = tøm. Sett i stedet for array — medlemskap sjekkes langt oftere
+  // enn rekkefølgen betyr noe.
+  const [valgtIds, setValgtIds] = useState<Set<string>>(new Set())
+  // Ren VISNING av rotasjonsglideren når mer enn ett motiv er valgt (punkt B2) — det
+  // finnes ingen «gjeldende» gruppe-rotasjon å vise (motivene kan ha ulik rotasjonGrader
+  // fra før), så glideren viser alltid DELTA siden dra-start og hopper tilbake til 0 når
+  // draget slippes.
+  const [gruppeRotasjonVisning, setGruppeRotasjonVisning] = useState(0)
   const [showPicker, setShowPicker] = useState(false)
   // Satt av leggTilValgte (via onVelgFlere) når flervalgets rutenett IKKE kunne holde
   // alle nylig tilføyde motiver innenfor rammen uten overlapp — se beregnRutenettCelle.
@@ -207,12 +216,21 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
   const sisteKomplettMiniatyrRef = useRef<string | undefined>(komposisjon?.data.miniatyrSvg)
 
   const svgRef = useRef<SVGSVGElement>(null)
+  // startPos dekker ALLE valgte motiver (punkt B1) — dra flytter hele utvalget med samme
+  // delta, regnet fra hvert motivs EGEN startposisjon, aldri fra forrige steg (unngår
+  // avrundingsdrift, samme prinsipp som B2 sin rotasjon under).
   const dragRef = useRef<{
-    id: string
     startClientX: number
     startClientY: number
-    startPosX: number
-    startPosY: number
+    startPos: Map<string, { x: number; y: number }>
+  } | null>(null)
+  // Øyeblikksbilde for gruppe-ROTASJON (B2) — senter og hvert motivs startposisjon +
+  // -rotasjon, tatt når glideren/tallfeltet tas i bruk. Bare relevant når mer enn ett
+  // motiv er valgt; for ett motiv beholdes den enklere oppdaterValgt(MedAngre)-veien.
+  const gruppeRotasjonRef = useRef<{
+    senterXTiendedelMm: number
+    senterYTiendedelMm: number
+    perMotiv: Map<string, { x: number; y: number; rot: number }>
   } | null>(null)
   // Øyeblikksbilde tatt ved dra-START (pointerdown/pointerdown på rotasjonsglideren) —
   // sammenlignet mot NÅ-tilstanden ved dra-SLUTT, én angre-push per dra, aldri per steg.
@@ -321,7 +339,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
     const nyeMotiver = [...motiver, ny]
     pushUndoHvisEndret({ motiver, sekvens }, { motiver: nyeMotiver, sekvens })
     setMotiver(nyeMotiver)
-    setValgtId(nyId)
+    setValgtIds(new Set([nyId]))
     setShowPicker(false)
     setRutenettAdvarsel(false)
     sikreMotivData(embroideryId, sizeId)
@@ -348,50 +366,138 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
     const nyeMotiver = [...motiver, ...nye]
     pushUndoHvisEndret({ motiver, sekvens }, { motiver: nyeMotiver, sekvens })
     setMotiver(nyeMotiver)
-    setValgtId(null)
+    setValgtIds(new Set())
     setShowPicker(false)
     setRutenettAdvarsel(!!rutenettUmulig)
     for (const item of items) sikreMotivData(item.embroideryId, item.sizeId)
   }
 
-  // Fortløpende (rotasjonsglideren mens den dras) — INGEN angre-push her, se
-  // oppdaterValgtMedAngre for den diskrete varianten (tallfelt-commit, glider-slipp).
+  // Fortløpende (rotasjonsglideren for ETT motiv mens den dras) — INGEN angre-push her,
+  // se oppdaterValgtMedAngre for den diskrete varianten (tallfelt-commit, glider-slipp).
+  // Brukes bare når nøyaktig ETT motiv er valgt — flere valgt bruker gruppe-rotasjonen
+  // (committGruppeRotasjon/gruppeRotasjonRef) i stedet, se punkt B2.
   function oppdaterValgt(patch: Partial<PlassertMotiv>) {
-    if (!valgtId) return
-    setMotiver(m => m.map(pm => pm.id === valgtId ? { ...pm, ...patch } : pm))
+    if (valgtIds.size === 0) return
+    setMotiver(m => m.map(pm => valgtIds.has(pm.id) ? { ...pm, ...patch } : pm))
   }
 
   function oppdaterValgtMedAngre(patch: Partial<PlassertMotiv>) {
-    if (!valgtId) return
-    const nyeMotiver = motiver.map(pm => pm.id === valgtId ? { ...pm, ...patch } : pm)
+    if (valgtIds.size === 0) return
+    const nyeMotiver = motiver.map(pm => valgtIds.has(pm.id) ? { ...pm, ...patch } : pm)
     pushUndoHvisEndret({ motiver, sekvens }, { motiver: nyeMotiver, sekvens })
     setMotiver(nyeMotiver)
   }
 
-  function slett(id: string) {
-    const nyeMotiver = motiver.filter(pm => pm.id !== id)
+  // Punkt B1: Delete/piltaster og X/Y-feltet flytter/sletter alltid HELE utvalget.
+  function slettValgte() {
+    if (valgtIds.size === 0) return
+    const nyeMotiver = motiver.filter(pm => !valgtIds.has(pm.id))
     pushUndoHvisEndret({ motiver, sekvens }, { motiver: nyeMotiver, sekvens })
     setMotiver(nyeMotiver)
-    if (valgtId === id) setValgtId(null)
+    setValgtIds(new Set())
   }
 
-  // Slett med Delete/Backspace, men ikke mens man skriver i et tekstfelt.
+  function flyttValgteMedDelta(dxTiendedelMm: number, dyTiendedelMm: number) {
+    if (valgtIds.size === 0 || (dxTiendedelMm === 0 && dyTiendedelMm === 0)) return
+    const nyeMotiver = motiver.map(pm => valgtIds.has(pm.id)
+      ? { ...pm, posisjonXTiendedelMm: pm.posisjonXTiendedelMm + dxTiendedelMm, posisjonYTiendedelMm: pm.posisjonYTiendedelMm + dyTiendedelMm }
+      : pm)
+    pushUndoHvisEndret({ motiver, sekvens }, { motiver: nyeMotiver, sekvens })
+    setMotiver(nyeMotiver)
+  }
+
+  // X/Y-feltene med flere valgt viser utvalgets samlede bboks-senter (se valgtBbox under)
+  // og flytter HELE utvalget dit — innbyrdes avstander endres aldri, bare hele gruppens
+  // felles posisjon. null for en akse betyr «rør ikke denne».
+  function flyttValgteTilSenter(nyttSenterXTiendedelMm: number | null, nyttSenterYTiendedelMm: number | null) {
+    if (!valgtBbox) return
+    const senterX = Math.round((valgtBbox.min_x + valgtBbox.max_x) / 2)
+    const senterY = Math.round((valgtBbox.min_y + valgtBbox.max_y) / 2)
+    flyttValgteMedDelta(
+      nyttSenterXTiendedelMm != null ? nyttSenterXTiendedelMm - senterX : 0,
+      nyttSenterYTiendedelMm != null ? nyttSenterYTiendedelMm - senterY : 0,
+    )
+  }
+
+  // Snarvei «Velg hele teksten» (punkt B1): bruker fontKilde.tekstId, IKKE bundleId —
+  // bundleId ville slått sammen to ulike ord fra samme font. Eldre komposisjoner (fra før
+  // tekstId fantes) faller tilbake til bundleId; knappeteksten sier fra om det, se
+  // velgHeleTekstenKilde (definert nedenfor, ved valgtMotiver) og JSX-en som bruker den.
+  function velgHeleTeksten() {
+    const kilde = valgtMotiver.find(pm => pm.fontKilde)?.fontKilde
+    if (!kilde) return
+    const nyttUtvalg = kilde.tekstId != null
+      ? new Set(motiver.filter(pm => pm.fontKilde?.tekstId === kilde.tekstId).map(pm => pm.id))
+      : new Set(motiver.filter(pm => pm.fontKilde?.bundleId === kilde.bundleId).map(pm => pm.id))
+    setValgtIds(nyttUtvalg)
+  }
+
+  // Gruppe-rotasjon (punkt B2): rene funksjoner som regner ut nye motiver fra et
+  // øyeblikksbilde tatt ved dra-start, aldri fra forrige steg — se gruppeRotasjonRef.
+  // Brukes av BÅDE den fortløpende glideren og det diskrete tallfeltet.
+  function beregnGruppeRotasjon(
+    snap: { senterXTiendedelMm: number; senterYTiendedelMm: number; perMotiv: Map<string, { x: number; y: number; rot: number }> },
+    deltaGrader: number,
+  ): PlassertMotiv[] {
+    const roter = lagRotasjon(deltaGrader)
+    return motiver.map(pm => {
+      const s = snap.perMotiv.get(pm.id)
+      if (!s) return pm
+      const [rx, ry] = roter(s.x - snap.senterXTiendedelMm, s.y - snap.senterYTiendedelMm)
+      return {
+        ...pm,
+        posisjonXTiendedelMm: Math.round(snap.senterXTiendedelMm + rx),
+        posisjonYTiendedelMm: Math.round(snap.senterYTiendedelMm + ry),
+        rotasjonGrader: s.rot + deltaGrader,
+      }
+    })
+  }
+
+  function lagGruppeRotasjonSnapshot() {
+    if (!valgtBbox) return null
+    return {
+      senterXTiendedelMm: Math.round((valgtBbox.min_x + valgtBbox.max_x) / 2),
+      senterYTiendedelMm: Math.round((valgtBbox.min_y + valgtBbox.max_y) / 2),
+      perMotiv: new Map(valgtMotiver.map(pm => [pm.id, { x: pm.posisjonXTiendedelMm, y: pm.posisjonYTiendedelMm, rot: pm.rotasjonGrader }])),
+    }
+  }
+
+  // Diskret variant (tallfelt-commit) — snapshot, regn ut, angre-push og lagre i ETT
+  // steg, aldri via mellomliggende state (motiver-closuren er ellers utdatert til neste
+  // rendring, se pushUndoHvisEndret-kommentaren over).
+  function committGruppeRotasjon(deltaGrader: number) {
+    const snap = lagGruppeRotasjonSnapshot()
+    if (!snap || deltaGrader === 0) return
+    const nyeMotiver = beregnGruppeRotasjon(snap, deltaGrader)
+    pushUndoHvisEndret({ motiver, sekvens }, { motiver: nyeMotiver, sekvens })
+    setMotiver(nyeMotiver)
+  }
+
+  // Slett/piltaster med Delete/Backspace/piler, men ikke mens man skriver i et tekstfelt.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if (!valgtId) return
+      if (valgtIds.size === 0) return
       const tag = (document.activeElement?.tagName ?? '').toLowerCase()
       if (tag === 'input' || tag === 'textarea') return
       if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault()
-        const nyeMotiver = motiver.filter(pm => pm.id !== valgtId)
-        pushUndoHvisEndret({ motiver, sekvens }, { motiver: nyeMotiver, sekvens })
-        setMotiver(nyeMotiver)
-        setValgtId(null)
+        slettValgte()
+        return
+      }
+      // Piltaster flytter utvalget 0,5 mm, shift+piltast 2 mm (punkt B1).
+      const retning: Record<string, [number, number]> = {
+        ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0],
+      }
+      const d = retning[e.key]
+      if (d) {
+        e.preventDefault()
+        const stegTiendedelMm = e.shiftKey ? 20 : 5
+        flyttValgteMedDelta(d[0] * stegTiendedelMm, d[1] * stegTiendedelMm)
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [valgtId, motiver, sekvens, navn, pushUndoHvisEndret])
+  }, [valgtIds, motiver, sekvens, navn, pushUndoHvisEndret, slettValgte, flyttValgteMedDelta])
 
   const undoRedoRef = useRef<{ handleUndo: () => void; handleRedo: () => void }>({ handleUndo, handleRedo })
   undoRedoRef.current = { handleUndo, handleRedo }
@@ -437,6 +543,23 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
     [motiver, plasserteBbokser],
   )
 
+  // Punkt B1/B2: de valgte motivene og utvalgets samlede bboks — senteret her er
+  // referansepunktet BÅDE for X/Y-visning/-flytting (flyttValgteTilSenter) og for
+  // gruppe-rotasjon (lagGruppeRotasjonSnapshot). For ETT motiv er dette senteret alltid
+  // nøyaktig likt motivets EGEN posisjonX/Y — plassertBbox roterer om motivets eget
+  // senter, som derfor aldri flytter seg — så ingen egen kodevei trengs for det tilfellet.
+  const valgtMotiver = useMemo(() => motiver.filter(pm => valgtIds.has(pm.id)), [motiver, valgtIds])
+  const valgtBbox = useMemo(
+    () => kombinerBbox(valgtMotiver.map(pm => plasserteBbokser.get(pm.id)).filter((b): b is BroderiBbox => !!b)),
+    [valgtMotiver, plasserteBbokser],
+  )
+  const velgHeleTekstenKilde = useMemo(
+    () => valgtMotiver.find(pm => pm.fontKilde)?.fontKilde ?? null,
+    [valgtMotiver],
+  )
+  const valgtSenterXTiendedelMm = valgtBbox ? Math.round((valgtBbox.min_x + valgtBbox.max_x) / 2) : 0
+  const valgtSenterYTiendedelMm = valgtBbox ? Math.round((valgtBbox.min_y + valgtBbox.max_y) / 2) : 0
+
   const combinedBbox = useMemo(
     () => kombinerBbox(Array.from(plasserteBbokser.values())),
     [plasserteBbokser],
@@ -463,31 +586,50 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
 
   // ── Dra-for-å-flytte ────────────────────────────────────────────────────────────
 
+  // Punkt B1: shift/cmd/ctrl-klikk legger til/fjerner ETT motiv fra utvalget og starter
+  // ALDRI et dra (bare en ren markeringshandling). Et vanlig klikk på et motiv som
+  // allerede er del av et FLERVALG (størrelse > 1) beholder hele utvalget og starter et
+  // gruppedra; ellers erstattes utvalget med bare dette ene motivet, som før.
   function onPointerDownMotiv(e: ReactPointerEvent, pm: PlassertMotiv) {
     e.stopPropagation()
-    setValgtId(pm.id)
+    if (e.shiftKey || e.metaKey || e.ctrlKey) {
+      setValgtIds(prev => {
+        const next = new Set(prev)
+        if (next.has(pm.id)) next.delete(pm.id); else next.add(pm.id)
+        return next
+      })
+      dragRef.current = null
+      return
+    }
+    const nyttUtvalg = valgtIds.has(pm.id) && valgtIds.size > 1 ? valgtIds : new Set([pm.id])
+    setValgtIds(nyttUtvalg)
     dragRef.current = {
-      id: pm.id,
       startClientX: e.clientX,
       startClientY: e.clientY,
-      startPosX: pm.posisjonXTiendedelMm,
-      startPosY: pm.posisjonYTiendedelMm,
+      startPos: new Map(
+        motiver.filter(m => nyttUtvalg.has(m.id)).map(m => [m.id, { x: m.posisjonXTiendedelMm, y: m.posisjonYTiendedelMm }]),
+      ),
     }
     dragUndoRef.current = { navn, motiver, sekvens }
     ;(e.target as Element).setPointerCapture(e.pointerId)
   }
 
+  // Flytter HELE utvalget med samme delta, regnet fra hvert motivs egen startposisjon i
+  // dragRef (aldri fra forrige steg) — ingen avrundingsdrift, og innbyrdes avstand
+  // endres aldri.
   function onPointerMoveSvg(e: ReactPointerEvent) {
     const drag = dragRef.current
     const svg = svgRef.current
     if (!drag || !svg) return
     const rect = svg.getBoundingClientRect()
     const mmPerPx = (halv * 2) / rect.width
-    const dxMm = (e.clientX - drag.startClientX) * mmPerPx
-    const dyMm = (e.clientY - drag.startClientY) * mmPerPx
-    const posisjonXTiendedelMm = Math.round(drag.startPosX + dxMm * 10)
-    const posisjonYTiendedelMm = Math.round(drag.startPosY + dyMm * 10)
-    setMotiver(m => m.map(pm => pm.id === drag.id ? { ...pm, posisjonXTiendedelMm, posisjonYTiendedelMm } : pm))
+    const dxTiendedelMm = Math.round((e.clientX - drag.startClientX) * mmPerPx * 10)
+    const dyTiendedelMm = Math.round((e.clientY - drag.startClientY) * mmPerPx * 10)
+    setMotiver(m => m.map(pm => {
+      const start = drag.startPos.get(pm.id)
+      if (!start) return pm
+      return { ...pm, posisjonXTiendedelMm: start.x + dxTiendedelMm, posisjonYTiendedelMm: start.y + dyTiendedelMm }
+    }))
   }
 
   function onPointerUpSvg() {
@@ -646,8 +788,6 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
     onBack()
   }
 
-  const valgtMotiv = motiver.find(pm => pm.id === valgtId) ?? null
-
   const aktivKjoringId = hoverKjoringId ?? fokusKjoringId
   const aktivKjoring = useMemo((): SekvensKjoring | null => {
     if (!aktivKjoringId) return null
@@ -679,6 +819,14 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
   // "zoo", gjennomsnittes). Diffen regnes ALLTID mot NAIV standard (bif = heightMm,
   // andel 0) — se FontMetrikk i types.ts — aldri mot en tidligere lagret fontMetrikk, slik
   // at et nytt lagre-trykk overskriver i stedet for å akkumulere oppå forrige runde.
+  //
+  // Punkt A, docs/onsker-2026-09-08.md: den rå diffen måler mot y = 0 (rammens
+  // midtlinje) — flytter man HELE ordet, leser alle bokstavene det som manglende
+  // grunnlinje. trekkFraFellesForskyvning trekker fra ordets FELLES forskyvning
+  // (medianen av gruppens rå diff) før tallene vises/lagres — rad.draggedDiffMm under er
+  // derfor NETTOAVVIKET, ikke det rå tallet. Med bare ett tegn kan plassering og
+  // grunnlinje ikke skilles (fellesForskyvningMm blir null); lagreGrunnlinje nekter da å
+  // lagre — se der.
   const kalibreringsGrupper = useMemo(() => {
     type Akk = { bundleNavn: string; perTegn: Map<string, { heightMmSum: number; diffSumMm: number; antall: number }> }
     const perBundle = new Map<string, Akk>()
@@ -698,18 +846,25 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
       gruppe.perTegn.set(pm.fontKilde.tegn, rad)
       perBundle.set(pm.fontKilde.bundleId, gruppe)
     }
-    return Array.from(perBundle.entries()).map(([bundleId, g]) => ({
-      bundleId,
-      bundleNavn: g.bundleNavn,
-      rader: Array.from(g.perTegn.entries())
-        .map(([tegn, r]) => ({
-          tegn, heightMm: r.heightMmSum / r.antall, draggedDiffMm: r.diffSumMm / r.antall,
-        }))
-        .sort((a, b) => a.tegn.localeCompare(b.tegn)),
-    }))
+    return Array.from(perBundle.entries()).map(([bundleId, g]) => {
+      const raaRader = Array.from(g.perTegn.entries())
+        .map(([tegn, r]) => ({ tegn, heightMm: r.heightMmSum / r.antall, diffMm: r.diffSumMm / r.antall }))
+        .sort((a, b) => a.tegn.localeCompare(b.tegn))
+      const { rader, fellesForskyvningMm, advarselTegn } = trekkFraFellesForskyvning(raaRader)
+      return {
+        bundleId,
+        bundleNavn: g.bundleNavn,
+        rader: rader.map(r => ({ tegn: r.tegn, heightMm: r.heightMm, draggedDiffMm: r.diffMm })),
+        fellesForskyvningMm,
+        advarselTegn,
+      }
+    })
   }, [motiver, resolved])
 
   async function lagreGrunnlinje(gruppe: (typeof kalibreringsGrupper)[number]) {
+    // Bare ett tegn i gruppen: plassering og grunnlinje kan ikke skilles fra hverandre
+    // (punkt A) — knappen er allerede deaktivert i UI-et, dette er bare et sikkerhetsnett.
+    if (gruppe.fellesForskyvningMm === null) return
     setKalibreringLagrer(gruppe.bundleId)
     setKalibreringFeil(null)
     try {
@@ -914,7 +1069,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
           className="w-full aspect-square touch-none"
           onPointerMove={onPointerMoveSvg}
           onPointerUp={onPointerUpSvg}
-          onPointerDown={() => setValgtId(null)}
+          onPointerDown={() => setValgtIds(new Set())}
         >
           <rect
             x={-halvRamme} y={-halvRamme} width={RAMME_MM} height={RAMME_MM}
@@ -950,7 +1105,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
                 pm={pm}
                 data={data}
                 bbox={data.bbox}
-                valgt={pm.id === valgtId}
+                valgt={valgtIds.has(pm.id)}
                 utenforRamme={utenforRammeIder.includes(pm.id)}
                 aktivKjoring={aktivKjoring}
                 fargePerBlokk={fargePerBlokk[pm.id] ?? []}
@@ -1024,12 +1179,24 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
                 Dra bokstavene på lerretet til ordet står riktig, hopp så over tegn du bare
                 flyttet av estetiske grunner.
               </p>
+              {gruppe.fellesForskyvningMm === null ? (
+                <p className="text-xs text-amber-600 mb-3">
+                  Bare ett tegn her — plassering og grunnlinje kan ikke skilles fra
+                  hverandre. Sett inn flere tegn fra samme font før du lagrer.
+                </p>
+              ) : (
+                <p className="text-xs text-stone-400 mb-3">
+                  Felles forskyvning {gruppe.fellesForskyvningMm.toFixed(1)} mm trukket fra —
+                  det er ordets plassering, ikke grunnlinjen.
+                </p>
+              )}
               <ul className="space-y-2 mb-3">
                 {gruppe.rader.map(rad => {
                   const key = `${gruppe.bundleId}:${rad.tegn}`
                   const inkludert = kalibreringInkludert[key] !== false
                   const verdi = kalibreringOverride[key] ?? rad.draggedDiffMm
                   const forslag = STEG_A_MALT_HALE_MM[gruppe.bundleNavn]?.[rad.tegn]
+                  const advarsel = gruppe.advarselTegn.has(rad.tegn)
                   return (
                     <li key={rad.tegn} className="flex items-center gap-2 text-sm">
                       <input
@@ -1044,6 +1211,11 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
                         className="w-20 px-2 py-1 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300"
                       />
                       <span className="text-stone-400 text-xs">mm</span>
+                      {advarsel && (
+                        <span className="text-xs text-amber-600" title="Avviket er over 30 % av tegnets egen høyde">
+                          ⚠
+                        </span>
+                      )}
                       {forslag != null && forslag !== 0 && (
                         <button
                           onClick={() => setKalibreringOverride(m => ({ ...m, [key]: forslag }))}
@@ -1065,7 +1237,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
               <div className="flex gap-2">
                 <button
                   onClick={() => lagreGrunnlinje(gruppe)}
-                  disabled={kalibreringLagrer === gruppe.bundleId}
+                  disabled={kalibreringLagrer === gruppe.bundleId || gruppe.fellesForskyvningMm === null}
                   className="flex-1 py-1.5 text-sm bg-stone-800 text-white rounded-lg hover:bg-stone-700 disabled:opacity-50 transition-colors"
                 >
                   {kalibreringLagrer === gruppe.bundleId ? 'Lagrer…' : 'Lagre grunnlinje'}
@@ -1082,14 +1254,16 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
         </div>
       ))}
 
-      {valgtMotiv && (
+      {valgtMotiver.length > 0 && (
         <div className="bg-white rounded-2xl border border-stone-200 shadow-sm p-4 mb-4">
           <div className="flex items-center justify-between mb-3">
-            <p className="text-sm font-medium text-stone-700 truncate">{valgtMotiv.navn}</p>
+            <p className="text-sm font-medium text-stone-700 truncate">
+              {valgtMotiver.length === 1 ? valgtMotiver[0].navn : `${valgtMotiver.length} motiver valgt`}
+            </p>
             <button
-              onClick={() => slett(valgtMotiv.id)}
+              onClick={slettValgte}
               className="p-1.5 rounded-lg hover:bg-red-50 text-stone-300 hover:text-red-400 transition-colors flex-shrink-0"
-              aria-label="Slett motiv"
+              aria-label={valgtMotiver.length === 1 ? 'Slett motiv' : 'Slett valgte motiver'}
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
@@ -1097,46 +1271,93 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
               </svg>
             </button>
           </div>
+          {velgHeleTekstenKilde && (
+            // Punkt B1: bruker fontKilde.tekstId — ALDRI bundleId — så to ulike ord fra
+            // samme font ikke velges samlet. Eldre komposisjoner uten tekstId faller
+            // tilbake til bundleId (hele fonten); knappeteksten sier fra om det.
+            <button
+              onClick={velgHeleTeksten}
+              className="w-full mb-3 py-1.5 text-xs border border-stone-200 rounded-lg text-stone-600 hover:border-[#C9A57A] hover:text-[#8B6340] transition-colors"
+            >
+              {velgHeleTekstenKilde.tekstId != null
+                ? 'Velg hele teksten'
+                : 'Velg hele fonten (eldre komposisjon — rekkefølge ukjent)'}
+            </button>
+          )}
           <div className="grid grid-cols-3 gap-3">
             <label className="block">
-              <span className="block text-[10px] text-stone-400 mb-1">X (mm, fra venstre)</span>
+              <span className="block text-[10px] text-stone-400 mb-1">
+                {valgtMotiver.length > 1 ? 'X (mm, utvalgets senter)' : 'X (mm, fra venstre)'}
+              </span>
               {/* Vist 0–100 fra rammens ØVRE VENSTRE hjørne (+RAMME_MM/2), ikke lagringens
                  egen ±50 mm fra senter — se KRAV 6. Lagringen (posisjonXTiendedelMm) er
                  fortsatt senter-basert i tiendedels mm, helt uendret; dette er bare en
-                 visnings-/innskrivingskonvertering ved selve feltet. */}
+                 visnings-/innskrivingskonvertering ved selve feltet. Utvalgets bboks-senter
+                 (valgtSenterXTiendedelMm) er nøyaktig likt motivets EGEN posisjon når bare
+                 ett er valgt, se kommentaren ved valgtBbox — samme felt dekker begge. */}
               <TallFelt
                 step={0.1}
-                value={valgtMotiv.posisjonXTiendedelMm / 10 + RAMME_MM / 2}
-                onCommit={visX => oppdaterValgtMedAngre({ posisjonXTiendedelMm: Math.round((visX - RAMME_MM / 2) * 10) })}
+                value={valgtSenterXTiendedelMm / 10 + RAMME_MM / 2}
+                onCommit={visX => flyttValgteTilSenter(Math.round((visX - RAMME_MM / 2) * 10), null)}
                 className="w-full px-2.5 py-1.5 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300"
               />
             </label>
             <label className="block">
-              <span className="block text-[10px] text-stone-400 mb-1">Y (mm, fra toppen)</span>
+              <span className="block text-[10px] text-stone-400 mb-1">
+                {valgtMotiver.length > 1 ? 'Y (mm, utvalgets senter)' : 'Y (mm, fra toppen)'}
+              </span>
               <TallFelt
                 step={0.1}
-                value={valgtMotiv.posisjonYTiendedelMm / 10 + RAMME_MM / 2}
-                onCommit={visY => oppdaterValgtMedAngre({ posisjonYTiendedelMm: Math.round((visY - RAMME_MM / 2) * 10) })}
+                value={valgtSenterYTiendedelMm / 10 + RAMME_MM / 2}
+                onCommit={visY => flyttValgteTilSenter(null, Math.round((visY - RAMME_MM / 2) * 10))}
                 className="w-full px-2.5 py-1.5 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300"
               />
             </label>
             <label className="block">
               <span className="block text-[10px] text-stone-400 mb-1">Rotasjon (°)</span>
-              <TallFelt
-                step={1}
-                value={valgtMotiv.rotasjonGrader}
-                onCommit={n => oppdaterValgtMedAngre({ rotasjonGrader: n })}
-                className="w-full px-2.5 py-1.5 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300"
-              />
+              {/* Ett motiv: absolutt vinkel, som før. Flere: feltet er en DELTA som legges
+                 til hvert motivs egen rotasjonGrader og roterer posisjonen om utvalgets
+                 senter (punkt B2) — viser derfor alltid 0 (ingenting «gjeldende» å vise
+                 for en blandet gruppe), og committGruppeRotasjon nullstiller selv videre. */}
+              {valgtMotiver.length === 1 ? (
+                <TallFelt
+                  step={1}
+                  value={valgtMotiver[0].rotasjonGrader}
+                  onCommit={n => oppdaterValgtMedAngre({ rotasjonGrader: n })}
+                  className="w-full px-2.5 py-1.5 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300"
+                />
+              ) : (
+                <TallFelt
+                  step={1}
+                  value={0}
+                  onCommit={committGruppeRotasjon}
+                  className="w-full px-2.5 py-1.5 border border-stone-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-stone-300"
+                />
+              )}
             </label>
           </div>
           <div className="mt-3">
             <input
               type="range" min={-180} max={180} step={1}
-              value={normaliserForGlider(valgtMotiv.rotasjonGrader)}
-              onPointerDown={() => { dragUndoRef.current = { navn, motiver, sekvens } }}
-              onChange={e => oppdaterValgt({ rotasjonGrader: snappRotasjon(Number(e.target.value)) })}
+              value={valgtMotiver.length === 1 ? normaliserForGlider(valgtMotiver[0].rotasjonGrader) : gruppeRotasjonVisning}
+              onPointerDown={() => {
+                if (valgtMotiver.length > 1) gruppeRotasjonRef.current = lagGruppeRotasjonSnapshot()
+                dragUndoRef.current = { navn, motiver, sekvens }
+              }}
+              onChange={e => {
+                if (valgtMotiver.length === 1) {
+                  oppdaterValgt({ rotasjonGrader: snappRotasjon(Number(e.target.value)) })
+                  return
+                }
+                const snap = gruppeRotasjonRef.current
+                if (!snap) return
+                const delta = Number(e.target.value)
+                setGruppeRotasjonVisning(delta)
+                setMotiver(beregnGruppeRotasjon(snap, delta))
+              }}
               onPointerUp={() => {
+                gruppeRotasjonRef.current = null
+                setGruppeRotasjonVisning(0)
                 if (dragUndoRef.current) {
                   pushUndoHvisEndret(dragUndoRef.current, { motiver, sekvens })
                   dragUndoRef.current = null
@@ -1160,9 +1381,17 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
             return (
               <li key={pm.id}>
                 <button
-                  onClick={() => setValgtId(pm.id)}
+                  onClick={e => {
+                    const additive = e.shiftKey || e.metaKey || e.ctrlKey
+                    setValgtIds(prev => {
+                      if (!additive) return new Set([pm.id])
+                      const next = new Set(prev)
+                      if (next.has(pm.id)) next.delete(pm.id); else next.add(pm.id)
+                      return next
+                    })
+                  }}
                   className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors ${
-                    pm.id === valgtId ? 'bg-stone-50' : 'hover:bg-stone-50'
+                    valgtIds.has(pm.id) ? 'bg-stone-50' : 'hover:bg-stone-50'
                   }`}
                 >
                   <span className="flex-1 min-w-0 text-sm text-stone-700 truncate">{pm.navn}</span>

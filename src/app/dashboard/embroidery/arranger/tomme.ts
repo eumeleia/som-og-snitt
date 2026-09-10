@@ -53,14 +53,28 @@ export function utledTomme(pesFilename: string): TommeResultat | null {
 // Utleder tomme-verdi(er) fra en sizeLabel, f.eks. BX Floral sin «1.5"», «2"», «3.5"» —
 // eller et SPENN som BX Florals småbokstaver bruker («1.5-2"», «2-2.5"»), der én fil er
 // ment for begge endepunktene. 12Berries sine «Smallest»/«Small»/«Medium»/«Large»/«Largest»
-// har ingen siffer og treffer aldri dette — tom liste. Brukes bare når
-// utledTomme(pesFilename) ikke fant noe (BX Floral sine filnavn er bare «A.PES», uten
-// tomme-indikator).
+// har ingen siffer og treffer aldri dette — tom liste. Floral Font (2) bruker komma som
+// desimaltegn og «in» i stedet for anførselstegn, med en etterhengt verdi i mm som bare
+// gjentar samme størrelse i en annen enhet, f.eks. «1,5in-38mm», «3,5in-89mm» — LEST fra
+// basen (docs/onsker-2026-09-08.md, punkt F), ikke gjettet fra filnavn.
+// Brukes bare når utledTomme(pesFilename) ikke fant noe (BX Floral og Floral Font sine
+// filnavn er bare «A.PES», uten tomme-indikator).
 export function utledTommeFraSizeLabel(sizeLabel: string): string[] {
-  const enkelt = /^(\d+(?:\.\d+)?)"$/.exec(sizeLabel)
-  if (enkelt) return [enkelt[1]]
-  const spenn = /^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)"$/.exec(sizeLabel)
+  const norm = sizeLabel.replace(/,/g, '.')
+
+  // Én størrelse i to enheter («1,5in-38mm») — venstre side av bindestreken bærer sin
+  // EGEN enhet (in/inch), så dette er IKKE et spenn. Den etterhengte verdien i en annen
+  // enhet ignoreres i sin helhet — se skillet mot ekte spenn under.
+  const toEnheter = /^(\d+(?:\.\d+)?)(?:in|inch)-\d+(?:\.\d+)?[a-zA-Z]*$/i.exec(norm)
+  if (toEnheter) return [toEnheter[1]]
+
+  // Ekte spenn: to tall adskilt av bindestrek, enhet bare helt til slutt («1.5-2"»).
+  const spenn = /^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)(?:"|in|inch)$/i.exec(norm)
   if (spenn) return [spenn[1], spenn[2]]
+
+  const enkelt = /^(\d+(?:\.\d+)?)(?:"|in|inch)$/i.exec(norm)
+  if (enkelt) return [enkelt[1]]
+
   return []
 }
 

@@ -131,6 +131,21 @@ describe('utledTommeFraSizeLabel', () => {
     expect(utledTommeFraSizeLabel('Smallest')).toEqual([])
     expect(utledTommeFraSizeLabel('Medium')).toEqual([])
   })
+
+  // Punkt F, docs/onsker-2026-09-08.md — Floral Font (2) sine ekte sizeLabel-verdier
+  // (lest fra basen: «1,5in-38mm», «2in-51mm», «2,5in-64mm», «3in-76mm», «3,5in-89mm»).
+  // Fellen: «1,5in-38mm» er ÉN størrelse i to enheter (venstre side bærer sin egen
+  // enhet «in», så det er ikke et spenn), mens «1.5-2"» er et EKTE spenn (enhet bare
+  // til slutt) og skal gi to verdier.
+  it('komma som desimaltegn, «in» som enhet, og en etterhengt mm-verdi som ignoreres', () => {
+    expect(utledTommeFraSizeLabel('2"')).toEqual(['2'])
+    expect(utledTommeFraSizeLabel('1.5-2"')).toEqual(['1.5', '2'])
+    expect(utledTommeFraSizeLabel('1,5in-38mm')).toEqual(['1.5'])
+    expect(utledTommeFraSizeLabel('3,5in-89mm')).toEqual(['3.5'])
+    expect(utledTommeFraSizeLabel('1.5in')).toEqual(['1.5'])
+    expect(utledTommeFraSizeLabel('38mm')).toEqual([])
+    expect(utledTommeFraSizeLabel('Smallest')).toEqual([])
+  })
 })
 
 // Verner 36cfb7a, som byttet "ingenting passer"-fallbacken fra maks areal til minst
