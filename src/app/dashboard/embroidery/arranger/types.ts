@@ -176,10 +176,14 @@ export interface BroderiKomposisjonData {
   miniatyrSvg?: string
 }
 
+// slettet_tid (migrasjon 009, docs/onsker-2026-09-08.md punkt D) ligger UTENFOR data med
+// vilje — se migrasjonsfilen for hvorfor. null = aktiv, ellers tidspunktet den ble lagt i
+// søppelkurven (arranger/soppelkurv.ts).
 export interface BroderiKomposisjon {
   id: string
   created_at: string
   data: BroderiKomposisjonData
+  slettet_tid: string | null
 }
 
 export function getCoverImage(d: EmbroideryData): string {

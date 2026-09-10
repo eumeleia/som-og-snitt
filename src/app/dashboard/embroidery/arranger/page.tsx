@@ -10,6 +10,7 @@ import { ErrorDetailsView } from '@/components/ErrorDetailsView'
 import { KomposisjonEditor } from './KomposisjonEditor'
 import { byggVirtuelleMotiver } from './motivvalg'
 import { snappTilPalett } from './broderPalett'
+import { DAGER_I_KURVEN, delKomposisjoner } from './soppelkurv'
 import { EmbroideryCard, KATEGORIER } from '../page'
 import {
   type Embroidery, type BroderiMotivData, type BroderiKomposisjon,
@@ -51,12 +52,17 @@ export default function ArrangerPage() {
     { type: 'kategorier' } | { type: 'kategori'; kat: string | null } | { type: 'bundle'; bundleId: string }
   >({ type: 'kategorier' })
 
-  const [komposisjoner, setKomposisjoner] = useState<BroderiKomposisjon[]>([])
+  const [aktiveKomposisjoner, setAktiveKomposisjoner] = useState<BroderiKomposisjon[]>([])
+  // Kurven er en lokal visning (samme mønster som libView), ikke en egen ArrVisning —
+  // en komposisjon i kurven kan ikke åpnes, så den trenger ingen historikk-sporing.
+  const [kurvKomposisjoner, setKurvKomposisjoner] = useState<BroderiKomposisjon[]>([])
+  const [visKurv, setVisKurv] = useState(false)
   const [kompLoading, setKompLoading] = useState(true)
   const [kompError, setKompError] = useState<string | null>(null)
   const [aktivKomposisjon, setAktivKomposisjon] = useState<BroderiKomposisjon | null>(null)
   const [nyKomposisjon, setNyKomposisjon] = useState(false)
   const [deleteKompId, setDeleteKompId] = useState<string | null>(null)
+  const [slettForGodtId, setSlettForGodtId] = useState<string | null>(null)
   const [kopierKompId, setKopierKompId] = useState<string | null>(null)
   // Enkeltmotiv som er åpnet i komposisjonseditoren (se ArrVisning: 'nyFraMotiv').
   const [startMotiv, setStartMotiv] = useState<{ embroideryId: string; sizeId: string; navn: string } | null>(null)
@@ -107,6 +113,8 @@ export default function ArrangerPage() {
   const loadKomposisjoner = useCallback(async () => {
     setKompLoading(true)
     setKompError(null)
+    // select('*') henter slettet_tid av seg selv — delKomposisjoner deler i én gjennomgang
+    // i stedet for to spørringer, så kurv-knappens antall alltid stemmer uten et eget kall.
     const { data, error } = await hentAllePaginert<BroderiKomposisjon>(
       (fra, til) => supabase.from('broderi_komposisjon')
         .select('*')
@@ -118,7 +126,20 @@ export default function ArrangerPage() {
     if (error) {
       setKompError(error.message)
     } else {
-      setKomposisjoner(data)
+      const { aktive, iKurven } = delKomposisjoner(data)
+      setAktiveKomposisjoner(aktive)
+      setKurvKomposisjoner(iKurven)
+      // Ingen bakgrunnsjobb finnes i appen — tømmingen skjer her, én gang per lasting av
+      // lista (ikke ventet på før lista vises, og ikke per render, siden dette bare kjører
+      // når loadKomposisjoner selv kjører).
+      fetch('/api/broderi-komposisjon/tom-soppelkurv', { method: 'POST' })
+        .then(res => (res.ok ? res.json() : null))
+        .then((body: { slettet: number; ids: string[] } | null) => {
+          if (body && body.ids.length > 0) {
+            setKurvKomposisjoner(prev => prev.filter(k => !body.ids.includes(k.id)))
+          }
+        })
+        .catch(() => {})
     }
     setKompLoading(false)
   }, [])
@@ -134,7 +155,9 @@ export default function ArrangerPage() {
         setSelected(funnet ?? null)
         setAktivKomposisjon(null); setNyKomposisjon(false); setStartMotiv(null)
       } else if (visning.v === 'komposisjon') {
-        const funnet = komposisjoner.find(k => k.id === visning.id)
+        // Bare aktive — en komposisjon i kurven kan ikke åpnes, og har uansett ingen
+        // ArrVisning-navigasjon inn til seg.
+        const funnet = aktiveKomposisjoner.find(k => k.id === visning.id)
         setAktivKomposisjon(funnet ?? null)
         setSelected(null); setNyKomposisjon(false); setStartMotiv(null)
       } else if (visning.v === 'nyFraMotiv') {
@@ -160,12 +183,42 @@ export default function ArrangerPage() {
     loadKomposisjoner()
   }, [loadKomposisjoner])
 
+  // Myk sletting: flytter raden til kurven i stedet for å slette den. PATCH rører aldri
+  // data — bare slettet_tid.
   async function slettKomposisjon(id: string) {
-    const res = await fetch(`/api/broderi-komposisjon/${id}`, { method: 'DELETE' })
+    const res = await fetch(`/api/broderi-komposisjon/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slettetTid: new Date().toISOString() }),
+    })
     if (res.ok) {
-      setKomposisjoner(k => k.filter(x => x.id !== id))
+      const oppdatert = await res.json() as BroderiKomposisjon
+      setAktiveKomposisjoner(k => k.filter(x => x.id !== id))
+      setKurvKomposisjoner(k => [oppdatert, ...k])
     }
     setDeleteKompId(null)
+  }
+
+  async function gjenopprettKomposisjon(id: string) {
+    const res = await fetch(`/api/broderi-komposisjon/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slettetTid: null }),
+    })
+    if (res.ok) {
+      const oppdatert = await res.json() as BroderiKomposisjon
+      setKurvKomposisjoner(k => k.filter(x => x.id !== id))
+      setAktiveKomposisjoner(k => [oppdatert, ...k])
+    }
+  }
+
+  // Permanent sletting — bare nåbar fra kurven.
+  async function slettForGodt(id: string) {
+    const res = await fetch(`/api/broderi-komposisjon/${id}`, { method: 'DELETE' })
+    if (res.ok) {
+      setKurvKomposisjoner(k => k.filter(x => x.id !== id))
+    }
+    setSlettForGodtId(null)
   }
 
   async function kopierKomposisjon(k: BroderiKomposisjon) {
@@ -178,7 +231,10 @@ export default function ArrangerPage() {
     })
     if (res.ok) {
       const ny = await res.json() as BroderiKomposisjon
-      setKomposisjoner(prev => [ny, ...prev])
+      // ny.slettet_tid er null (kolonnedefault) — kopien blir aktiv av seg selv, nettopp
+      // FORDI slettet_tid ligger utenfor data og derfor aldri kopieres med her. Flytter
+      // noen feltet inn i data senere, gjenoppfinner de dette problemet.
+      setAktiveKomposisjoner(prev => [ny, ...prev])
     }
     setKopierKompId(null)
   }
@@ -351,14 +407,31 @@ export default function ArrangerPage() {
             />
           )}
         </>
+      ) : visKurv ? (
+        <SoppelkurvVisning
+          komposisjoner={kurvKomposisjoner}
+          slettForGodtId={slettForGodtId}
+          onSlettForGodtId={setSlettForGodtId}
+          onSlettForGodt={slettForGodt}
+          onGjenopprett={gjenopprettKomposisjon}
+          onBack={() => setVisKurv(false)}
+        />
       ) : (
         <>
-          <button
-            onClick={() => { setNyKomposisjon(true); pushVisning({ v: 'ny' }) }}
-            className="w-full mb-5 py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors"
-          >
-            + Ny komposisjon
-          </button>
+          <div className="flex items-center gap-2 mb-5">
+            <button
+              onClick={() => { setNyKomposisjon(true); pushVisning({ v: 'ny' }) }}
+              className="flex-1 py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors"
+            >
+              + Ny komposisjon
+            </button>
+            <button
+              onClick={() => setVisKurv(true)}
+              className="flex-shrink-0 py-2.5 px-4 bg-white text-stone-500 text-sm rounded-xl border border-stone-200 hover:border-stone-400 transition-colors"
+            >
+              Søppelkurv{kurvKomposisjoner.length > 0 ? ` (${kurvKomposisjoner.length})` : ''}
+            </button>
+          </div>
 
           {kompLoading ? (
             <div className="flex justify-center py-24">
@@ -366,11 +439,11 @@ export default function ArrangerPage() {
             </div>
           ) : kompError ? (
             <p className="text-sm text-red-500 text-center py-12">{kompError}</p>
-          ) : komposisjoner.length === 0 ? (
+          ) : aktiveKomposisjoner.length === 0 ? (
             <p className="text-sm text-stone-400 text-center py-12">Ingen komposisjoner lagret ennå.</p>
           ) : (
             <ul className="divide-y divide-stone-100 bg-white rounded-2xl border border-stone-200 shadow-sm overflow-hidden">
-              {komposisjoner.map(k => (
+              {aktiveKomposisjoner.map(k => (
                 <li key={k.id} className="flex items-center gap-3 p-3 hover:bg-stone-50 transition-colors">
                   <button onClick={() => { setAktivKomposisjon(k); pushVisning({ v: 'komposisjon', id: k.id }) }} className="flex items-center gap-3 flex-1 min-w-0 text-left">
                     <div className="w-12 h-12 rounded-lg overflow-hidden bg-stone-100 flex-shrink-0 flex items-center justify-center">
@@ -438,6 +511,89 @@ export default function ArrangerPage() {
             </ul>
           )}
         </>
+      )}
+    </div>
+  )
+}
+
+// ── Søppelkurv ───────────────────────────────────────────────────────────────────
+
+function formatSlettedato(iso: string): string {
+  return new Date(iso).toLocaleDateString('nb-NO', { day: 'numeric', month: 'long', year: 'numeric' })
+}
+
+// Ingen klikkflate inn i editoren her — en komposisjon i kurven kan ikke åpnes.
+function SoppelkurvVisning({
+  komposisjoner, slettForGodtId, onSlettForGodtId, onSlettForGodt, onGjenopprett, onBack,
+}: {
+  komposisjoner: BroderiKomposisjon[]
+  slettForGodtId: string | null
+  onSlettForGodtId: (id: string | null) => void
+  onSlettForGodt: (id: string) => void
+  onGjenopprett: (id: string) => void
+  onBack: () => void
+}) {
+  return (
+    <div>
+      <TilbakeKnapp onClick={onBack} tittel="Søppelkurv" />
+      {komposisjoner.length === 0 ? (
+        <p className="text-sm text-stone-400 text-center py-12">Søppelkurven er tom.</p>
+      ) : (
+        <ul className="divide-y divide-stone-100 bg-white rounded-2xl border border-stone-200 shadow-sm overflow-hidden">
+          {komposisjoner.map(k => (
+            <li key={k.id} className="flex items-center gap-3 p-3">
+              <div className="w-12 h-12 rounded-lg overflow-hidden bg-stone-100 flex-shrink-0 flex items-center justify-center">
+                {k.data.miniatyrSvg ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={`data:image/svg+xml;utf8,${encodeURIComponent(k.data.miniatyrSvg)}`}
+                    alt={k.data.navn}
+                    className="w-full h-full object-contain"
+                  />
+                ) : (
+                  <svg className="w-5 h-5 text-stone-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                      d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414A1 1 0 0119 9.414V19a2 2 0 01-2 2z" />
+                  </svg>
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-stone-800 text-sm truncate">
+                  {k.data.navn || <span className="text-stone-400 italic font-normal">Uten navn</span>}
+                </p>
+                <p className="text-xs text-stone-400 mt-0.5 truncate">
+                  {k.slettet_tid && `Slettet ${formatSlettedato(k.slettet_tid)} · `}
+                  slettes automatisk {DAGER_I_KURVEN} dager etter sletting
+                </p>
+              </div>
+              {slettForGodtId === k.id ? (
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  <button onClick={() => onSlettForGodt(k.id)} className="text-xs px-2.5 py-1.5 rounded-lg bg-red-500 text-white hover:bg-red-600 transition-colors">
+                    Slett for godt
+                  </button>
+                  <button onClick={() => onSlettForGodtId(null)} className="text-xs px-2.5 py-1.5 rounded-lg text-stone-400 hover:bg-stone-100 transition-colors">
+                    Avbryt
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  <button
+                    onClick={() => onGjenopprett(k.id)}
+                    className="text-xs px-2.5 py-1.5 rounded-lg border border-stone-200 text-stone-600 hover:border-stone-400 transition-colors"
+                  >
+                    Gjenopprett
+                  </button>
+                  <button
+                    onClick={() => onSlettForGodtId(k.id)}
+                    className="text-xs px-2.5 py-1.5 rounded-lg text-stone-400 hover:bg-red-50 hover:text-red-400 transition-colors"
+                  >
+                    Slett for godt
+                  </button>
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   )

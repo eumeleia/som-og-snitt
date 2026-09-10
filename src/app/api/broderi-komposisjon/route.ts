@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
     const { data: saved, error } = await supabaseAdmin
       .from('broderi_komposisjon')
       .insert({ data: body.data })
-      .select('id, data, created_at')
+      .select('id, data, created_at, slettet_tid')
       .single()
 
     if (error) {
