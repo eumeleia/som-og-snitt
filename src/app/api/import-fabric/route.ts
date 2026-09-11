@@ -28,7 +28,34 @@ Feltforklaring:
 
 Finn bredde/vekt/krymp/vask/sertifisering i properties-seksjonen, ikke i markedsføringsteksten. Hvis et felt mangler, bruk tom streng — ikke finn på.`
 
-function extractSections(html: string): string {
+export interface StoffData {
+  navn:          string
+  materiale:     string
+  bredde:        string
+  vekt:          string
+  krymp:         string
+  vask:          string
+  sertifisering: string
+  bilde:         string
+}
+
+export const HENT_SIDE_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'nb-NO,nb;q=0.9,no;q=0.8,en;q=0.7',
+}
+
+/** Feil med en HTTP-status ferdig påsatt, slik at ruter som gjenbruker hentingen kan
+ *  gjengi nøyaktig samme statuskode som denne ruta alltid har gitt. */
+export class HentSideFeil extends Error {
+  status: number
+  constructor(message: string, status: number) {
+    super(message)
+    this.status = status
+  }
+}
+
+export function extractSections(html: string): string {
   const parts: string[] = []
 
   // Extract JSON-LD blocks (Product schema with name, image, sku)
@@ -77,59 +104,52 @@ function extractSections(html: string): string {
   return parts.join('\n\n').slice(0, 200000)
 }
 
+/** Claude-kallet alene, for gjenbruk når HTML-en allerede er hentet et annet sted
+ *  (f.eks. /api/slaa-opp-vare, som også trenger produktnummer/brødsmulesti fra den
+ *  samme siden og ellers måtte hentet den to ganger). */
+export async function hentStoffdataFraHtml(html: string): Promise<StoffData> {
+  const extracted = extractSections(html)
+  if (!extracted.trim()) {
+    throw new HentSideFeil('Fant ingen relevant innhold i siden', 422)
+  }
+
+  const msg = await anthropic.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 1024,
+    messages: [{ role: 'user', content: `${PROMPT}\n\nSideinnhold:\n${extracted}` }],
+  })
+
+  const raw = (msg.content[0] as Anthropic.TextBlock).text.trim()
+  const start = raw.indexOf('{')
+  const end   = raw.lastIndexOf('}')
+
+  if (start === -1 || end === -1) {
+    throw new HentSideFeil(`Ugyldig svar fra Claude: ${raw.slice(0, 300)}`, 500)
+  }
+
+  return JSON.parse(raw.slice(start, end + 1)) as StoffData
+}
+
+export async function hentStoffdata(url: string): Promise<StoffData> {
+  const res = await fetch(url, { headers: HENT_SIDE_HEADERS })
+  if (!res.ok) {
+    throw new HentSideFeil(`HTTP ${res.status} – klarte ikke hente siden`, 502)
+  }
+  const html = await res.text()
+  return hentStoffdataFraHtml(html)
+}
+
 export async function POST(req: NextRequest) {
   try {
     const { url } = await req.json()
-
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'nb-NO,nb;q=0.9,no;q=0.8,en;q=0.7',
-      },
-    })
-
-    if (!res.ok) {
-      return NextResponse.json(
-        { error: `HTTP ${res.status} – klarte ikke hente siden` },
-        { status: 502 }
-      )
-    }
-
-    const html = await res.text()
-    const extracted = extractSections(html)
-
-    if (!extracted.trim()) {
-      return NextResponse.json(
-        { error: 'Fant ingen relevant innhold i siden' },
-        { status: 422 }
-      )
-    }
-
-    const msg = await anthropic.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 1024,
-      messages: [{ role: 'user', content: `${PROMPT}\n\nSideinnhold:\n${extracted}` }],
-    })
-
-    const raw = (msg.content[0] as Anthropic.TextBlock).text.trim()
-    const start = raw.indexOf('{')
-    const end   = raw.lastIndexOf('}')
-
-    if (start === -1 || end === -1) {
-      return NextResponse.json(
-        { error: `Ugyldig svar fra Claude: ${raw.slice(0, 300)}` },
-        { status: 500 }
-      )
-    }
-
-    const fabric = JSON.parse(raw.slice(start, end + 1))
+    const fabric = await hentStoffdata(url)
     return NextResponse.json({ fabric })
   } catch (err) {
     console.error('import-fabric error:', err)
+    const status = err instanceof HentSideFeil ? err.status : 500
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Ukjent feil' },
-      { status: 500 }
+      { status },
     )
   }
 }

@@ -9,6 +9,7 @@ import { RecipePicker, type PickerRecipe } from '../_shared/RecipePicker'
 import { ProjectPicker, type PickerProject } from '../_shared/ProjectPicker'
 import { supabase } from '@/lib/supabase'
 import { deepClone } from '@/lib/deep-clone'
+import { unikeProduktnumre, formaterMengdeAntall, type Kandidat } from '@/lib/vareoppslag'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -32,11 +33,20 @@ interface InventoryItemData {
   plassering:    string
   kjopsdato:     string
   kilde:         string
+  // Kvitteringsimport — satt når varen kommer fra /api/les-kvittering + /api/slaa-opp-vare.
+  // produktnummer er nummeret fra KVITTERINGEN, ikke fra produktsidens URL: kvitteringens
+  // nummer kan være et variantnummer siden ikke viser riktig (se vareoppslag.ts).
+  produktUrl?:     string
+  produktnummer?:  string
+  betaltPris?:     string
+  bilagsnummer?:   string
   // Stoff
   materiale?:    string
   bredde?:       string
   vekt?:         string
   vask?:         string
+  krymp?:        string
+  sertifisering?: string
   type?:         StoffType
   mengde?:       string
   forbrukStoff?: string
@@ -121,6 +131,7 @@ async function apiImportFabric(url: string) {
   return j.fabric as {
     navn: string; materiale: string; bredde: string
     vekt: string; vask: string; bilde: string
+    krymp: string; sertifisering: string
   }
 }
 
@@ -324,6 +335,8 @@ function NewInventoryModal({ onCreate, onClose, initialKategori = 'Stoff' }: {
           bredde:    result.bredde    || '',
           vekt:      result.vekt      || '',
           vask:      result.vask      || '',
+          krymp:         result.krymp         || '',
+          sertifisering: result.sertifisering || '',
           bilde:     result.bilde     || '',
           kilde:     importUrl.trim(),
         }
@@ -648,8 +661,8 @@ function ImageUploadModal({ onAdd, onClose }: {
 }
 
 // ── KvitteringImportModal ───────────────────────────────────────────────────────
-// Del 1 av kvitteringsimport: leser bildet og viser resultatet. Skriver ingenting til
-// lageret ennå — det kommer i del 2, når avlesningen er bekreftet.
+// Del 1: leser bildet og viser resultatet (skriver ingenting).
+// Del 2: slår varene opp mot selfmade.com og importerer de valgte til lageret.
 
 interface KvitteringLinjeVisning {
   produktnummer: string
@@ -674,35 +687,210 @@ interface KvitteringSvar {
   summeringssjekk: { ok: boolean; differanse: number }
 }
 
-function KvitteringImportModal({ onClose }: { onClose: () => void }) {
+interface ProduktTreff {
+  url:            string
+  navn:           string
+  kategori:       Kategori
+  underkategori?: string
+  utstyrstype?:   string
+  materiale?:     string
+  bredde?:        string
+  vekt?:          string
+  vask?:          string
+  krymp?:         string
+  sertifisering?: string
+  bilde?:         string
+  enhetsfelt:     'mengde' | 'antall'
+  sidenummer:     string
+  variantHale:    string | null
+}
+
+type RadTilstand =
+  | { fase: 'venter' }
+  | { fase: 'slaarOpp' }
+  | { fase: 'funnet';      produkt: ProduktTreff }
+  | { fase: 'flereTreff';  kandidater: Kandidat[] }
+  | { fase: 'ikkeFunnet' }
+  | { fase: 'feil';        melding: string }
+
+async function slaOppVare(produktnummer: string, kvitteringsnavn: string, valgtUrl?: string): Promise<RadTilstand> {
+  try {
+    const res = await fetch('/api/slaa-opp-vare', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ produktnummer, kvitteringsnavn, valgtUrl }),
+    })
+    const j = await res.json()
+    if (j.tilstand === 'funnet')     return { fase: 'funnet', produkt: j.produkt }
+    if (j.tilstand === 'flereTreff') return { fase: 'flereTreff', kandidater: j.kandidater }
+    if (j.tilstand === 'ikkeFunnet') return { fase: 'ikkeFunnet' }
+    return { fase: 'feil', melding: j.melding ?? 'Oppslag feilet' }
+  } catch (err) {
+    return { fase: 'feil', melding: err instanceof Error ? err.message : 'Oppslag feilet' }
+  }
+}
+
+function byggInventoryDataFraKvittering(
+  linje: KvitteringLinjeVisning, produkt: ProduktTreff, resultat: KvitteringSvar,
+): InventoryItemData {
+  const mengdeAntall = formaterMengdeAntall(linje.antall, produkt.enhetsfelt)
+  const base: InventoryItemData = {
+    kategori: produkt.kategori,
+    navn:     produkt.navn || linje.navn,
+    bilde:    produkt.bilde || '',
+    notater: '', tenktTil: '', plassering: '',
+    kjopsdato: resultat.dato,
+    kilde:     'Selfmade Kristiansand',
+    produktUrl:    produkt.url,
+    produktnummer: linje.produktnummer,
+    betaltPris:    `${linje.linjesum.toLocaleString('nb-NO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} kr`,
+    bilagsnummer:  resultat.bilagsnummer,
+    ...(produkt.enhetsfelt === 'mengde' ? { mengde: mengdeAntall } : { antall: mengdeAntall }),
+  }
+  if (produkt.kategori === 'Stoff') {
+    return {
+      ...base, type: 'Hovedstoff',
+      materiale: produkt.materiale || '', bredde: produkt.bredde || '', vekt: produkt.vekt || '',
+      vask: produkt.vask || '', krymp: produkt.krymp || '', sertifisering: produkt.sertifisering || '',
+    }
+  }
+  if (produkt.kategori === 'Tilbehør') {
+    return {
+      ...base,
+      underkategori: produkt.underkategori || '',
+      ...(produkt.variantHale ? { lengde: `${produkt.variantHale} cm` } : {}),
+    }
+  }
+  return { ...base, utstyrstype: produkt.utstyrstype || '', detaljer: produkt.materiale || '' }
+}
+
+function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
+  onClose: () => void
+  eksisterendeVarer: InventoryItem[]
+  onImporter: (dataListe: InventoryItemData[]) => Promise<void>
+}) {
   const [file, setFile]       = useState<File | null>(null)
   const [lesing, setLesing]   = useState(false)
   const [error, setError]     = useState('')
   const [resultat, setResultat] = useState<KvitteringSvar | null>(null)
   const fileInputRef          = useRef<HTMLInputElement>(null)
 
+  const [radTilstander, setRadTilstander] = useState<Record<number, RadTilstand>>({})
+  const [fremdrift, setFremdrift]         = useState<{ gjort: number; totalt: number } | null>(null)
+  const [valgteRader, setValgteRader]     = useState<Set<number>>(new Set())
+  const [manuellUrl, setManuellUrl]       = useState<Record<number, string>>({})
+  const [manuellLaster, setManuellLaster] = useState<Record<number, boolean>>({})
+  const [bilagBekreftet, setBilagBekreftet] = useState(false)
+  const [importerer, setImporterer]       = useState(false)
+  const [importMelding, setImportMelding] = useState('')
+
+  const bilagsnummerDuplikat = resultat
+    ? eksisterendeVarer.some(v => v.data.bilagsnummer && v.data.bilagsnummer === resultat.bilagsnummer)
+    : false
+
+  function erProduktnummerDuplikat(produktnummer: string) {
+    return eksisterendeVarer.some(v => v.data.produktnummer === produktnummer)
+  }
+
+  async function startOppslag(svar: KvitteringSvar) {
+    const unike = unikeProduktnumre(svar.linjer)
+    setFremdrift({ gjort: 0, totalt: unike.length })
+
+    for (let i = 0; i < unike.length; i++) {
+      const produktnummer = unike[i]
+      const indekser = svar.linjer.reduce<number[]>((acc, l, idx) => (l.produktnummer === produktnummer ? [...acc, idx] : acc), [])
+      const navn = svar.linjer[indekser[0]]?.navn ?? ''
+
+      setRadTilstander(prev => { const neste = { ...prev }; indekser.forEach(idx => { neste[idx] = { fase: 'slaarOpp' } }); return neste })
+      const tilstand = await slaOppVare(produktnummer, navn)
+      setRadTilstander(prev => { const neste = { ...prev }; indekser.forEach(idx => { neste[idx] = tilstand }); return neste })
+
+      if (tilstand.fase === 'funnet' && !erProduktnummerDuplikat(produktnummer)) {
+        setValgteRader(prev => { const neste = new Set(prev); indekser.forEach(idx => neste.add(idx)); return neste })
+      }
+      setFremdrift({ gjort: i + 1, totalt: unike.length })
+    }
+  }
+
   async function handleLes() {
     if (!file) return
     setLesing(true); setError(''); setResultat(null)
+    setRadTilstander({}); setFremdrift(null); setValgteRader(new Set()); setBilagBekreftet(false); setImportMelding('')
     try {
       const form = new FormData()
       form.append('file', file)
       const res = await fetch('/api/les-kvittering', { method: 'POST', body: form })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? 'Lesing feilet')
-      setResultat(json as KvitteringSvar)
+      const svar = json as KvitteringSvar
+      setResultat(svar)
+      setLesing(false)
+      await startOppslag(svar)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Lesing feilet')
-    } finally {
       setLesing(false)
+    }
+  }
+
+  async function velgKandidatForRad(i: number, produktnummer: string, navn: string, url: string) {
+    setRadTilstander(prev => ({ ...prev, [i]: { fase: 'slaarOpp' } }))
+    const tilstand = await slaOppVare(produktnummer, navn, url)
+    setRadTilstander(prev => ({ ...prev, [i]: tilstand }))
+    if (tilstand.fase === 'funnet' && !erProduktnummerDuplikat(produktnummer)) {
+      setValgteRader(prev => new Set(prev).add(i))
+    }
+  }
+
+  async function hentManuelt(i: number, url: string) {
+    if (!url.trim()) return
+    setManuellLaster(prev => ({ ...prev, [i]: true }))
+    try {
+      const fabric = await apiImportFabric(url.trim())
+      const produkt: ProduktTreff = {
+        url: url.trim(), navn: fabric.navn, kategori: 'Stoff',
+        materiale: fabric.materiale, bredde: fabric.bredde, vekt: fabric.vekt, vask: fabric.vask,
+        krymp: fabric.krymp, sertifisering: fabric.sertifisering, bilde: fabric.bilde,
+        enhetsfelt: 'mengde', sidenummer: resultat?.linjer[i]?.produktnummer ?? '', variantHale: null,
+      }
+      setRadTilstander(prev => ({ ...prev, [i]: { fase: 'funnet', produkt } }))
+      setValgteRader(prev => new Set(prev).add(i))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Henting feilet')
+    } finally {
+      setManuellLaster(prev => ({ ...prev, [i]: false }))
+    }
+  }
+
+  function toggleRad(i: number) {
+    setValgteRader(prev => { const neste = new Set(prev); if (neste.has(i)) neste.delete(i); else neste.add(i); return neste })
+  }
+
+  async function handleImporter() {
+    if (!resultat) return
+    setImporterer(true); setError('')
+    try {
+      const dataListe: InventoryItemData[] = []
+      resultat.linjer.forEach((linje, i) => {
+        const tilstand = radTilstander[i]
+        if (!valgteRader.has(i) || !tilstand || tilstand.fase !== 'funnet') return
+        dataListe.push(byggInventoryDataFraKvittering(linje, tilstand.produkt, resultat))
+      })
+      await onImporter(dataListe)
+      setImportMelding(`${dataListe.length} ${dataListe.length === 1 ? 'vare' : 'varer'} lagt til i lageret.`)
+      setValgteRader(new Set())
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Import feilet')
+    } finally {
+      setImporterer(false)
     }
   }
 
   function nyLesing() {
     setResultat(null); setFile(null); setError('')
+    setRadTilstander({}); setFremdrift(null); setValgteRader(new Set()); setBilagBekreftet(false); setImportMelding('')
   }
 
   const nok = (n: number) => n.toLocaleString('nb-NO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  const kanImportere = valgteRader.size > 0 && !importerer && (!bilagsnummerDuplikat || bilagBekreftet) && !importMelding
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4">
@@ -770,27 +958,96 @@ function KvitteringImportModal({ onClose }: { onClose: () => void }) {
                 </p>
               </div>
 
+              {bilagsnummerDuplikat && !importMelding && (
+                <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-800">
+                  <p className="font-medium mb-2">
+                    Denne kvitteringen (bilagsnummer {resultat.bilagsnummer}) er importert før.
+                  </p>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={bilagBekreftet} onChange={e => setBilagBekreftet(e.target.checked)} />
+                    Jeg vil importere den likevel
+                  </label>
+                </div>
+              )}
+
+              {fremdrift && fremdrift.gjort < fremdrift.totalt && (
+                <div className="text-xs text-stone-400">
+                  Slår opp {fremdrift.gjort} av {fremdrift.totalt}…
+                </div>
+              )}
+
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-stone-400 border-b border-stone-100">
+                      <th className="py-1.5 pr-2 font-normal"></th>
                       <th className="py-1.5 pr-3 font-normal">Produktnr.</th>
-                      <th className="py-1.5 pr-3 font-normal">Navn</th>
+                      <th className="py-1.5 pr-3 font-normal">Kvittering</th>
                       <th className="py-1.5 pr-3 font-normal text-right">Antall</th>
-                      <th className="py-1.5 pr-3 font-normal text-right">Enhetspris</th>
-                      <th className="py-1.5 font-normal text-right">Linjesum</th>
+                      <th className="py-1.5 pr-3 font-normal text-right">Linjesum</th>
+                      <th className="py-1.5 font-normal">Funnet på selfmade.com</th>
                     </tr>
                   </thead>
                   <tbody>
                     {resultat.linjer.map((l, i) => {
-                      const usikker = !l.produktnummer.trim() || !l.navn.trim()
+                      const usikker  = !l.produktnummer.trim() || !l.navn.trim()
+                      const tilstand = radTilstander[i]
+                      const duplikat = tilstand?.fase === 'funnet' && erProduktnummerDuplikat(l.produktnummer)
                       return (
-                        <tr key={i} className={`border-b border-stone-50 ${usikker ? 'bg-amber-50' : ''}`}>
-                          <td className="py-1.5 pr-3 text-stone-700">{l.produktnummer || '?'}</td>
-                          <td className="py-1.5 pr-3 text-stone-700">{l.navn || '?'}</td>
-                          <td className="py-1.5 pr-3 text-right text-stone-600">{l.antall}</td>
-                          <td className="py-1.5 pr-3 text-right text-stone-600">{nok(l.enhetspris)}</td>
-                          <td className="py-1.5 text-right text-stone-700">{nok(l.linjesum)}</td>
+                        <tr key={i} className={`border-b border-stone-50 align-top ${usikker ? 'bg-amber-50' : ''}`}>
+                          <td className="py-2 pr-2">
+                            <input type="checkbox" checked={valgteRader.has(i)} onChange={() => toggleRad(i)}
+                              disabled={!tilstand || tilstand.fase !== 'funnet' || !!importMelding} />
+                          </td>
+                          <td className="py-2 pr-3 text-stone-700 whitespace-nowrap">{l.produktnummer || '?'}</td>
+                          <td className="py-2 pr-3 text-stone-700">{l.navn || '?'}</td>
+                          <td className="py-2 pr-3 text-right text-stone-600 whitespace-nowrap">{l.antall}</td>
+                          <td className="py-2 pr-3 text-right text-stone-700 whitespace-nowrap">{nok(l.linjesum)}</td>
+                          <td className="py-2 text-stone-600">
+                            {!tilstand || tilstand.fase === 'venter' || tilstand.fase === 'slaarOpp' ? (
+                              <span className="inline-flex items-center gap-1.5 text-stone-400"><Spinner /> Slår opp…</span>
+                            ) : tilstand.fase === 'funnet' ? (
+                              <div>
+                                <p className="font-medium text-stone-800">{tilstand.produkt.navn}</p>
+                                <p className="text-xs text-stone-400">
+                                  {tilstand.produkt.kategori}
+                                  {tilstand.produkt.underkategori ? ` · ${tilstand.produkt.underkategori}` : ''}
+                                  {tilstand.produkt.utstyrstype ? ` · ${tilstand.produkt.utstyrstype}` : ''}
+                                </p>
+                                {duplikat && (
+                                  <p className="text-xs text-amber-600 mt-0.5">
+                                    Finnes fra før i lageret (nummer {l.produktnummer}) — huk av for å legge til likevel.
+                                  </p>
+                                )}
+                              </div>
+                            ) : tilstand.fase === 'flereTreff' ? (
+                              <select
+                                className="text-xs border border-stone-200 rounded-lg px-2 py-1 w-full max-w-xs"
+                                defaultValue=""
+                                onChange={e => { if (e.target.value) velgKandidatForRad(i, l.produktnummer, l.navn, e.target.value) }}
+                              >
+                                <option value="" disabled>Flere treff — velg riktig vare…</option>
+                                {tilstand.kandidater.map(k => <option key={k.url} value={k.url}>{k.navn}</option>)}
+                              </select>
+                            ) : tilstand.fase === 'ikkeFunnet' ? (
+                              <div className="flex gap-1.5">
+                                <input
+                                  type="text" placeholder="Lim inn produkt-URL…"
+                                  className="text-xs border border-stone-200 rounded-lg px-2 py-1 flex-1 min-w-0"
+                                  value={manuellUrl[i] ?? ''}
+                                  onChange={e => setManuellUrl(prev => ({ ...prev, [i]: e.target.value }))}
+                                />
+                                <button
+                                  onClick={() => hentManuelt(i, manuellUrl[i] ?? '')}
+                                  disabled={!manuellUrl[i]?.trim() || manuellLaster[i]}
+                                  className="text-xs px-2.5 py-1 bg-stone-700 text-white rounded-lg disabled:opacity-40 whitespace-nowrap">
+                                  {manuellLaster[i] ? 'Henter…' : 'Hent'}
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="text-xs text-red-600">{tilstand.melding}</span>
+                            )}
+                          </td>
                         </tr>
                       )
                     })}
@@ -810,9 +1067,19 @@ function KvitteringImportModal({ onClose }: { onClose: () => void }) {
                 </div>
               )}
 
+              {error && <p className="text-xs text-red-500">{error}</p>}
+              {importMelding && <p className="text-sm text-green-700 font-medium">{importMelding}</p>}
+
               <div className="flex gap-3">
+                {!importMelding && (
+                  <button onClick={handleImporter} disabled={!kanImportere}
+                    className="flex-1 py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                    {importerer && <Spinner />}
+                    {importerer ? 'Importerer…' : `Importer de valgte (${valgteRader.size})`}
+                  </button>
+                )}
                 <button onClick={nyLesing}
-                  className="flex-1 py-2.5 border border-stone-200 text-stone-600 text-sm rounded-xl hover:bg-stone-50 transition-colors">
+                  className={`${importMelding ? 'flex-1' : ''} py-2.5 border border-stone-200 text-stone-600 text-sm rounded-xl hover:bg-stone-50 transition-colors`}>
                   Les et annet bilde
                 </button>
                 <button onClick={onClose}
@@ -1616,6 +1883,16 @@ function InventoryPageInner() {
     }
   }
 
+  // Brukes av kvitteringsimporten — setter inn flere varer i ett kall og blir på
+  // listevisningen etterpå, i motsetning til createItem som navigerer til den ene nye
+  // varens detaljvisning (riktig for enkeltimport, feil for en haug med varer på én gang).
+  async function importerFlereVarer(dataListe: InventoryItemData[]): Promise<void> {
+    if (dataListe.length === 0) return
+    const { data: rows, error } = await supabase.from('inventory').insert(dataListe.map(data => ({ data }))).select()
+    if (error) throw error
+    setItems(prev => [...(rows as InventoryItem[]), ...prev])
+  }
+
   async function deleteItem(id: string) {
     await supabase.from('inventory').delete().eq('id', id)
     await load()
@@ -2098,7 +2375,11 @@ function InventoryPageInner() {
       )}
 
       {showKvitteringModal && (
-        <KvitteringImportModal onClose={() => setShowKvitteringModal(false)} />
+        <KvitteringImportModal
+          onClose={() => setShowKvitteringModal(false)}
+          eksisterendeVarer={items}
+          onImporter={importerFlereVarer}
+        />
       )}
 
       {deleteId && !showDetail && (
