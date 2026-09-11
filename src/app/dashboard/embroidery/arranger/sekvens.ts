@@ -410,6 +410,11 @@ export function fasesorter(sekvens: SekvensElement[], ctx: SekvensKontekst): Sek
 
 // Legger til sekvenselementer for nylig tilkomne motiver (så snart de er tolket) og
 // fjerner elementer som pekte på motiver som ikke lenger er plassert.
+//
+// Kjenner IKKE til PlassertMotiv.gruppeId, og skal aldri lære det — verken her, andre
+// steder i denne fila, eller i SekvensPanel.tsx. Grupper (punkt B3,
+// docs/onsker-2026-09-08.md) er en redigeringshjelp på LERRETET; rekkefølgen på
+// fargekjøringer bestemmes bare i sekvenspanelet, uavhengig av hva som er gruppert.
 export function synkroniserSekvens(sekvens: SekvensElement[], ctx: SekvensKontekst): SekvensElement[] {
   let ny = sekvens
   let endret = false

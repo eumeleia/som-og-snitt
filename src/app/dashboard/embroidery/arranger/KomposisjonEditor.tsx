@@ -7,6 +7,7 @@ import { describeError, type ErrorDetails } from '@/lib/error-details'
 import { ErrorDetailsView } from '@/components/ErrorDetailsView'
 import { roterLokalePunkter, plassertBbox, kombinerBbox, lagRotasjon } from './geometri'
 import { synkroniserSekvens, byggFargePerBlokk, tellSting, tellOmtredninger, type SekvensKontekst } from './sekvens'
+import { ryddOppEnkeltmedlemsgrupper, utvidTilGrupper, nyttUtvalgVedKlikk } from './grupper'
 import { byggMiniatyrSvg } from './miniatyr'
 import { erEndret, serialiserSnapshot, type KomposisjonSnapshot } from './lagreSnapshot'
 import { hentMineTrader, byggPecTilEkteMap, type MinTrad } from './minTraadpalett'
@@ -154,6 +155,9 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
   // draget slippes.
   const [gruppeRotasjonVisning, setGruppeRotasjonVisning] = useState(0)
   const [showPicker, setShowPicker] = useState(false)
+  // Punkt B3: hvilke grupperader som er slått ut i motivlisten under lerretet — ren
+  // visningstilstand, uavhengig av valgtIds.
+  const [apneGrupper, setApneGrupper] = useState<Set<string>>(new Set())
   // Satt av leggTilValgte (via onVelgFlere) når flervalgets rutenett IKKE kunne holde
   // alle nylig tilføyde motiver innenfor rammen uten overlapp — se beregnRutenettCelle.
   // Blokkerer aldri tilføyingen selv (motivene legges til uansett); bare et varsel om
@@ -389,12 +393,51 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
   }
 
   // Punkt B1: Delete/piltaster og X/Y-feltet flytter/sletter alltid HELE utvalget.
+  // ryddOppEnkeltmedlemsgrupper (punkt B3): sletting kan krympe en gruppe til ett
+  // gjenværende medlem, som da ikke lenger er en gruppe.
   function slettValgte() {
     if (valgtIds.size === 0) return
-    const nyeMotiver = motiver.filter(pm => !valgtIds.has(pm.id))
+    const nyeMotiver = ryddOppEnkeltmedlemsgrupper(motiver.filter(pm => !valgtIds.has(pm.id)))
     pushUndoHvisEndret({ motiver, sekvens }, { motiver: nyeMotiver, sekvens })
     setMotiver(nyeMotiver)
     setValgtIds(new Set())
+  }
+
+  // Punkt B3: alle valgte får samme nye gruppeId. Kan stjele medlemmer fra en ANNEN,
+  // eksisterende gruppe og etterlate den med ett medlem igjen — ryddOppEnkeltmedlemsgrupper
+  // fanger opp nettopp det.
+  function grupperValgte() {
+    if (valgtIds.size < 2) return
+    const nyGruppeId = uid()
+    const nyeMotiver = ryddOppEnkeltmedlemsgrupper(
+      motiver.map(pm => valgtIds.has(pm.id) ? { ...pm, gruppeId: nyGruppeId, gruppeNavn: undefined } : pm),
+    )
+    pushUndoHvisEndret({ motiver, sekvens }, { motiver: nyeMotiver, sekvens })
+    setMotiver(nyeMotiver)
+  }
+
+  // Bare kalt når utvalget ER nøyaktig én hel gruppe (erHelGruppeValgt) — trenger derfor
+  // ingen egen opprydning etterpå, hele gruppen løses opp på én gang.
+  function losOppValgte() {
+    if (!erHelGruppeValgt || !valgtGruppeId) return
+    const nyeMotiver = motiver.map(pm => {
+      if (pm.gruppeId !== valgtGruppeId) return pm
+      const rest = { ...pm }
+      delete rest.gruppeId
+      delete rest.gruppeNavn
+      return rest
+    })
+    pushUndoHvisEndret({ motiver, sekvens }, { motiver: nyeMotiver, sekvens })
+    setMotiver(nyeMotiver)
+  }
+
+  // Gruppenavn er en diskret feltredigering (commit ved blur, som TallFelt) — i
+  // motsetning til komposisjonens EGET navn er dette angrebart, som andre felt-commits.
+  function settGruppeNavn(gruppeId: string, navnVerdi: string) {
+    const verdi = navnVerdi.trim() || undefined
+    const nyeMotiver = motiver.map(pm => pm.gruppeId === gruppeId ? { ...pm, gruppeNavn: verdi } : pm)
+    pushUndoHvisEndret({ motiver, sekvens }, { motiver: nyeMotiver, sekvens })
+    setMotiver(nyeMotiver)
   }
 
   function flyttValgteMedDelta(dxTiendedelMm: number, dyTiendedelMm: number) {
@@ -429,7 +472,9 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
     const nyttUtvalg = kilde.tekstId != null
       ? new Set(motiver.filter(pm => pm.fontKilde?.tekstId === kilde.tekstId).map(pm => pm.id))
       : new Set(motiver.filter(pm => pm.fontKilde?.bundleId === kilde.bundleId).map(pm => pm.id))
-    setValgtIds(nyttUtvalg)
+    // Punkt B3: samme regel som lerretet/listen — er en av bokstavene gruppert med noe
+    // annet, følger resten av DEN gruppen med. Én regel, ikke to.
+    setValgtIds(utvidTilGrupper(nyttUtvalg, motiver))
   }
 
   // Gruppe-rotasjon (punkt B2): rene funksjoner som regner ut nye motiver fra et
@@ -557,6 +602,34 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
     () => valgtMotiver.find(pm => pm.fontKilde)?.fontKilde ?? null,
     [valgtMotiver],
   )
+  // Punkt B3: «Løs opp» vises bare når utvalget ER nøyaktig én hel, eksisterende gruppe —
+  // ikke en DEL av en gruppe (utvidTilGrupper garanterer at markering aldri lander der i
+  // praksis, men et delvis utvalg kan oppstå via alt-klikk), og ikke flere grupper på én gang.
+  const valgtGruppeId = valgtMotiver[0]?.gruppeId
+  const erHelGruppeValgt = useMemo(() => {
+    if (!valgtGruppeId || !valgtMotiver.every(pm => pm.gruppeId === valgtGruppeId)) return false
+    return motiver.filter(pm => pm.gruppeId === valgtGruppeId).length === valgtMotiver.length
+  }, [valgtMotiver, motiver, valgtGruppeId])
+
+  // Punkt B3, motivlisten (:1378 i det opprinnelige forslaget): grupperte motiver samles
+  // i ÉN rad per gruppe, ugrupperte står som før. Gruppens rad plasseres der FØRSTE
+  // medlem forekommer i motiver — resten av gruppen (og ugrupperte motiver ellers)
+  // beholder sin innbyrdes rekkefølge uendret.
+  type MotivRad = { type: 'motiv'; pm: PlassertMotiv } | { type: 'gruppe'; gruppeId: string; medlemmer: PlassertMotiv[] }
+  const motivRader = useMemo<MotivRad[]>(() => {
+    const rader: MotivRad[] = []
+    const settGrupper = new Set<string>()
+    for (const pm of motiver) {
+      if (!pm.gruppeId) {
+        rader.push({ type: 'motiv', pm })
+        continue
+      }
+      if (settGrupper.has(pm.gruppeId)) continue
+      settGrupper.add(pm.gruppeId)
+      rader.push({ type: 'gruppe', gruppeId: pm.gruppeId, medlemmer: motiver.filter(m => m.gruppeId === pm.gruppeId) })
+    }
+    return rader
+  }, [motiver])
   const valgtSenterXTiendedelMm = valgtBbox ? Math.round((valgtBbox.min_x + valgtBbox.max_x) / 2) : 0
   const valgtSenterYTiendedelMm = valgtBbox ? Math.round((valgtBbox.min_y + valgtBbox.max_y) / 2) : 0
 
@@ -586,23 +659,22 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
 
   // ── Dra-for-å-flytte ────────────────────────────────────────────────────────────
 
-  // Punkt B1: shift/cmd/ctrl-klikk legger til/fjerner ETT motiv fra utvalget og starter
-  // ALDRI et dra (bare en ren markeringshandling). Et vanlig klikk på et motiv som
-  // allerede er del av et FLERVALG (størrelse > 1) beholder hele utvalget og starter et
-  // gruppedra; ellers erstattes utvalget med bare dette ene motivet, som før.
+  // Punkt B1/B3: shift/cmd/ctrl-klikk legger til/fjerner en HEL gruppe (aldri bare ett
+  // medlem) og starter ALDRI et dra (bare en ren markeringshandling). Alt-klikk velger
+  // BARE dette ene motivet, uten å løse opp gruppen det tilhører — den eneste veien til
+  // et delvis utvalg. Reglene er delt med motivlisten via nyttUtvalgVedKlikk (grupper.ts),
+  // ett sted, ikke to som kan sprike.
+  //
+  // nyttUtvalg må utvides til hele gruppen FØR startPos bygges under, ellers starter
+  // draget med bare halve gruppen.
   function onPointerDownMotiv(e: ReactPointerEvent, pm: PlassertMotiv) {
     e.stopPropagation()
+    const nyttUtvalg = nyttUtvalgVedKlikk(e, pm, valgtIds, motiver)
+    setValgtIds(nyttUtvalg)
     if (e.shiftKey || e.metaKey || e.ctrlKey) {
-      setValgtIds(prev => {
-        const next = new Set(prev)
-        if (next.has(pm.id)) next.delete(pm.id); else next.add(pm.id)
-        return next
-      })
       dragRef.current = null
       return
     }
-    const nyttUtvalg = valgtIds.has(pm.id) && valgtIds.size > 1 ? valgtIds : new Set([pm.id])
-    setValgtIds(nyttUtvalg)
     dragRef.current = {
       startClientX: e.clientX,
       startClientY: e.clientY,
@@ -612,6 +684,21 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
     }
     dragUndoRef.current = { navn, motiver, sekvens }
     ;(e.target as Element).setPointerCapture(e.pointerId)
+  }
+
+  // Motivlistens klikk (gruppe-rad, medlemsrad inni en utslått gruppe, og ugrupperte
+  // rader) — samme markeringsregel som lerretet, se onPointerDownMotiv, bare uten
+  // dra-oppsettet (listen drar ikke).
+  function velgVedListeKlikk(e: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean; altKey: boolean }, pm: PlassertMotiv) {
+    setValgtIds(nyttUtvalgVedKlikk(e, pm, valgtIds, motiver))
+  }
+
+  function veksleApenGruppe(gruppeId: string) {
+    setApneGrupper(s => {
+      const n = new Set(s)
+      if (n.has(gruppeId)) n.delete(gruppeId); else n.add(gruppeId)
+      return n
+    })
   }
 
   // Flytter HELE utvalget med samme delta, regnet fra hvert motivs egen startposisjon i
@@ -908,6 +995,10 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
   // faller tilbake til ÉN gruppe per bundle, sortert på x (kjenteIndekser: false) — se
   // omplasserTekstgruppe/malSporingFraPosisjoner i fontUtils.ts. Grupper med under to
   // tegn har ingenting å justere og vises ikke.
+  //
+  // MED VILJE ikke PlassertMotiv.gruppeId (punkt B3): dette justerer mellomrom i en
+  // TEKST, ikke en figur. Er bokstavene i et ord gruppert sammen med en blomst, skal
+  // glideren fortsatt bare flytte bokstavene — det er riktig, ikke en feil å rette.
   const tekstGrupper = useMemo(() => {
     type Ledd = { id: string; posisjonXTiendedelMm: number; widthMm: number; indeks: number | null }
     type Akk = { bundleId: string; bundleNavn: string; kjenteIndekser: boolean; ledd: Ledd[] }
@@ -1271,6 +1362,30 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
               </svg>
             </button>
           </div>
+          {(valgtMotiver.length >= 2 || erHelGruppeValgt) && (
+            // Punkt B3: «Grupper» når to eller flere er valgt (uansett om noen av dem
+            // allerede tilhører en annen gruppe — den blir da med hit, se
+            // ryddOppEnkeltmedlemsgrupper i grupperValgte). «Løs opp» bare når utvalget ER
+            // nøyaktig én hel, eksisterende gruppe.
+            <div className="flex gap-2 mb-3">
+              {valgtMotiver.length >= 2 && (
+                <button
+                  onClick={grupperValgte}
+                  className="flex-1 py-1.5 text-xs border border-stone-200 rounded-lg text-stone-600 hover:border-[#C9A57A] hover:text-[#8B6340] transition-colors"
+                >
+                  Grupper
+                </button>
+              )}
+              {erHelGruppeValgt && (
+                <button
+                  onClick={losOppValgte}
+                  className="flex-1 py-1.5 text-xs border border-stone-200 rounded-lg text-stone-600 hover:border-[#C9A57A] hover:text-[#8B6340] transition-colors"
+                >
+                  Løs opp
+                </button>
+              )}
+            </div>
+          )}
           {velgHeleTekstenKilde && (
             // Punkt B1: bruker fontKilde.tekstId — ALDRI bundleId — så to ulike ord fra
             // samme font ikke velges samlet. Eldre komposisjoner uten tekstId faller
@@ -1374,42 +1489,60 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
 
       {motiver.length > 0 && (
         <ul className="divide-y divide-stone-100 bg-white rounded-2xl border border-stone-200 shadow-sm overflow-hidden">
-          {motiver.map(pm => {
-            const key = motivKey(pm.embroideryId, pm.sizeId)
-            const feil = fetchErrors[key]
-            const lastet = !!resolved[key]
-            return (
-              <li key={pm.id}>
+          {motivRader.map(rad => rad.type === 'motiv' ? (
+            <MotivRadItem
+              key={rad.pm.id}
+              pm={rad.pm}
+              valgt={valgtIds.has(rad.pm.id)}
+              utenforRamme={utenforRammeIder.includes(rad.pm.id)}
+              feil={fetchErrors[motivKey(rad.pm.embroideryId, rad.pm.sizeId)]}
+              lastet={!!resolved[motivKey(rad.pm.embroideryId, rad.pm.sizeId)]}
+              onClick={e => velgVedListeKlikk(e, rad.pm)}
+            />
+          ) : (
+            <li key={rad.gruppeId}>
+              <div
+                onClick={e => velgVedListeKlikk(e, rad.medlemmer[0])}
+                className={`w-full flex items-center gap-2 px-4 py-2.5 cursor-pointer transition-colors ${
+                  rad.medlemmer.every(m => valgtIds.has(m.id)) ? 'bg-stone-50' : 'hover:bg-stone-50'
+                }`}
+              >
                 <button
-                  onClick={e => {
-                    const additive = e.shiftKey || e.metaKey || e.ctrlKey
-                    setValgtIds(prev => {
-                      if (!additive) return new Set([pm.id])
-                      const next = new Set(prev)
-                      if (next.has(pm.id)) next.delete(pm.id); else next.add(pm.id)
-                      return next
-                    })
-                  }}
-                  className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors ${
-                    valgtIds.has(pm.id) ? 'bg-stone-50' : 'hover:bg-stone-50'
-                  }`}
+                  onClick={e => { e.stopPropagation(); veksleApenGruppe(rad.gruppeId) }}
+                  className="p-0.5 text-stone-400 hover:text-stone-600 flex-shrink-0"
+                  aria-label={apneGrupper.has(rad.gruppeId) ? 'Skjul gruppemedlemmer' : 'Vis gruppemedlemmer'}
                 >
-                  <span className="flex-1 min-w-0 text-sm text-stone-700 truncate">{pm.navn}</span>
-                  {utenforRammeIder.includes(pm.id) && (
-                    <span className="text-xs text-red-500 flex-shrink-0" title="Stikker utenfor rammen">⚠ Utenfor</span>
-                  )}
-                  {feil ? (
-                    <span className="text-xs text-red-500 flex-shrink-0">Feil</span>
-                  ) : !lastet ? (
-                    <span className="w-3.5 h-3.5 border-2 border-stone-200 border-t-stone-500 rounded-full animate-spin flex-shrink-0" />
-                  ) : null}
+                  <svg
+                    className={`w-3.5 h-3.5 transition-transform ${apneGrupper.has(rad.gruppeId) ? 'rotate-90' : ''}`}
+                    fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
                 </button>
-                {feil && (
-                  <p className="px-4 pb-2 text-xs text-red-500">{feil}</p>
-                )}
-              </li>
-            )
-          })}
+                <GruppeNavnFelt
+                  value={rad.medlemmer[0].gruppeNavn ?? ''}
+                  plassholder={`Gruppe (${rad.medlemmer.length} motiver)`}
+                  onCommit={v => settGruppeNavn(rad.gruppeId, v)}
+                />
+              </div>
+              {apneGrupper.has(rad.gruppeId) && (
+                <ul className="divide-y divide-stone-50 bg-stone-50/60">
+                  {rad.medlemmer.map(pm => (
+                    <MotivRadItem
+                      key={pm.id}
+                      pm={pm}
+                      valgt={valgtIds.has(pm.id)}
+                      utenforRamme={utenforRammeIder.includes(pm.id)}
+                      feil={fetchErrors[motivKey(pm.embroideryId, pm.sizeId)]}
+                      lastet={!!resolved[motivKey(pm.embroideryId, pm.sizeId)]}
+                      onClick={e => velgVedListeKlikk(e, pm)}
+                      innrykk
+                    />
+                  ))}
+                </ul>
+              )}
+            </li>
+          ))}
         </ul>
       )}
       </div>
@@ -1532,6 +1665,78 @@ function TallFelt({ value, onCommit, step = 1, className }: {
       }}
       className={className}
     />
+  )
+}
+
+// Gruppens (valgfrie) navn i motivlisten (punkt B3) — samme commit-ved-blur-mønster som
+// TallFelt over. stopPropagation: raden rundt velger hele gruppen ved klikk, feltet skal
+// bare redigere navnet.
+function GruppeNavnFelt({ value, plassholder, onCommit }: {
+  value: string
+  plassholder: string
+  onCommit: (v: string) => void
+}) {
+  const [tekst, setTekst] = useState(value)
+  const redigererRef = useRef(false)
+
+  useEffect(() => {
+    if (!redigererRef.current) setTekst(value)
+  }, [value])
+
+  function commit() {
+    redigererRef.current = false
+    if (tekst !== value) onCommit(tekst)
+  }
+
+  return (
+    <input
+      type="text"
+      value={tekst}
+      placeholder={plassholder}
+      onFocus={() => { redigererRef.current = true }}
+      onChange={e => setTekst(e.target.value)}
+      onBlur={commit}
+      onClick={e => e.stopPropagation()}
+      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
+      className="flex-1 min-w-0 px-2 py-1 text-sm text-stone-700 bg-transparent border border-transparent hover:border-stone-200 focus:border-stone-300 rounded-lg focus:outline-none"
+    />
+  )
+}
+
+// Én rad i motivlisten under lerretet — brukt for ugrupperte motiver OG for hvert
+// medlem inni en utslått gruppe (punkt B3). innrykk skyver raden litt inn så
+// medlemmene visuelt ligger under sin gruppes rad.
+function MotivRadItem({ pm, valgt, utenforRamme, feil, lastet, onClick, innrykk }: {
+  pm: PlassertMotiv
+  valgt: boolean
+  utenforRamme: boolean
+  feil: string | undefined
+  lastet: boolean
+  onClick: (e: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean; altKey: boolean }) => void
+  innrykk?: boolean
+}) {
+  return (
+    <li>
+      <button
+        onClick={onClick}
+        className={`w-full flex items-center gap-3 py-2.5 text-left text-sm transition-colors ${innrykk ? 'pl-9 pr-4' : 'px-4'} ${
+          valgt ? 'bg-stone-50' : 'hover:bg-stone-50'
+        }`}
+      >
+        <span className={`flex-1 min-w-0 truncate ${innrykk ? 'text-stone-600' : 'text-stone-700'}`}>{pm.navn}</span>
+        {utenforRamme && (
+          <span className="text-xs text-red-500 flex-shrink-0" title="Stikker utenfor rammen">⚠ Utenfor</span>
+        )}
+        {feil ? (
+          <span className="text-xs text-red-500 flex-shrink-0">Feil</span>
+        ) : !lastet ? (
+          <span className="w-3.5 h-3.5 border-2 border-stone-200 border-t-stone-500 rounded-full animate-spin flex-shrink-0" />
+        ) : null}
+      </button>
+      {feil && (
+        <p className={`pb-2 text-xs text-red-500 ${innrykk ? 'pl-9 pr-4' : 'px-4'}`}>{feil}</p>
+      )}
+    </li>
   )
 }
 

@@ -145,6 +145,14 @@ export interface PlassertMotiv {
   // mellomrom-glideren på lerretet bare falle tilbake til sortering på x, og aldri skille
   // et bokstav- fra et ordmellomrom.
   fontKilde?: { bundleId: string; bundleNavn: string; tegn: string; tekstId?: string; indeks?: number }
+  // Varige grupper (punkt B3, docs/onsker-2026-09-08.md) — en redigeringshjelp på
+  // LERRETET (flytt/roter/slett som én enhet, se grupper.ts). Deles av alle medlemmer,
+  // duplisert per motiv (samme mønster som fontKilde.bundleNavn) siden det ikke finnes
+  // noen egen gruppe-entitet å slå opp i. Rører ALDRI sysekvensen — se synkroniserSekvens
+  // i sekvens.ts. En gruppe på ett medlem er ikke en gruppe: gruppeId fjernes automatisk
+  // når det skjer, se ryddOppEnkeltmedlemsgrupper.
+  gruppeId?: string
+  gruppeNavn?: string
 }
 
 // Sekvensen er den flate, faktiske sylisten på tvers av alle plasserte motiver —
