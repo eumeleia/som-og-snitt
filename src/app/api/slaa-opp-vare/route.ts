@@ -75,7 +75,7 @@ type VareoppslagSvar =
   | { tilstand: 'ikkeFunnet' }
   | { tilstand: 'feil';        melding: string }
 
-async function tolkProduktside(html: string, kildeUrl: string, kvitteringensProduktnummer: string): Promise<VareoppslagSvar> {
+async function tolkProduktside(html: string, kildeUrl: string, kvitteringensProduktnummer: string, kunNummer: boolean): Promise<VareoppslagSvar> {
   const jsonLd     = parseJsonLd(html)
   const product    = jsonLd.find(n => n['@type'] === 'Product')
   const breadcrumb = jsonLd.find(n => n['@type'] === 'BreadcrumbList')
@@ -98,11 +98,13 @@ async function tolkProduktside(html: string, kildeUrl: string, kvitteringensProd
   const variantHale = sidenummer ? utledVariantHale(kvitteringensProduktnummer, sidenummer) : null
 
   let stoffdata: StoffData | null = null
-  try {
-    stoffdata = await hentStoffdataFraHtml(html)
-  } catch {
-    stoffdata = null // materiale/bredde/vekt/vask/krymp/sertifisering er tilleggsinfo — et
-    // treff er fortsatt et treff selv om Claude-kallet på fritekstfeltene feiler.
+  if (!kunNummer) {
+    try {
+      stoffdata = await hentStoffdataFraHtml(html)
+    } catch {
+      stoffdata = null // materiale/bredde/vekt/vask/krymp/sertifisering er tilleggsinfo — et
+      // treff er fortsatt et treff selv om Claude-kallet på fritekstfeltene feiler.
+    }
   }
 
   return {
@@ -127,7 +129,7 @@ async function tolkProduktside(html: string, kildeUrl: string, kvitteringensProd
 
 export async function POST(req: NextRequest) {
   try {
-    const { produktnummer, kvitteringsnavn, valgtUrl } = await req.json()
+    const { produktnummer, kvitteringsnavn, valgtUrl, kunNummer } = await req.json()
 
     if (typeof produktnummer !== 'string' || !produktnummer.trim()) {
       return NextResponse.json({ tilstand: 'feil', melding: 'Mangler produktnummer' } satisfies VareoppslagSvar)
@@ -141,7 +143,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ tilstand: 'feil', melding: `HTTP ${res.status} – klarte ikke hente siden` } satisfies VareoppslagSvar)
       }
       const html = await res.text()
-      return NextResponse.json(await tolkProduktside(html, valgtUrl, produktnummer))
+      return NextResponse.json(await tolkProduktside(html, valgtUrl, produktnummer, Boolean(kunNummer)))
     }
 
     const sokUrl = `https://www.selfmade.com/nb-no/search?search=${encodeURIComponent(produktnummer)}`
@@ -154,7 +156,7 @@ export async function POST(req: NextRequest) {
     // Et eksakt SKU-treff blir noen ganger servert direkte på søke-URL-en (samme HTML som
     // en produktside), andre ganger som en trefflisteside med ett kort. Begge må håndteres.
     if (parseJsonLd(sokHtml).some(n => n['@type'] === 'Product')) {
-      return NextResponse.json(await tolkProduktside(sokHtml, sokUrl, produktnummer))
+      return NextResponse.json(await tolkProduktside(sokHtml, sokUrl, produktnummer, Boolean(kunNummer)))
     }
 
     const kandidater = parsKandidater(sokHtml)
@@ -172,7 +174,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ tilstand: 'feil', melding: `HTTP ${prodRes.status} – klarte ikke hente produktsiden` } satisfies VareoppslagSvar)
     }
     const prodHtml = await prodRes.text()
-    return NextResponse.json(await tolkProduktside(prodHtml, valg.kandidat.url, produktnummer))
+    return NextResponse.json(await tolkProduktside(prodHtml, valg.kandidat.url, produktnummer, Boolean(kunNummer)))
   } catch (err) {
     console.error('slaa-opp-vare error:', err)
     return NextResponse.json(
