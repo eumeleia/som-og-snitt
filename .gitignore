@@ -44,3 +44,6 @@ next-env.d.ts
 Pattern/*.pdf
 Pattern/*.svg
 .claude/
+
+# Kvitteringsbilder brukt som testsett (inneholder kjøpsdetaljer)
+docs/kvitteringer-test/
