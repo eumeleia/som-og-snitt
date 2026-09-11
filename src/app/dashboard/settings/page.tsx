@@ -22,15 +22,32 @@ function SettingsContent() {
   const searchParams = useSearchParams()
   const [drive, setDrive] = useState<DriveStatus | null>(null)
   const [disconnecting, setDisconnecting] = useState(false)
+  const [kvitteringsmappeUrl, setKvitteringsmappeUrl] = useState<string | null>(null)
 
   useEffect(() => {
     fetch('/api/drive/status').then(r => r.json()).then(setDrive)
   }, [])
 
+  useEffect(() => {
+    if (!drive?.connected) return
+    // getOrCreateSubfolder er idempotent — trygt å kalle hver gang siden lastes.
+    // Feiler dette, vises bare ingen lenke; det er en snarvei, ikke en kritisk funksjon.
+    fetch('/api/drive/ensure-folder', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folderName: 'Kvitteringer' }),
+    })
+      .then(r => r.json())
+      .then((j: { folderId?: string }) => {
+        if (j.folderId) setKvitteringsmappeUrl(`https://drive.google.com/drive/folders/${j.folderId}`)
+      })
+      .catch(err => console.error('[Innstillinger] Fant ikke kvitteringsmappe:', err))
+  }, [drive?.connected])
+
   async function disconnect() {
     setDisconnecting(true)
     await fetch('/api/drive/disconnect', { method: 'POST' })
     setDrive({ connected: false })
+    setKvitteringsmappeUrl(null)
     setDisconnecting(false)
   }
 
@@ -74,6 +91,16 @@ function SettingsContent() {
               <span className="w-2 h-2 rounded-full bg-green-500 flex-shrink-0" />
               Tilkoblet
             </div>
+            {kvitteringsmappeUrl && (
+              <a
+                href={kvitteringsmappeUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm text-stone-500 hover:text-stone-700 underline underline-offset-2"
+              >
+                Åpne kvitteringsmappen i Drive
+              </a>
+            )}
             <button
               onClick={disconnect}
               disabled={disconnecting}

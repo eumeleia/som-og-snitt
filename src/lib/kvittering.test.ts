@@ -3,6 +3,7 @@ import {
   parseKvitteringDato,
   sjekkSummering,
   normaliserBilagsnummer,
+  byggKvitteringsfilnavn,
   type KvitteringLinje,
   type KvitteringRabatt,
 } from './kvittering'
@@ -68,5 +69,22 @@ describe('normaliserBilagsnummer', () => {
 
   it('kaster på tom streng', () => {
     expect(() => normaliserBilagsnummer('')).toThrow()
+  })
+})
+
+describe('byggKvitteringsfilnavn', () => {
+  it('bygger dato-bilagsnummer.endelse fra originalfilens navn', () => {
+    expect(byggKvitteringsfilnavn('2026-01-05', '02400100364815', 'IMG_1234.heic'))
+      .toBe('2026-01-05-02400100364815.heic')
+  })
+
+  it('normaliserer endelsen til små bokstaver', () => {
+    expect(byggKvitteringsfilnavn('2026-01-05', '02400100364815', 'IMG_1234.HEIC'))
+      .toBe('2026-01-05-02400100364815.heic')
+  })
+
+  it('faller tilbake til jpg uten endelse i originalnavnet', () => {
+    expect(byggKvitteringsfilnavn('2026-01-05', '02400100364815', 'kvittering'))
+      .toBe('2026-01-05-02400100364815.jpg')
   })
 })

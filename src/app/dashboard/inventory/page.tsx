@@ -10,6 +10,7 @@ import { ProjectPicker, type PickerProject } from '../_shared/ProjectPicker'
 import { supabase } from '@/lib/supabase'
 import { deepClone } from '@/lib/deep-clone'
 import { unikeProduktnumre, formaterMengdeAntall, type Kandidat } from '@/lib/vareoppslag'
+import { byggKvitteringsfilnavn } from '@/lib/kvittering'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -782,6 +783,10 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
   const [bilagBekreftet, setBilagBekreftet] = useState(false)
   const [importerer, setImporterer]       = useState(false)
   const [importMelding, setImportMelding] = useState('')
+  const [arkiverer, setArkiverer]         = useState(false)
+  const [arkivMelding, setArkivMelding]   = useState('')
+  const [arkivLenke, setArkivLenke]       = useState('')
+  const [arkivStatus, setArkivStatus]     = useState<'ok' | 'feil' | null>(null)
 
   const bilagsnummerDuplikat = resultat
     ? eksisterendeVarer.some(v => v.data.bilagsnummer && v.data.bilagsnummer === resultat.bilagsnummer)
@@ -864,6 +869,49 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
     setValgteRader(prev => { const neste = new Set(prev); if (neste.has(i)) neste.delete(i); else neste.add(i); return neste })
   }
 
+  // Arkiverer det ORIGINALE kvitteringsbildet (aldri den nedskalerte JPEG-en /api/les-kvittering
+  // laget for Claude — den finnes bare server-side der) i Drive-mappa «Kvitteringer». Kjøres
+  // kun her, ved bekreftet import — aldri ved hver lesing. Egen try/catch, atskilt fra
+  // import-forsøket over: en Drive-feil skal ALDRI kunne se ut som en feilet lagerimport, og
+  // skal aldri rulle noe tilbake — varene er allerede skrevet til lageret når denne kjører.
+  async function arkiverKvitteringsbilde(originalFil: File, dato: string, bilagsnummer: string) {
+    setArkiverer(true)
+    try {
+      const statusRes = await fetch('/api/drive/status')
+      const status = await statusRes.json() as { connected: boolean }
+      if (!status.connected) {
+        setArkivStatus('feil')
+        setArkivMelding('Kvitteringen ble ikke arkivert — Google Drive er ikke tilkoblet.')
+        return
+      }
+
+      const ensureRes = await fetch('/api/drive/ensure-folder', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folderName: 'Kvitteringer' }),
+      })
+      const ensureJson = await ensureRes.json() as { folderId?: string; error?: string }
+      if (!ensureRes.ok || !ensureJson.folderId) throw new Error(ensureJson.error ?? 'Fant ikke Drive-mappen')
+
+      const filnavn = byggKvitteringsfilnavn(dato, bilagsnummer, originalFil.name)
+      const omdopt  = new File([originalFil], filnavn, { type: originalFil.type })
+      const form = new FormData()
+      form.append('file', omdopt)
+      form.append('folderId', ensureJson.folderId)
+      const uploadRes = await fetch('/api/drive/upload', { method: 'POST', body: form })
+      const uploadJson = await uploadRes.json() as { webViewLink?: string; error?: string }
+      if (!uploadRes.ok) throw new Error(uploadJson.error ?? 'Opplasting feilet')
+
+      setArkivStatus('ok')
+      setArkivMelding('Kvitteringen er arkivert i Drive.')
+      if (uploadJson.webViewLink) setArkivLenke(uploadJson.webViewLink)
+    } catch (err) {
+      setArkivStatus('feil')
+      setArkivMelding(`Kvitteringen ble ikke arkivert: ${err instanceof Error ? err.message : 'ukjent feil'}`)
+    } finally {
+      setArkiverer(false)
+    }
+  }
+
   async function handleImporter() {
     if (!resultat) return
     setImporterer(true); setError('')
@@ -879,14 +927,17 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
       setValgteRader(new Set())
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Import feilet')
-    } finally {
       setImporterer(false)
+      return
     }
+    setImporterer(false)
+    if (file) await arkiverKvitteringsbilde(file, resultat.dato, resultat.bilagsnummer)
   }
 
   function nyLesing() {
     setResultat(null); setFile(null); setError('')
     setRadTilstander({}); setFremdrift(null); setValgteRader(new Set()); setBilagBekreftet(false); setImportMelding('')
+    setArkiverer(false); setArkivMelding(''); setArkivLenke(''); setArkivStatus(null)
   }
 
   const nok = (n: number) => n.toLocaleString('nb-NO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -1069,6 +1120,15 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
 
               {error && <p className="text-xs text-red-500">{error}</p>}
               {importMelding && <p className="text-sm text-green-700 font-medium">{importMelding}</p>}
+              {arkiverer && (
+                <p className="text-xs text-stone-400 inline-flex items-center gap-1.5"><Spinner /> Arkiverer kvitteringsbilde…</p>
+              )}
+              {arkivMelding && !arkiverer && (
+                <p className={`text-xs ${arkivStatus === 'ok' ? 'text-stone-500' : 'text-amber-600'}`}>
+                  {arkivMelding}
+                  {arkivLenke && <> — <a href={arkivLenke} target="_blank" rel="noreferrer" className="underline">Åpne i Drive</a></>}
+                </p>
+              )}
 
               <div className="flex gap-3">
                 {!importMelding && (

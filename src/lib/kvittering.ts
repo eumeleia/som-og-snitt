@@ -67,3 +67,14 @@ export function normaliserBilagsnummer(raw: unknown): string {
     'avlesningen er ikke til å stole på.',
   )
 }
+
+/**
+ * Filnavnet kvitteringsbildet arkiveres under i Drive — originalfilens ENDELSE (aldri den
+ * nedskalerte JPEG-en som ble sendt til Claude), normalisert til små bokstaver siden noen
+ * iPhone-innstillinger gir «.HEIC».
+ */
+export function byggKvitteringsfilnavn(dato: string, bilagsnummer: string, originaltFilnavn: string): string {
+  const prikk = originaltFilnavn.lastIndexOf('.')
+  const endelse = prikk === -1 ? 'jpg' : originaltFilnavn.slice(prikk + 1).toLowerCase()
+  return `${dato}-${bilagsnummer}.${endelse}`
+}
