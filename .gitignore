@@ -47,3 +47,7 @@ Pattern/*.svg
 
 # Kvitteringsbilder brukt som testsett (inneholder kjøpsdetaljer)
 docs/kvitteringer-test/
+
+# Referansemateriale — hører hjemme i Drive, ikke i git
+design/
+Floral Font.zip
