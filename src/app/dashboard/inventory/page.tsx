@@ -647,6 +647,187 @@ function ImageUploadModal({ onAdd, onClose }: {
   )
 }
 
+// ── KvitteringImportModal ───────────────────────────────────────────────────────
+// Del 1 av kvitteringsimport: leser bildet og viser resultatet. Skriver ingenting til
+// lageret ennå — det kommer i del 2, når avlesningen er bekreftet.
+
+interface KvitteringLinjeVisning {
+  produktnummer: string
+  navn:          string
+  antall:        number
+  enhetspris:    number
+  linjesum:      number
+}
+
+interface KvitteringRabattVisning {
+  tekst: string
+  belop: number
+}
+
+interface KvitteringSvar {
+  bilagsnummer: string
+  dato:         string
+  butikk:       string
+  sum:          number
+  linjer:       KvitteringLinjeVisning[]
+  rabatter:     KvitteringRabattVisning[]
+  summeringssjekk: { ok: boolean; differanse: number }
+}
+
+function KvitteringImportModal({ onClose }: { onClose: () => void }) {
+  const [file, setFile]       = useState<File | null>(null)
+  const [lesing, setLesing]   = useState(false)
+  const [error, setError]     = useState('')
+  const [resultat, setResultat] = useState<KvitteringSvar | null>(null)
+  const fileInputRef          = useRef<HTMLInputElement>(null)
+
+  async function handleLes() {
+    if (!file) return
+    setLesing(true); setError(''); setResultat(null)
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const res = await fetch('/api/les-kvittering', { method: 'POST', body: form })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error ?? 'Lesing feilet')
+      setResultat(json as KvitteringSvar)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Lesing feilet')
+    } finally {
+      setLesing(false)
+    }
+  }
+
+  function nyLesing() {
+    setResultat(null); setFile(null); setError('')
+  }
+
+  const nok = (n: number) => n.toLocaleString('nb-NO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/30 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl">
+        <div className="p-5 sm:p-6">
+          <h3 className="font-serif text-2xl text-stone-800 mb-1">Importer kvittering</h3>
+          <p className="text-xs text-stone-400 mb-5">
+            Leser en Selfmade-kvittering og viser det som ble lest. Ingenting lagres ennå.
+          </p>
+
+          {!resultat && (
+            <div className="space-y-4">
+              <div onClick={() => fileInputRef.current?.click()}
+                className="border-2 border-dashed border-stone-200 rounded-xl p-8 text-center cursor-pointer hover:border-stone-300 hover:bg-stone-50 transition-colors">
+                {file ? (
+                  <p className="text-sm text-stone-700 font-medium truncate">{file.name}</p>
+                ) : (
+                  <>
+                    <svg className="w-10 h-10 text-stone-300 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                        d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
+                    <p className="text-sm text-stone-400">Trykk for å velge bilde av kvitteringen</p>
+                    <p className="text-xs text-stone-300 mt-1">JPG, PNG, HEIC</p>
+                  </>
+                )}
+              </div>
+              <p className="text-xs text-stone-400">
+                Kvitteringen bør fylle mest mulig av bildet — dekker den under halve rammen,
+                blir teksten liten og vanskelig å lese.
+              </p>
+              <input ref={fileInputRef} type="file" accept="image/*,.heic,.heif"
+                className="hidden" onChange={e => { setFile(e.target.files?.[0] ?? null); setError('') }} />
+              {error && <p className="text-xs text-red-500">{error}</p>}
+              <div className="flex gap-3">
+                <button onClick={handleLes} disabled={!file || lesing}
+                  className="flex-1 py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                  {lesing && <Spinner />}
+                  {lesing ? 'Leser…' : 'Les kvittering'}
+                </button>
+                <button onClick={onClose}
+                  className="px-5 py-2.5 text-sm text-stone-400 hover:text-stone-600 transition-colors">
+                  Avbryt
+                </button>
+              </div>
+            </div>
+          )}
+
+          {resultat && (
+            <div className="space-y-5">
+              <div className={`rounded-xl border p-4 text-sm ${
+                resultat.summeringssjekk.ok ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'
+              }`}>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-stone-600">
+                  <div><span className="text-stone-400">Bilagsnummer</span> {resultat.bilagsnummer}</div>
+                  <div><span className="text-stone-400">Dato</span> {resultat.dato}</div>
+                  <div className="col-span-2"><span className="text-stone-400">Butikk</span> {resultat.butikk || '—'}</div>
+                  <div><span className="text-stone-400">Sum</span> {nok(resultat.sum)} kr</div>
+                </div>
+                <p className={`mt-2 font-medium ${resultat.summeringssjekk.ok ? 'text-green-700' : 'text-red-700'}`}>
+                  {resultat.summeringssjekk.ok
+                    ? 'Summeringssjekk gikk opp.'
+                    : `Summeringssjekk stemmer IKKE — differanse ${nok(resultat.summeringssjekk.differanse)} kr. Avlesningen er trolig feil.`}
+                </p>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-stone-400 border-b border-stone-100">
+                      <th className="py-1.5 pr-3 font-normal">Produktnr.</th>
+                      <th className="py-1.5 pr-3 font-normal">Navn</th>
+                      <th className="py-1.5 pr-3 font-normal text-right">Antall</th>
+                      <th className="py-1.5 pr-3 font-normal text-right">Enhetspris</th>
+                      <th className="py-1.5 font-normal text-right">Linjesum</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {resultat.linjer.map((l, i) => {
+                      const usikker = !l.produktnummer.trim() || !l.navn.trim()
+                      return (
+                        <tr key={i} className={`border-b border-stone-50 ${usikker ? 'bg-amber-50' : ''}`}>
+                          <td className="py-1.5 pr-3 text-stone-700">{l.produktnummer || '?'}</td>
+                          <td className="py-1.5 pr-3 text-stone-700">{l.navn || '?'}</td>
+                          <td className="py-1.5 pr-3 text-right text-stone-600">{l.antall}</td>
+                          <td className="py-1.5 pr-3 text-right text-stone-600">{nok(l.enhetspris)}</td>
+                          <td className="py-1.5 text-right text-stone-700">{nok(l.linjesum)}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {resultat.rabatter.length > 0 && (
+                <div className="text-sm">
+                  <p className="text-stone-400 mb-1">Rabatter</p>
+                  {resultat.rabatter.map((r, i) => (
+                    <div key={i} className="flex justify-between text-stone-600">
+                      <span>{r.tekst || '?'}</span>
+                      <span>{nok(r.belop)} kr</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex gap-3">
+                <button onClick={nyLesing}
+                  className="flex-1 py-2.5 border border-stone-200 text-stone-600 text-sm rounded-xl hover:bg-stone-50 transition-colors">
+                  Les et annet bilde
+                </button>
+                <button onClick={onClose}
+                  className="px-5 py-2.5 text-sm text-stone-400 hover:text-stone-600 transition-colors">
+                  Lukk
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── DeleteDialog ──────────────────────────────────────────────────────────────
 
 function DeleteDialog({ label, onConfirm, onCancel }: {
@@ -1344,6 +1525,7 @@ function InventoryPageInner() {
   const [showDetail, setShowDetail]           = useState(false)
   const [currentItem, setCurrentItem]         = useState<InventoryItem | null>(null)
   const [showNewModal, setShowNewModal]       = useState(false)
+  const [showKvitteringModal, setShowKvitteringModal] = useState(false)
   const [deleteId, setDeleteId]               = useState<string | null>(null)
   const [utstyrSearch, setUtstyrSearch]       = useState('')
   const [tilbehorExpanded, setTilbehorExpanded] = useState<Record<string, boolean>>({})
@@ -1915,6 +2097,10 @@ function InventoryPageInner() {
         <NewInventoryModal onCreate={createItem} onClose={closeToBase} initialKategori={tab} />
       )}
 
+      {showKvitteringModal && (
+        <KvitteringImportModal onClose={() => setShowKvitteringModal(false)} />
+      )}
+
       {deleteId && !showDetail && (
         <DeleteDialog
           label={deleteLabel}
@@ -1922,6 +2108,21 @@ function InventoryPageInner() {
           onCancel={() => setDeleteId(null)}
         />
       )}
+
+      {/* Importer kvittering */}
+      <button
+        onClick={() => setShowKvitteringModal(true)}
+        className={`fixed right-24 w-14 h-14 bg-white text-stone-600 border border-stone-200 rounded-full shadow-lg hover:bg-stone-50 transition-all flex items-center justify-center cursor-pointer z-30 ${
+          moveMode ? 'bottom-20' : 'bottom-6'
+        }`}
+        aria-label="Importer kvittering"
+        title="Importer kvittering"
+      >
+        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+        </svg>
+      </button>
 
       {/* FAB */}
       <button
