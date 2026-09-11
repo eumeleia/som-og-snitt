@@ -17,7 +17,10 @@ export const RAMME_MM = 100
 // senere endring et av stedene.
 export const RAMME_GRENSE_MM = RAMME_MM - 2
 
-export type BboxMm = { widthMm: number; heightMm: number; miniatyrSvg: string | null }
+// miniatyrSvg: undefined = ikke forsøkt hentet ennå (lat henting, se KomposisjonEditor.tsx
+// sin hentMiniatyrerForNokler), null = forsøkt og finnes ikke, streng = selve SVG-en.
+// widthMm/heightMm er ALLTID kjent når raden finnes — bare miniatyrSvg er lat.
+export type BboxMm = { widthMm: number; heightMm: number; miniatyrSvg: string | null | undefined }
 
 // Størst størrelse som passer i rammen, som standardvalg ved flervalg — samme "passer"-regel
 // som resten av velgeren (< RAMME_GRENSE_MM i begge retninger). Passer ingen, brukes den med

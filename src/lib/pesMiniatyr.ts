@@ -8,10 +8,11 @@ export interface MiniatyrBbox { min_x: number; min_y: number; max_x: number; max
 // aldri fikk mer enn 40 punkter — akkurat den kraftige nedsamplingen som gjorde satengfyll
 // om til hårtynne kruseduller. Et totalbudsjett fordelt proporsjonalt etter stingantall per
 // blokk løser begge: få-blokk-motiver (det vanlige tilfellet) får mye mer detalj, mange-
-// blokk-motiver får et forutsigbart tak. Målt mot 25 ekte motiver i basen: dette gir en
-// projisert TOTAL databasestørrelse på ca. 37 MB for alle 2967 rader, mot ca. 41 MB om
-// dagens flate 40/blokk-grense bare fortsatte å bli fylt ut — altså ikke tyngre totalt,
-// bare fordelt der det faktisk gjør nytte.
+// blokk-motiver får et forutsigbart tak. Målt mot 25 ekte motiver i basen (per september
+// 2026, med ca. 3300 rader i broderi_motiv — tallet vokser, ikke et fast tak): dette ga en
+// projisert TOTAL databasestørrelse på ca. 37 MB for radene DA, mot ca. 41 MB om dagens
+// flate 40/blokk-grense bare fortsatte å bli fylt ut — altså ikke tyngre totalt, bare
+// fordelt der det faktisk gjør nytte.
 const TOTAL_PUNKT_BUDSJETT = 800
 const MIN_PUNKTER_PER_BLOKK = 20
 const STREKTYKKELSE_MM = 1.0

@@ -2294,6 +2294,36 @@ function FilterPasserCheckbox({ checked, onChange }: { checked: boolean; onChang
   )
 }
 
+// ── Motivvelgerens mål-/miniatyr-cache (MODULNIVÅ, ikke komponent-state) ─────────────────
+// Steg 3, docs/plan-og-prompter-2026-08-25.md: MotivPicker avmonteres hver gang velgeren
+// lukkes, OG når KomposisjonEditor selv avmonteres (arranger/page.tsx sine tidlige returer
+// når man går tilbake til komposisjonslista). Komponent-state ville betalt full pris på
+// nytt hver eneste åpning — modulnivå overlever begge, bare en faktisk sidelasting (F5)
+// nullstiller den.
+//
+// Cachen blir utdatert (og må friskes opp via forceRefreshCache, som nullstiller
+// modulCacheLastet før lasterVersjon bumpes) når: en ny embroidery-rad er lastet opp i en
+// annen fane midt i økten, eller «Generer miniatyrer»/«Forny alle miniatyrer» nettopp har
+// skrevet nye miniatyr_svg-verdier i basen (se kjorMiniatyrJobb).
+let modulBboxCache = new Map<string, BboxMm | null>()
+let modulCacheLastet = false
+let modulGlobalCounts: { passer: number; passerIkke: number } | null = null
+// null = ukjent ennå ELLER kolonnen mangler (migrasjon 008 ikke kjørt) — se
+// modulManglerMiniatyrKolonne for å skille de to.
+let modulManglerMiniatyrCount: number | null = null
+let modulManglerMiniatyrKolonne = false
+
+// Selve skrivingen til modulvariablene skjer HER, i vanlige topp-nivå-funksjoner utenfor
+// komponenten — ikke inni MotivPicker. React sin regel om at render skal være ren tillater
+// ikke å reassignere en modul-variabel fra kode som ligger inni en komponent/hook, uansett
+// om det faktisk bare skjer fra en event-handler (som her). Komponenten kaller disse, den
+// skriver aldri til modulBboxCache/modulCacheLastet/osv. selv.
+function modulSettBboxCache(v: Map<string, BboxMm | null>) { modulBboxCache = v }
+function modulSettCacheLastet(v: boolean) { modulCacheLastet = v }
+function modulSettGlobalCounts(v: { passer: number; passerIkke: number } | null) { modulGlobalCounts = v }
+function modulSettManglerMiniatyrCount(v: number | null) { modulManglerMiniatyrCount = v }
+function modulSettManglerMiniatyrKolonne(v: boolean) { modulManglerMiniatyrKolonne = v }
+
 function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
   biblioteket: Embroidery[]
   onVelg: (embroideryId: string, sizeId: string, navn: string) => void
@@ -2314,80 +2344,115 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
   // med mindre brukeren selv har bedt om det. Filteret er fortsatt der for den som vil
   // ha et ryddigere utvalg, bare ikke lenger påslått som standard.
   const [filterPaaRamme, setFilterPaaRamme] = useState(false)
-  const [bboxCache, setBboxCache] = useState<Map<string, BboxMm | null>>(new Map())
-  const [cacheLastet, setCacheLastet] = useState(false)
-  const [globalCounts, setGlobalCounts] = useState<{ passer: number; passerIkke: number } | null>(null)
+  // De fire neste speiler seg til modul-nivå-variablene over ved HVER skriving (se
+  // setBboxCache/setCacheLastet/setGlobalCounts/setManglerMiniatyrKolonne under) — starter
+  // fra modulvariabelen, ikke tom/false, slik at en ny MotivPicker-instans i samme økt ser
+  // en allerede varm cache med én gang, uten et eneste nytt kall mot broderi_motiv.
+  const [bboxCache, setBboxCacheState] = useState<Map<string, BboxMm | null>>(modulBboxCache)
+  const [cacheLastet, setCacheLastetState] = useState(modulCacheLastet)
+  const [globalCounts, setGlobalCountsState] = useState<{ passer: number; passerIkke: number } | null>(modulGlobalCounts)
+  const [manglerMiniatyrCount, setManglerMiniatyrCountState] = useState<number | null>(modulManglerMiniatyrCount)
+  const [manglerMiniatyrKolonne, setManglerMiniatyrKolonneState] = useState(modulManglerMiniatyrKolonne)
+
+  function setBboxCache(updater: Map<string, BboxMm | null> | ((prev: Map<string, BboxMm | null>) => Map<string, BboxMm | null>)) {
+    setBboxCacheState(prev => {
+      const next = typeof updater === 'function' ? updater(prev) : updater
+      modulSettBboxCache(next)
+      return next
+    })
+  }
+  function setCacheLastet(v: boolean) {
+    modulSettCacheLastet(v)
+    setCacheLastetState(v)
+  }
+  function setGlobalCounts(v: { passer: number; passerIkke: number } | null) {
+    modulSettGlobalCounts(v)
+    setGlobalCountsState(v)
+  }
+  function setManglerMiniatyrCount(v: number | null) {
+    modulSettManglerMiniatyrCount(v)
+    setManglerMiniatyrCountState(v)
+  }
+  function setManglerMiniatyrKolonne(v: boolean) {
+    modulSettManglerMiniatyrKolonne(v)
+    setManglerMiniatyrKolonneState(v)
+  }
+  // Kalt av "Prøv på nytt" og av kjorMiniatyrJobb (etter at nye miniatyrer er skrevet) —
+  // nullstiller modul-flagget FØR lasterVersjon bumpes, ellers ville useEffect-en under bare
+  // synkronisert lokal state fra den (fortsatt varme) modul-cachen i stedet for å hente på nytt.
+  function forceRefreshCache() {
+    modulSettCacheLastet(false)
+    setLasterVersjon(v => v + 1)
+  }
+
   const [bundlerMap, setBundlerMap] = useState<Map<string, EmbroideryBundle>>(new Map())
   const [parserAlle, setParserAlle] = useState(false)
   const [parseFremgang, setParseFremgang] = useState<ParseFremgang | null>(null)
   const [progress, setProgress] = useState<string | null>(null)
   const [lasterFeil, setLasterFeil] = useState<string | null>(null)
   const [lasterVersjon, setLasterVersjon] = useState(0) // increment to retry
-  const [manglerMiniatyrKolonne, setManglerMiniatyrKolonne] = useState(false)
   const avbrytRef = useRef(false)
 
   useEffect(() => { return () => { avbrytRef.current = true } }, [])
 
-  // Henter mål-kolonnene for ALLE rader — data-kolonnen (som også har alle stingkoordinatene,
-  // stundom over 10 000 punkter per rad) røres aldri her. Postgres må dekomprimere hele
-  // TOAST-verdien for å hente ut selv et lite underfelt som data->bbox, uansett hvor lite
-  // som faktisk sendes over — det var den ekte kostnaden, ikke antall rader. Etter migration
-  // 007 er bredde/høyde egne, ikke-TOASTede kolonner, så et par tusen rader med noen få
-  // heltall hver er billig å hente og regne på i klienten.
+  // Henter MÅL-kolonnene for ALLE rader — data-kolonnen (som har alle stingkoordinatene,
+  // stundom over 10 000 punkter per rad) OG miniatyr_svg (en hel SVG som tekst per rad)
+  // røres aldri her. Postgres må dekomprimere hele TOAST-verdien for å hente ut selv et
+  // lite underfelt som data->bbox, uansett hvor lite som faktisk sendes over — det var den
+  // ekte kostnaden, ikke antall rader. Etter migration 007 er bredde/høyde egne,
+  // ikke-TOASTede kolonner, så et par tusen rader med noen få heltall hver er billig å
+  // hente og regne på i klienten. miniatyr_svg hentes ALDRI her i det hele tatt — bare lat,
+  // for de nøklene som faktisk er synlige, se hentMiniatyrerForNokler under. Målt (steg 3):
+  // full grunnlast var 13,1 MiB komprimert over 4 sekvensielle sider og kunne 500-feile
+  // rett ut; uten miniatyr_svg er samme spørring 112 KiB — mindre enn hovedbibliotekets
+  // egen grunnlast.
   //
   // MEN: PostgREST/Supabase svarer maks 1000 rader per spørring uansett .range(), stille —
   // ingen feil, bare et halvfullt resultat. Uten paginering ble bboxCache derfor aldri
-  // komplett (2994 rader > 1000), og uten en fast `order by` var det TILFELDIG hvilke 1000
+  // komplett (over 1000 rader), og uten en fast `order by` var det TILFELDIG hvilke 1000
   // rader som kom med hver gang, så det var IKKE data-feil som fikk per-bundle-tallene til å
   // endre seg mellom hver lasting. Løsning: `hentAllePaginert` (src/lib/supabasePaginering.ts)
   // henter i sider av 1000 med en deterministisk sortering til en side kommer kortere enn full —
   // samme hjelpefunksjon som biblioteklistene bruker, så pagineringslogikken finnes ett sted.
   useEffect(() => {
     let cancelled = false
-    type Rad = { embroidery_id: string; size_id: string; bredde_tiendedel_mm: number | null; hoyde_tiendedel_mm: number | null; miniatyr_svg: string | null }
-    type RadUtenMiniatyr = { embroidery_id: string; size_id: string; bredde_tiendedel_mm: number | null; hoyde_tiendedel_mm: number | null }
+    type Rad = { embroidery_id: string; size_id: string; bredde_tiendedel_mm: number | null; hoyde_tiendedel_mm: number | null }
     async function lastAlleRader(): Promise<Map<string, BboxMm | null> | null> {
       const { data: rader, error } = await hentAllePaginert<Rad>(
         (fra, til) => supabase.from('broderi_motiv')
-          .select('embroidery_id, size_id, bredde_tiendedel_mm, hoyde_tiendedel_mm, miniatyr_svg')
+          .select('embroidery_id, size_id, bredde_tiendedel_mm, hoyde_tiendedel_mm')
           .order('id', { ascending: true })
           .range(fra, til),
         ['id'],
       )
-      let finalRader: Array<Rad | RadUtenMiniatyr>
       if (error) {
-        if (error.code === '42703' && error.message.includes('miniatyr_svg')) {
-          // Migration 008 not run — load without miniatyr_svg and show banner instead of blocking.
-          if (!cancelled) setManglerMiniatyrKolonne(true)
-          const { data: rader2, error: error2 } = await hentAllePaginert<RadUtenMiniatyr>(
-            (fra, til) => supabase.from('broderi_motiv')
-              .select('embroidery_id, size_id, bredde_tiendedel_mm, hoyde_tiendedel_mm')
-              .order('id', { ascending: true })
-              .range(fra, til),
-            ['id'],
-          )
-          if (error2) {
-            if (!cancelled) setLasterFeil(`Kunne ikke laste mål-data: ${error2.message}`)
-            return null
-          }
-          finalRader = rader2
-        } else {
-          if (!cancelled) setLasterFeil(`Kunne ikke laste mål-data: ${error.message}`)
-          return null
-        }
-      } else {
-        finalRader = rader
+        if (!cancelled) setLasterFeil(`Kunne ikke laste mål-data: ${error.message}`)
+        return null
       }
       const map = new Map<string, BboxMm | null>()
-      for (const row of finalRader) {
+      for (const row of rader) {
+        // miniatyrSvg starter alltid som undefined (ikke forsøkt) — se BboxMm i motivvalg.ts.
         map.set(`${row.embroidery_id}:${row.size_id}`,
           row.bredde_tiendedel_mm != null && row.hoyde_tiendedel_mm != null
-            ? { widthMm: row.bredde_tiendedel_mm / 10, heightMm: row.hoyde_tiendedel_mm / 10, miniatyrSvg: ('miniatyr_svg' in row ? row.miniatyr_svg : null) ?? null }
+            ? { widthMm: row.bredde_tiendedel_mm / 10, heightMm: row.hoyde_tiendedel_mm / 10, miniatyrSvg: undefined }
             : null)
       }
       return map
     }
     async function last() {
+      // Allerede lastet i en tidligere MotivPicker-åpning i samme økt (modulnivå-cache) —
+      // bare synk lokal state, IKKE hent alle radene på nytt. forceRefreshCache
+      // (retry-knappen, kjorMiniatyrJobb) nullstiller modulCacheLastet før den bumper
+      // lasterVersjon, så denne grenen bare treffer på en helt vanlig gjenåpning.
+      if (modulCacheLastet) {
+        setBboxCache(modulBboxCache)
+        setGlobalCounts(modulGlobalCounts)
+        setManglerMiniatyrCount(modulManglerMiniatyrCount)
+        setManglerMiniatyrKolonne(modulManglerMiniatyrKolonne)
+        setCacheLastet(true)
+        return
+      }
+
       const totalPromise = supabase
         .from('broderi_motiv')
         .select('id', { count: 'exact', head: true })
@@ -2405,8 +2470,19 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
         .not('hoyde_tiendedel_mm', 'is', null)
         .or(`bredde_tiendedel_mm.gte.${RAMME_GRENSE_MM * 10},hoyde_tiendedel_mm.gte.${RAMME_GRENSE_MM * 10}`)
 
-      const [map, totalRes, passerRes, passerIkkeRes] = await Promise.all([
-        lastAlleRader(), totalPromise, passerPromise, passerIkkePromise,
+      // Punkt 5, docs/plan-og-prompter-2026-08-25.md steg 3: «Generer miniatyrer»-tallet må
+      // telles i BASEN (som passerPromise/passerIkkePromise), ikke ved å skanne bboxCache
+      // etter miniatyrSvg === null — nå som miniatyr_svg ikke lenger hentes for alle rader,
+      // ville en slik skanning bare talt "ikke ennå forsøkt hentet", ikke "mangler faktisk".
+      // Feiler DENNE med 42703 er migrasjon 008 ikke kjørt — det er her (og i
+      // hentMiniatyrerForNokler), ikke i lastAlleRader over, at det nå oppdages.
+      const manglerMiniatyrPromise = supabase
+        .from('broderi_motiv')
+        .select('id', { count: 'exact', head: true })
+        .is('miniatyr_svg', null)
+
+      const [map, totalRes, passerRes, passerIkkeRes, manglerMiniatyrRes] = await Promise.all([
+        lastAlleRader(), totalPromise, passerPromise, passerIkkePromise, manglerMiniatyrPromise,
       ])
       if (cancelled) return
       if (map === null) { if (!cancelled) setLasterFeil('Kunne ikke laste mål-data'); return }
@@ -2414,6 +2490,18 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
       if (totalRes.error) console.error('[MotivPicker] totaltelling feilet', totalRes.error)
       if (passerRes.error) console.error('[MotivPicker] passer-telling feilet', passerRes.error)
       if (passerIkkeRes.error) console.error('[MotivPicker] passer-ikke-telling feilet', passerIkkeRes.error)
+
+      let manglerKolonne = false
+      let manglerMiniatyrCountVerdi: number | null = null
+      if (manglerMiniatyrRes.error) {
+        if (manglerMiniatyrRes.error.code === '42703') {
+          manglerKolonne = true
+        } else {
+          console.error('[MotivPicker] mangler-miniatyr-telling feilet', manglerMiniatyrRes.error)
+        }
+      } else {
+        manglerMiniatyrCountVerdi = manglerMiniatyrRes.count ?? null
+      }
 
       // Overskriften (count-spørringer mot basen) og lista (bboxCache) er to uavhengige
       // kilder til samme sannhet — er de uenige er det alltid en feil i lastingen, ikke i
@@ -2426,6 +2514,8 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
 
       setBboxCache(map)
       setGlobalCounts({ passer: passerRes.count ?? 0, passerIkke: passerIkkeRes.count ?? 0 })
+      setManglerMiniatyrCount(manglerMiniatyrCountVerdi)
+      setManglerMiniatyrKolonne(manglerKolonne)
       setCacheLastet(true)
     }
     last()
@@ -2576,6 +2666,38 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
       return { kat, total: vms.length, passerCount, thumbnails }
     })
   }, [virtuelleMotiver, bboxCache, bundlerMap])
+
+  // Samme gruppering og samme «har et ekte bilde noe sted»-regel som kategoriData over,
+  // men helt UAVHENGIG av bboxCache — hvorvidt et ekte forsidebilde finnes, avgjøres aldri
+  // av mål-/miniatyr-cachen. Brukt bare av den late miniatyr-hentingen under til å vite
+  // NØYAKTIG hvilke kategorier (og dermed hvilke nøkler) som trenger en SVG-fallback, uten
+  // å måtte gjenta kategoriData sin fulle thumbnail-bygging.
+  const kategorierUtenEktebilde = useMemo(() => {
+    const katToVms = new Map<string | null, VirtuelMotiv[]>()
+    const katToBundleIds = new Map<string | null, Set<string>>()
+    for (const vm of virtuelleMotiver) {
+      const kats = vm.kats.length > 0 ? vm.kats : [null]
+      for (const kat of kats) {
+        const arr = katToVms.get(kat) ?? []
+        arr.push(vm)
+        katToVms.set(kat, arr)
+        if (vm.bundleId) {
+          const set = katToBundleIds.get(kat) ?? new Set<string>()
+          set.add(vm.bundleId)
+          katToBundleIds.set(kat, set)
+        }
+      }
+    }
+    const resultat: { kat: string | null; vms: VirtuelMotiv[] }[] = []
+    for (const [kat, vms] of katToVms) {
+      const harBundleCover = Array.from(katToBundleIds.get(kat) ?? []).some(
+        bid => !!(bundlerMap.get(bid) && getBundleCoverImage(bundlerMap.get(bid)!.data)),
+      )
+      const harLosCover = vms.some(vm => !vm.bundleId && !!vm.coverImage)
+      if (!harBundleCover && !harLosCover) resultat.push({ kat, vms })
+    }
+    return resultat
+  }, [virtuelleMotiver, bundlerMap])
 
   const alleBundleIds = useMemo(() => {
     const ids = new Set<string>()
@@ -2758,6 +2880,101 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
     return { passerListe: pb, ikkeMåltListe: imb, passerVMs: pv, ikkeMåltVMs: imv, antallSkjult: sk }
   }
 
+  // ── Lat henting av miniatyr_svg (punkt 4a, docs/plan-og-prompter-2026-08-25.md steg 3) ──
+  // Grunnlasten over henter ALDRI denne kolonnen. Effekten under bygger nøklene DEN AKTIVE
+  // SKJERMEN i velgeren trenger en miniatyr for, akkurat nå — de tre stedene et kort/en flis
+  // kan vise miniatyr_svg (kategoriflisenes forsidebilder, MotivKort sitt forsidebilde,
+  // størrelses-rutenettet), hver begrenset til NØYAKTIG det skjermbildet som er åpent. Kjøres
+  // på nytt hver gang skjermbildet endres (view, søket eller rammefilteret), aldri en
+  // akkumulerende kø av alt som har vært synlig i økten. hentAlleRader/lastAlleRader-mønsteret
+  // over (nestet inni effekten, egen cancelled-guard) gjenbrukes bevisst her.
+  useEffect(() => {
+    let cancelled = false
+    if (manglerMiniatyrKolonne) return
+
+    function nøklerForVM(vm: VirtuelMotiv) {
+      return vm.sizes.map(s => ({ embroideryId: s.embroideryId, sizeId: s.sizeId }))
+    }
+    // Et motiv med et EKTE forsidebilde viser aldri miniatyr_svg (se MotivKort) — ingen
+    // grunn til å hente den for de kortene.
+    function utenEktBilde(vms: VirtuelMotiv[]) {
+      return vms.filter(vm => !vm.coverImage)
+    }
+
+    let kandidater: { embroideryId: string; sizeId: string }[]
+    if (searchQ) {
+      // Søkeresultatene (rendres når view.type === 'kategorier' og søket ikke er tomt).
+      const treff = standaloneVMs.filter(vm => vm.navn.toLowerCase().includes(searchQ))
+      kandidater = utenEktBilde(treff).flatMap(nøklerForVM)
+    } else if (view.type === 'kategorier') {
+      // Kategoriflisenes siste-utvei-thumbnails — kun kategorier uten noe ekte bilde noe sted.
+      kandidater = kategorierUtenEktebilde.flatMap(({ vms }) => utenEktBilde(vms).flatMap(nøklerForVM))
+    } else if (view.type === 'kategori') {
+      const { passerVMs, ikkeMåltVMs } = filtrerForKategori(view.kat)
+      kandidater = utenEktBilde([...passerVMs, ...ikkeMåltVMs]).flatMap(nøklerForVM)
+    } else if (view.type === 'bundle-innhold') {
+      const vms = (bundleVMs.get(view.bundleId) ?? []).filter(vm => !searchQ || vm.navn.toLowerCase().includes(searchQ))
+      kandidater = utenEktBilde(vms).flatMap(nøklerForVM)
+    } else if (view.type === 'storrelse') {
+      // Størrelses-rutenettet viser én miniatyr PER STØRRELSE, uavhengig av vm.coverImage —
+      // annen regel enn MotivKort, se rendringen (:~3076 i det opprinnelige forslaget).
+      kandidater = nøklerForVM(view.vm)
+    } else {
+      kandidater = []
+    }
+
+    // Selvbegrensende paginering: en større kandidatliste enn 200 henter bare de første nå —
+    // bboxCache i avhengighetslisten under gjør at effekten kjører igjen når disse er løst,
+    // og henter neste bolk da. Aldri én kjempe-batch.
+    const uløste = kandidater.filter(({ embroideryId, sizeId }) => {
+      const b = bboxCache.get(`${embroideryId}:${sizeId}`)
+      return b != null && b.miniatyrSvg === undefined
+    }).slice(0, 200)
+    if (uløste.length === 0) return
+
+    // Skriver ALLTID et resultat (streng eller null) for hver etterspurt nøkkel som allerede
+    // har mål i cachen, slik at neste kjøring av effekten finner dem løst og ikke spør på nytt
+    // (se merk-som-undefined-betyr-ikke-forsøkt i motivvalg.ts). To 500-feil dukket opp under
+    // målingen i steg 3 nettopp fordi FULL-kolonne-sider på 1000 rader er tunge — derfor
+    // batches det her BARE det synlige trenger, aldri en voksende kø av alt som noen gang har
+    // vært synlig.
+    async function hentMiniatyrer() {
+      const embroideryIds = Array.from(new Set(uløste.map(p => p.embroideryId)))
+      const sizeIds = Array.from(new Set(uløste.map(p => p.sizeId)))
+      const { data, error } = await supabase
+        .from('broderi_motiv')
+        .select('embroidery_id, size_id, miniatyr_svg')
+        .in('embroidery_id', embroideryIds)
+        .in('size_id', sizeIds)
+      if (cancelled) return
+
+      const funnet = new Map<string, string | null>()
+      if (error) {
+        if (error.code === '42703') {
+          setManglerMiniatyrKolonne(true)
+          return
+        }
+        console.error('[MotivPicker] lat miniatyr-henting feilet', error)
+        return
+      }
+      for (const row of (data ?? [])) {
+        funnet.set(`${row.embroidery_id}:${row.size_id}`, row.miniatyr_svg ?? null)
+      }
+      setBboxCache(prev => {
+        const next = new Map(prev)
+        for (const p of uløste) {
+          const key = `${p.embroideryId}:${p.sizeId}`
+          const eksisterende = next.get(key)
+          if (!eksisterende || eksisterende.miniatyrSvg !== undefined) continue
+          next.set(key, { ...eksisterende, miniatyrSvg: funnet.get(key) ?? null })
+        }
+        return next
+      })
+    }
+    hentMiniatyrer()
+    return () => { cancelled = true }
+  }, [view, searchQ, filterPaaRamme, virtuelleMotiver, bundlerMap, bboxCache, manglerMiniatyrKolonne, kategorierUtenEktebilde, standaloneVMs, bundleVMs])
+
   // ── UI-deler ──────────────────────────────────────────────────────────────
 
   function Topptekst({ tittel, onTilbake, handling }: {
@@ -2806,16 +3023,19 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
         if (body.ferdig) break
       }
       setProgress(`${totalOppdatert} miniatyrer ${tving ? 'fornyet' : 'generert'}`)
-      setLasterVersjon(v => v + 1) // hent bboxCache på nytt så de nye miniatyrene vises
+      forceRefreshCache() // hent bboxCache (og mangler-miniatyr-tellingen) på nytt
     } catch (err) {
       setProgress(`Feil: ${err instanceof Error ? err.message : 'Ukjent feil'}`)
     }
   }
 
   function ParseBunnlinje() {
-    const antallUtenMiniatyr = cacheLastet
-      ? Array.from(bboxCache.values()).filter(b => b !== null && b.miniatyrSvg === null).length
-      : 0
+    // Punkt 5, docs/plan-og-prompter-2026-08-25.md steg 3: talt i BASEN (manglerMiniatyrPromise
+    // i lasteeffekten over), ALDRI ved å skanne bboxCache etter miniatyrSvg === null — etter
+    // at grunnlasten sluttet å hente miniatyr_svg for alle rader, ville en slik skanning bare
+    // talt "ikke ennå forsøkt hentet lat", ikke "mangler faktisk i basen". null her betyr
+    // enten "ikke talt ennå" eller "kolonnen mangler" (manglerMiniatyrKolonne skiller dem).
+    const antallUtenMiniatyr = manglerMiniatyrCount ?? 0
     return (
       <div className="px-5 py-3 border-t border-stone-100 flex-shrink-0">
         {parseFremgang && (
@@ -3286,7 +3506,7 @@ function MotivPicker({ biblioteket, onVelg, onVelgFlere, onClose }: {
                 <div className="p-5 text-center">
                   <p className="text-sm text-red-600 mb-3">{lasterFeil}</p>
                   <button
-                    onClick={() => { setLasterFeil(null); setCacheLastet(false); setLasterVersjon(v => v + 1) }}
+                    onClick={() => { setLasterFeil(null); setCacheLastet(false); forceRefreshCache() }}
                     className="px-4 py-2 text-sm border border-stone-200 rounded-lg text-stone-600 hover:bg-stone-50 transition-colors"
                   >
                     Prøv på nytt
