@@ -1,0 +1,4 @@
+pyembroidery
+Pillow
+numpy
+scipy
