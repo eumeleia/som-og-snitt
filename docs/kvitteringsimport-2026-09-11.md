@@ -124,16 +124,19 @@ i prompt 1 fanger en feillesing, men kan ikke reparere den.
 
 ## Rekkefølge
 
-1. **Prompt 1** — les kvitteringen og vis resultatet. Skriver ingenting.
-2. **Prompt 2** — oppslag mot Selfmade og import til lageret. Sendes når prompt 1 er
-   bekreftet mot alle seks kvitteringene, og justeres hvis lesingen avdekket noe nytt.
+1. **Prompt 1** — les kvitteringen og vis resultatet. Ferdig, `596d861`. Alle seks
+   kvitteringene lest riktig, summeringssjekken eksakt på alle.
+2. **Prompt 2** — oppslag mot Selfmade og import til lageret. Ferdig, `d3ca933`.
+   Glidelåsen fikk 20 cm og ikke produktsidens 55, og jacquarden fikk betalt pris.
+3. **Prompt 3** — kvitteringsbildet til Drive og snarvei i Innstillinger. Ferdig, `02a0940`.
+   Skilt ut av prompt 2 for å holde den ferdiggjørbar.
 
 Delingen er der fordi lesing, oppslag og skriving i samme prompt blir gjort halvveis alle
 tre.
 
 ---
 
-## Prompt 1 — les kvitteringen
+## Prompt 1 — les kvitteringen  (sendt 11.09, `596d861`)
 
 ````
 Ny funksjon, del 1 av 2: les en Selfmade-kvittering fra bilde og vis hva som står på den.
@@ -252,7 +255,7 @@ begynn på oppslag mot selfmade.com eller på skriving til lageret — det er de
 
 ---
 
-## Prompt 2 — oppslag og import
+## Prompt 2 — oppslag og import  (sendt 11.09, `d3ca933`)
 
 Sendes når prompt 1 er bekreftet. Juster den hvis lesingen avdekket noe som ikke står her.
 
@@ -322,7 +325,8 @@ Fire tilstander må vises, ikke skjules:
 
 Når importen er bekreftet: `POST /api/drive/ensure-folder` med
 `{ folderName: "Kvitteringer" }`, så `/api/drive/upload`. Samme to kall som
-`recipes/page.tsx:629-691` gjør for mønster-PDF-er. Filnavn: `<dato>-<bilagsnummer>.jpg`.
+`recipes/page.tsx:629-691` gjør for mønster-PDF-er. Filnavn: `<dato>-<bilagsnummer>.<endelse>`,
+der endelsen kommer fra originalfila, ikke en fast `.jpg`.
 
 Under Innstillinger (`dashboard/settings/page.tsx`), rett under Google Drive-blokka: en
 snarvei til `https://drive.google.com/drive/folders/<folderId>`. `getOrCreateSubfolder` er
@@ -344,4 +348,95 @@ få 20 cm, ikke 55. Jacquarden skal få betalt 455,63, ikke listeprisen 225,00 �
 Importer den samme kvitteringen på nytt → appen skal si fra at den er importert før.
 
 `npm test`, `npx tsc --noEmit`, `npx eslint`.
+````
+
+---
+
+## Prompt 3 — kvitteringsbildet til Drive  (sendt 11.09, `02a0940`)
+
+````
+Fullfør prompt 3 av kvitteringsimporten — kvitteringsbildet til Drive og snarvei i
+Innstillinger. Arbeidet er PÅBEGYNT og ligger ucommitet i arbeidstreet; en tidligere økt
+ble avbrutt midt i. Ikke start på nytt, ikke skriv om det som allerede står, og ikke lag
+en ny plan — det som gjenstår er lite og presist beskrevet under. Les
+`docs/kvitteringsimport-2026-09-11.md` og `git diff` først.
+
+Del 1 (`596d861`) og del 2 (`d3ca933`) er ferdige og commitet.
+
+## Det som allerede er gjort — verifisert, la det stå
+
+- `src/app/api/drive/upload/route.ts` tar nå en valgfri `folderId` i formData. Sjekket:
+  de tre eksisterende kallerne (`oppskrifter/ny/page.tsx:592`, `projects/page.tsx:1770`,
+  `recipes/page.tsx:1609`) sender ingen `folderId`, så utvidelsen er bakoverkompatibel.
+- `src/lib/kvittering.ts`: `byggKvitteringsfilnavn(dato, bilagsnummer, originaltFilnavn)`
+  med tre tester i `kvittering.test.ts`.
+- `inventory/page.tsx`, `KvitteringImportModal`: `arkiverKvitteringsbilde()` i EGEN
+  try/catch etter importen, «Arkiverer kvitteringsbilde…»-tilstand, arkivmelding,
+  «Åpne i Drive»-lenke, og `nyLesing()` nullstiller de tre nye tilstandene.
+- `settings/page.tsx`: state `kvitteringsmappeUrl` og en `useEffect` som henter folderId.
+
+`npx tsc --noEmit` går rent. `npm test` er IKKE kjørt på dette arbeidet ennå.
+
+## Det som gjenstår
+
+### 1. Lenka i Innstillinger rendres ingen steder
+`kvitteringsmappeUrl` settes, men brukes aldri — derfor melder eslint den som ubrukt på
+`settings/page.tsx:25`. Legg lenka inn i `drive.connected`-greina (:88–100), mellom
+«Tilkoblet»-raden og «Koble fra»-knappen, og bare når `kvitteringsmappeUrl` er satt.
+Samme visuelle språk som resten av siden.
+
+### 2. Ny eslint-feil i den samme useEffect-en
+`settings/page.tsx:32` gir `react-hooks/set-state-in-effect` fordi
+`setKvitteringsmappeUrl(null)` kalles synkront i effekt-kroppen. Det er en NY feil, ikke
+en arvet.
+
+`drive.connected` går fra true til false ett eneste sted: `disconnect()`. Flytt
+nullstillingen dit, og la effekten bare returnere tidlig når den ikke er tilkoblet.
+
+### 3. Liten felle i fargevalget på arkivmeldingen
+`inventory/page.tsx:1123` velger farge med
+`arkivMelding.startsWith('Kvitteringen er arkivert')`. Endrer noen teksten senere, blir en
+vellykket arkivering stille om til gul feilmelding. Bytt til en egen tilstand
+`arkivStatus: 'ok' | 'feil' | null` ved siden av meldingen. Ingen annen endring i blokka.
+
+## Kontroll
+
+eslint-basislinja her er ikke ren. `npx eslint` gir i dag 36 errors og 43 warnings, og
+alle unntatt `settings/page.tsx:32` er eldre enn dette arbeidet. Etter fiksene skal ingen
+melding peke inn i noe dette arbeidet har rørt, med disse arvede unntakene som IKKE skal
+fikses: `inventory/page.tsx` 228, 1353, 1384 (`<img>`-warnings) og 1864, 1923, 1924, 1926
+(`set-state-in-effect`).
+
+`npm test`, `npx tsc --noEmit`, `npx eslint`.
+
+Så i nettleseren — rapporter hva du faktisk ser, ikke hva du antar:
+- Importer en kvittering med Drive tilkoblet. Bildet skal ligge i «Kvitteringer» under
+  «Søm og Snitt», med navn `<dato>-<bilagsnummer>.<endelse>`, og det skal være
+  ORIGINALEN, ikke den nedskalerte JPEG-en som ble sendt til Claude.
+- Åpne fila i Drive. Vises bildet, eller ligger den som ukjent binærfil? En HEIC fra
+  iPhone kan ha tom `file.type`, og da sender ruta `application/octet-stream`. Skjer det,
+  utled mimetypen fra endelsen.
+- «Åpne i Drive»-lenka i bekreftelsen skal gå til riktig fil.
+- Koble fra Drive, importer en til. Varene skal fortsatt havne i lageret, med beskjed om
+  at arkiveringen ble hoppet over. Ingen «Import feilet».
+- Åpne Innstillinger, last siden på nytt et par ganger. Lenka skal gå til riktig mappe, og
+  det skal ikke dukke opp duplikatmapper i Drive.
+
+Importerer jeg samme kvittering to ganger og bekrefter, lastes bildet opp to ganger. Det
+er greit — ikke bygg dedupe mot Drive.
+
+## Docs og commit
+
+`docs/kvitteringsimport-2026-09-11.md`, prompt 2 seksjon 4, sier filnavnet er
+`<dato>-<bilagsnummer>.jpg`. Det stemmer ikke lenger — endelsen kommer fra originalfila.
+Rett den linja, og legg inn prompt 3 i sin helhet under prompt 2, i samme format som de to
+andre.
+
+To commits, fordi docs skal referere hashen til kode-commiten:
+
+git add src && git commit -m "Add receipt import (part 3): archive the receipt image to Drive and link the folder from settings"
+
+Ta hashen fra den commiten, skriv prompt 3 inn i docs med den, og så:
+
+git add docs && git commit -m "Record receipt import part 3 in the planning doc" && git push
 ````
