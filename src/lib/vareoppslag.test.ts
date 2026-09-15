@@ -9,6 +9,7 @@ import {
   tolkBrodsmulesti,
   unikeProduktnumre,
   byggProduktFraLagerVare,
+  enhetsfeltFraKategori,
 } from './vareoppslag'
 
 describe('navnesammenligning', () => {
@@ -114,9 +115,22 @@ describe('byggProduktFraLagerVare', () => {
     expect(treff?.enhetsfelt).toBe('antall')
   })
 
-  it('verken mengde eller antall satt → null, altså fall tilbake til nettoppslag', () => {
-    const utenEnhet = { navn: 'Noe', kategori: 'Utstyr' as const }
-    expect(byggProduktFraLagerVare(utenEnhet, '999')).toBeNull()
+  it('verken mengde eller antall satt på Stoff → faller tilbake på kategorien, mengde', () => {
+    const stoffUtenEnhet = { navn: 'Noe stoff', kategori: 'Stoff' as const }
+    expect(byggProduktFraLagerVare(stoffUtenEnhet, '999').enhetsfelt).toBe('mengde')
+  })
+
+  it('verken mengde eller antall satt på Tilbehør → faller tilbake på kategorien, antall', () => {
+    // Den ekte fellen: Gütermann-tråd, nåler og hekter i lageret har mengde/antall tomt,
+    // og ga null (dermed nettoppslag) for alle tilbehørsrader før denne fiksen.
+    const tilbehorUtenEnhet = { navn: 'Gütermann sew all sytråd 200m', kategori: 'Tilbehør' as const }
+    expect(byggProduktFraLagerVare(tilbehorUtenEnhet, '19386').enhetsfelt).toBe('antall')
+  })
+
+  it('et satt felt vinner fortsatt over kategorien', () => {
+    // Stoff faller normalt til mengde — men her er antall faktisk satt, og skal vinne.
+    const stoffMedAntall = { navn: 'Restlapp', kategori: 'Stoff' as const, antall: '2' }
+    expect(byggProduktFraLagerVare(stoffMedAntall, '1').enhetsfelt).toBe('antall')
   })
 
   it('bygger IKKE inn betalt pris, kjøpsdato eller bilagsnummer fra den lagrede varen', () => {
@@ -128,7 +142,21 @@ describe('byggProduktFraLagerVare', () => {
 
   it('sidenummer faller tilbake til søkenøkkelen hvis varen selv mangler produktnummer', () => {
     const utenNummer = { navn: 'Noe', kategori: 'Stoff' as const, mengde: '1 m' }
-    expect(byggProduktFraLagerVare(utenNummer, '555')?.sidenummer).toBe('555')
+    expect(byggProduktFraLagerVare(utenNummer, '555').sidenummer).toBe('555')
+  })
+})
+
+describe('enhetsfeltFraKategori', () => {
+  it('Stoff → mengde', () => {
+    expect(enhetsfeltFraKategori('Stoff')).toBe('mengde')
+  })
+
+  it('Tilbehør → antall', () => {
+    expect(enhetsfeltFraKategori('Tilbehør')).toBe('antall')
+  })
+
+  it('Utstyr → antall', () => {
+    expect(enhetsfeltFraKategori('Utstyr')).toBe('antall')
   })
 })
 

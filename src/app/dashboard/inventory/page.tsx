@@ -9,7 +9,9 @@ import { RecipePicker, type PickerRecipe } from '../_shared/RecipePicker'
 import { ProjectPicker, type PickerProject } from '../_shared/ProjectPicker'
 import { supabase } from '@/lib/supabase'
 import { deepClone } from '@/lib/deep-clone'
-import { unikeProduktnumre, formaterMengdeAntall, byggProduktFraLagerVare, type Kandidat } from '@/lib/vareoppslag'
+import {
+  unikeProduktnumre, formaterMengdeAntall, byggProduktFraLagerVare, enhetsfeltFraKategori, type Kandidat,
+} from '@/lib/vareoppslag'
 import {
   byggKvitteringsfilnavn, beregnMaalstorrelse, velgKvitteringsstrategi, VERCEL_PAYLOAD_GRENSE_MB,
 } from '@/lib/kvittering'
@@ -793,9 +795,8 @@ async function slaOppVare(produktnummer: string, kvitteringsnavn: string, valgtU
 
 // Finner den nyeste lagerraden med samme produktnummer og bygger et treff av DEN, uten
 // nettkall — ca. 90 % av API-kostnaden på en kvittering er oppslag mot selfmade.com, og
-// de fleste linjene er varer som allerede finnes i lageret. byggProduktFraLagerVare
-// returnerer null når enheten (mengde/antall) ikke kan avgjøres fra den lagrede varen;
-// da faller kalleren tilbake til vanlig nettoppslag.
+// de fleste linjene er varer som allerede finnes i lageret. Returnerer null bare når
+// INGEN rad i lageret har dette produktnummeret — da går raden til vanlig nettoppslag.
 function finnProduktFraLager(produktnummer: string, eksisterendeVarer: InventoryItem[]): ProduktTreff | null {
   const treff = eksisterendeVarer
     .filter(v => v.data.produktnummer === produktnummer)
@@ -976,7 +977,7 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
     if (!linje) return
     const produkt: ProduktTreff = {
       url: '', navn: linje.navn, kategori,
-      enhetsfelt: kategori === 'Stoff' ? 'mengde' : 'antall',
+      enhetsfelt: enhetsfeltFraKategori(kategori),
       sidenummer: linje.produktnummer, variantHale: null,
     }
     setRadTilstander(prev => ({ ...prev, [i]: { fase: 'funnet', produkt, kilde: 'kvittering' } }))

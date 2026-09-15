@@ -156,6 +156,17 @@ export interface LagerVareForOppslag {
 }
 
 /**
+ * Enheten en vare ikke selv oppgir mengde eller antall for, avledet fra kategorien alene:
+ * Stoff er metervare, Tilbehør og Utstyr er stykkvare. Brukes to steder — her (fallback
+ * når den lagrede varen mangler begge felt) og når en vare legges inn direkte fra
+ * kvitteringen uten oppslag (leggInnFraKvittering i inventory/page.tsx) — én regel, ikke
+ * to kopier av den.
+ */
+export function enhetsfeltFraKategori(kategori: 'Stoff' | 'Tilbehør' | 'Utstyr'): 'mengde' | 'antall' {
+  return kategori === 'Stoff' ? 'mengde' : 'antall'
+}
+
+/**
  * Bygger et treff direkte fra en vare som allerede ligger i lageret, uten nettkall.
  * Betalt pris, kjøpsdato og bilagsnummer hører ALDRI hjemme her — de kommer fra DENNE
  * kvitteringslinjen, aldri fra den lagrede varen (prisen endrer seg over tid — 9001
@@ -163,8 +174,9 @@ export interface LagerVareForOppslag {
  * kvitteringslinjen; denne funksjonen kan strukturelt ikke levere dem, siden verken
  * inndata- eller utdatatypen har de feltene.
  *
- * Returnerer null når enheten (mengde vs. antall) ikke kan avgjøres fra den lagrede
- * varen — da må det slås opp på nett i stedet.
+ * Enheten (mengde vs. antall) kommer fra varens EGNE felt når den har dem — har den
+ * ingen av delene (typisk tilbehør uten registrert antall), faller den tilbake på
+ * kategorien i stedet for å gi opp og sende raden til nettoppslag.
  */
 export function byggProduktFraLagerVare(vare: LagerVareForOppslag, produktnummer: string): {
   url:            string
@@ -182,9 +194,8 @@ export function byggProduktFraLagerVare(vare: LagerVareForOppslag, produktnummer
   enhetsfelt:     'mengde' | 'antall'
   sidenummer:     string
   variantHale:    null
-} | null {
-  const enhetsfelt = vare.mengde ? 'mengde' : vare.antall ? 'antall' : null
-  if (!enhetsfelt) return null
+} {
+  const enhetsfelt = vare.mengde ? 'mengde' : vare.antall ? 'antall' : enhetsfeltFraKategori(vare.kategori)
   return {
     url: vare.produktUrl ?? '',
     navn: vare.navn,
