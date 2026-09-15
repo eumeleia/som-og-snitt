@@ -16,6 +16,8 @@ Bakgrunn og beslutninger for kvitteringsimporten ligger i
 | 4 | Etterfylling av produktnummer på gamle lagerrader | `6fa4a10` |
 | 5 | Nedskalering av kvitteringsbilder i nettleseren + feilhåndtering av ikke-JSON-svar | `139ae6f` |
 | 6 | Sporing av sharps native bibliotek inn i lesefunksjonen | `304846c` |
+| 7 | Produktnummer, betalt pris og produktlenke synlig på varen | `b9c2869` |
+| 8 | Lageroppslag før nettet, filtrerte kandidater, «legg inn fra kvitteringen» | `d8c56bb` |
 
 Prompt 1–3 står i sin helhet i `docs/kvitteringsimport-2026-09-11.md`.
 
@@ -52,164 +54,12 @@ hele kostnaden. Prompt C angriper nettopp den.
 
 ## Klar til kjøring
 
-Rekkefølgen er valgfri. C er den som sparer mest penger, B er ti minutter, D er størst.
+Bare D står igjen.
 
-### B — Vis produktnummer, betalt pris og produktlenke på varen
-
-Feltene lagres, men rendres ingen steder i varevisningen. 90 varer har produktnummer som
-ikke er synlig.
-
-````
-Vis produktnummer, betalt pris og produktlenke på varen i lageret.
-
-Del 2 av kvitteringsimporten la inn fire felter på `InventoryItemData`
-(`inventory/page.tsx:40-43`): `produktUrl`, `produktnummer`, `betaltPris`,
-`bilagsnummer`. De skrives både ved kvitteringsimport og av etterfyllingsjobben, men
-rendres ingen steder i varevisningen — de vises bare inne i importmodalen. 90 varer har
-nå produktnummer som ikke er synlig for meg noe sted.
-
-## Ny seksjon
-
-I detalj-/redigeringsvisningen i `src/app/dashboard/inventory/page.tsx`, rett etter
-«6. Kilde»-seksjonen (:1694) og før «7. Tenkt til»: en ny seksjon **Produkt**, i samme
-mønster som resten (`SectionHeading`, `inputCls`, `upd({...})`).
-
-Innhold:
-
-- **Produktnummer** — redigerbart tekstfelt, `d.produktnummer ?? ''`. Skal være
-  redigerbart, ikke bare lesbart: for de fire varene der produktsiden ga 404, og for varer
-  jeg har lagt inn for hånd, vil jeg kunne skrive nummeret inn selv.
-- **Betalt pris** — redigerbart tekstfelt, `d.betaltPris ?? ''`. Det er en streng
-  («142,56 kr»), ikke et tall — ikke gjør den om til et number-felt.
-- **Åpne produktsiden** — en lenke, ikke et tekstfelt. Bruk `d.produktUrl`, og fall
-  tilbake til `d.kilde` hvis den ser ut som en URL. Vis ingen lenke hvis ingen av dem er
-  satt.
-- **Bilagsnummer** — bare lesbar, liten grå tekst, og bare når feltet er satt. Den sier
-  hvilken kvittering varen kom fra, og skal ikke kunne redigeres.
-
-## Én ting å passe på
-
-URL-en ligger nå to steder på de etterfylte radene: i `kilde` (der URL-importen la den) og
-i `produktUrl` (der etterfyllingen la den). Ikke lag et eget redigerbart felt for
-`produktUrl` — da får jeg to felter som viser samme URL og som kan komme i utakt.
-Kilde-feltet er allerede redigeringsstedet. Den nye seksjonen viser bare lenka.
-
-## Omfang
-
-Bare detaljvisningen. Ikke endre kortene i lista, ikke endre badgen, ikke rør
-importmodalen, og ikke legg til nye felter i `InventoryItemData`.
-
-Ingen ny ren logikk her, så ingen nye tester — men de eksisterende skal fortsatt gå.
-
-## Kontroll
-
-Åpne en vare som kom fra kvitteringsimporten: produktnummer, betalt pris, lenke og
-bilagsnummer skal alle stå der. Åpne en etterfylt vare: produktnummer og lenke skal stå,
-betalt pris og bilagsnummer skal være tomme/skjulte. Åpne en vare med tom kilde: seksjonen
-skal vises med tomme felter og ingen lenke, og jeg skal kunne skrive inn et produktnummer
-og få det lagret.
-
-`npm test`, `npx tsc --noEmit`, `npx eslint`. eslint-basislinja er 35 errors og 42
-warnings, alle eldre enn dette arbeidet — ingen ny melding skal peke inn i det du har rørt.
-
-git add . && git commit -m "Show product number, paid price and product link on inventory items"
-````
-
-### C — Lageroppslag først, filtrerte kandidater, og en vei inn uten nettkall
-
-Tre endringer i samme flyt: oppslagsveien i kvitteringsimporten. Den første halverer
-kostnaden på en typisk kvittering, de to andre fikser feil jeg har sett i bruk.
-
-````
-Tre endringer i oppslagsveien i kvitteringsimporten. Les
-`docs/kvitteringsimport-2026-09-11.md` først, særlig «Fem feller i sammenligningen».
-
-Bakgrunn: en kvittering med 14 linjer koster ~$0,29 i API-bruk, og ~90 % av det er
-oppslagene mot selfmade.com — ett Claude-kall per unike produktnummer. De fleste linjene
-på en typisk kvittering er varer jeg allerede har i lageret.
-
-## 1. Slå opp i lageret før nettet
-
-`erProduktnummerDuplikat` (`inventory/page.tsx:795`) sjekker allerede om produktnummeret
-finnes i `eksisterendeVarer`. I dag brukes det bare til å la være å huke av raden — men
-oppslaget mot nettet kjøres uansett.
-
-Snu det: finnes produktnummeret i lageret, bygg radens produktdata fra den lagrede varen
-(navn, kategori, underkategori, produktUrl, materiale, bredde, vekt, vask, krymp,
-sertifisering, bilde) og hopp over nettkallet helt. Vis raden som funnet, med en egen
-merking som sier at treffet kom fra lageret og ikke fra selfmade.com.
-
-To ting som IKKE skal arves fra den lagrede varen:
-
-- **Betalt pris** kommer alltid fra kvitteringen. Prisen endrer seg over tid — 9001 kostet
-  142,95 i september 2025 og 159,95 i mai 2026.
-- **Kjøpsdato og bilagsnummer** kommer fra denne kvitteringen, ikke fra den gamle raden.
-
-Enhetsfeltet utledes av den lagrede varen: har den `mengde`, er den metervare; har den
-`antall`, er den stykkvare. Har den ingen av delene, fall tilbake til nettoppslag.
-
-Finnes nummeret flere ganger i lageret, bruk den nyeste raden.
-
-## 2. Filtrer kandidatlista
-
-`velgKandidat` i `src/lib/vareoppslag.ts` returnerer i dag `flereTreff` med HELE
-trefflista når ingen kandidat er god nok. I praksis betyr det at jeg får 25 forslag der
-ingen passer — for «Sateng fór petrol» (7029, som er fjernet fra butikken) fikk jeg en
-liste med DMC-broderigarn og Gütermann-tråd. En `<select>` med 25 valg inne i tabellen i
-modalen blir dessuten uleselig og lar seg ikke scrolle skikkelig.
-
-Filtrer bort kandidater under terskelen FØR utfallet avgjøres:
-
-- ingen kandidater over terskelen → `ikkeFunnet`
-- én igjen → samme «klar vinner»-regel som i dag
-- flere igjen → `flereTreff`, men bare med de filtrerte
-
-Terskelen er allerede en parameter (`terskel = 0.7`). Ikke endre verdien, bare bruk den
-til å filtrere også.
-
-Behold reglene fra «Fem feller»: sammenligningen bruker de første 29 tegnene av
-produktnavnet, og danske stavemåter skal fortsatt treffe.
-
-## 3. «Legg inn fra kvitteringen»
-
-I dag tilbyr `ikkeFunnet` bare «lim inn en URL» eller «hopp over». Det holder ikke for et
-stoff som er utgått fra butikken — da finnes det ingen URL å lime inn, men jeg vil
-fortsatt ha varen i lageret.
-
-Legg til et tredje valg på rader med `ikkeFunnet` og `flereTreff`: legg inn varen med det
-kvitteringen selv oppgir, uten noe nettkall. Da settes produktnummer, navn (slik det står,
-avkuttet ved 29 tegn), betalt pris, kjøpsdato, kilde og bilagsnummer.
-
-Kategorien vet kvitteringen ingenting om, så raden må ha en liten velger — Stoff,
-Tilbehør eller Utstyr. Enheten utledes av kategorien: Stoff blir `mengde`, de andre
-`antall`. Begge deler kan jeg rette etterpå i varevisningen.
-
-Ikke gjett kategori fra navnet.
-
-## Tester, ren logikk
-
-- `velgKandidat` med kandidater der alle skårer under terskelen → `ikkeFunnet`
-- med to over og tjue under → `flereTreff` med bare de to
-- «klar vinner»-regelen uendret når kandidatene faktisk er gode
-- enhetsutledning fra en lagret vare: `mengde` satt → metervare, `antall` satt →
-  stykkvare, ingen av delene → nettoppslag
-- at betalt pris og bilagsnummer kommer fra kvitteringen og ikke fra den lagrede varen
-
-## Kontroll
-
-Importer en kvittering med varer jeg har fra før. De radene skal vise treff fra lageret,
-og fremdriftstelleren skal gå raskere fordi det ikke gjøres nettkall på dem. Tell hvor
-mange oppslag som faktisk gikk mot nettet, og rapporter det.
-
-En rad med et nummer som ikke finnes noe sted skal vise «ikke funnet» med tre valg — lim
-inn URL, legg inn fra kvitteringen, eller hopp over — og ingen nedtrekksliste med
-irrelevante forslag.
-
-`npm test`, `npx tsc --noEmit`, `npx eslint`. eslint-basislinja er 35 errors og 42
-warnings, alle eldre enn dette arbeidet.
-
-git add . && git commit -m "Look up inventory before the network, filter weak candidates, and allow receipt-only rows"
-````
+**Gjenstår å bekrefte i nettleseren fra C (`d8c56bb`):** at rader med varer du har fra før
+viser treff fra lageret og ikke gjør nettkall, at fremdriftstelleren går raskere, og at
+«legg inn fra kvitteringen» faktisk lagrer en rad. Klientlogikken er typesjekket og
+byggeklossene er testet, men klikkeflyten er ikke kjørt.
 
 ### D — Lagre produktbilder permanent
 
