@@ -10,7 +10,9 @@ import { ProjectPicker, type PickerProject } from '../_shared/ProjectPicker'
 import { supabase } from '@/lib/supabase'
 import { deepClone } from '@/lib/deep-clone'
 import { unikeProduktnumre, formaterMengdeAntall, type Kandidat } from '@/lib/vareoppslag'
-import { byggKvitteringsfilnavn } from '@/lib/kvittering'
+import {
+  byggKvitteringsfilnavn, beregnMaalstorrelse, velgKvitteringsstrategi, VERCEL_PAYLOAD_GRENSE_MB,
+} from '@/lib/kvittering'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -714,13 +716,69 @@ type RadTilstand =
   | { fase: 'ikkeFunnet' }
   | { fase: 'feil';        melding: string }
 
+// Leser et fetch-svar trygt: sjekker content-type FØR parsing, i stedet for å anta JSON og
+// kræsje på f.eks. Vercels rene tekst-413 («Request Entity Too Large») når kroppen er for
+// stor. Det var akkurat DEN feilen som viste seg som et uleselig JSON-parse-utdrag.
+async function parseJsonEllerFeil(res: Response, standardfeil: string) {
+  const erJson = (res.headers.get('content-type') ?? '').includes('application/json')
+  if (!erJson) {
+    const tekst = await res.text()
+    console.error(`[${standardfeil}] Ikke-JSON-svar (HTTP ${res.status}):`, tekst.slice(0, 500))
+    if (res.status === 413) {
+      throw new Error(`Filen er for stor til å sendes (maks ${VERCEL_PAYLOAD_GRENSE_MB} MB).`)
+    }
+    throw new Error(`${standardfeil} (uventet svar fra serveren, HTTP ${res.status})`)
+  }
+  const json = await res.json()
+  if (!res.ok) throw new Error(json.error ?? standardfeil)
+  return json
+}
+
+// Skalerer kvitteringsbildet ned FØR sending, av samme grunn som sharp gjør det server-side
+// i lib/heic.ts — men her for å unngå Vercels 4,5 MB grense i utgangspunktet, ikke bare for
+// å spare Claude-tokens. `file`-state i modalen røres aldri: denne lager en egen, midlertidig
+// kopi bare til lese-requesten, og originalen forblir det som arkiveres i Drive etterpå.
+async function forberedKvitteringsbilde(file: File): Promise<File> {
+  let bitmap: ImageBitmap | null = null
+  try {
+    bitmap = await createImageBitmap(file)
+  } catch {
+    bitmap = null
+  }
+
+  const strategi = velgKvitteringsstrategi(bitmap !== null, file.size)
+
+  if (strategi === 'avvis') {
+    throw new Error(
+      `Bildet kunne ikke leses i nettleseren og er for stort til å sendes ` +
+      `(${(file.size / 1024 / 1024).toFixed(1)} MB, maks ${VERCEL_PAYLOAD_GRENSE_MB} MB). ` +
+      `Åpne det og lagre som JPEG først.`,
+    )
+  }
+  if (strategi === 'send-original' || !bitmap) return file
+
+  const { bredde, hoyde } = beregnMaalstorrelse(bitmap.width, bitmap.height)
+  const canvas = document.createElement('canvas')
+  canvas.width = bredde
+  canvas.height = hoyde
+  const ctx = canvas.getContext('2d')
+  if (!ctx) { bitmap.close(); return file } // urealistisk, men ikke sperr importen for det
+
+  ctx.drawImage(bitmap, 0, 0, bredde, hoyde)
+  bitmap.close()
+
+  const blob: Blob | null = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.9))
+  if (!blob) return file
+  return new File([blob], file.name, { type: 'image/jpeg' })
+}
+
 async function slaOppVare(produktnummer: string, kvitteringsnavn: string, valgtUrl?: string): Promise<RadTilstand> {
   try {
     const res = await fetch('/api/slaa-opp-vare', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ produktnummer, kvitteringsnavn, valgtUrl }),
     })
-    const j = await res.json()
+    const j = await parseJsonEllerFeil(res, 'Oppslag feilet')
     if (j.tilstand === 'funnet')     return { fase: 'funnet', produkt: j.produkt }
     if (j.tilstand === 'flereTreff') return { fase: 'flereTreff', kandidater: j.kandidater }
     if (j.tilstand === 'ikkeFunnet') return { fase: 'ikkeFunnet' }
@@ -821,12 +879,11 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
     setLesing(true); setError(''); setResultat(null)
     setRadTilstander({}); setFremdrift(null); setValgteRader(new Set()); setBilagBekreftet(false); setImportMelding('')
     try {
+      const filTilSending = await forberedKvitteringsbilde(file)
       const form = new FormData()
-      form.append('file', file)
+      form.append('file', filTilSending)
       const res = await fetch('/api/les-kvittering', { method: 'POST', body: form })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error ?? 'Lesing feilet')
-      const svar = json as KvitteringSvar
+      const svar = await parseJsonEllerFeil(res, 'Lesing feilet') as KvitteringSvar
       setResultat(svar)
       setLesing(false)
       await startOppslag(svar)
@@ -878,7 +935,7 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
     setArkiverer(true)
     try {
       const statusRes = await fetch('/api/drive/status')
-      const status = await statusRes.json() as { connected: boolean }
+      const status = await parseJsonEllerFeil(statusRes, 'Fant ikke Drive-status') as { connected: boolean }
       if (!status.connected) {
         setArkivStatus('feil')
         setArkivMelding('Kvitteringen ble ikke arkivert — Google Drive er ikke tilkoblet.')
@@ -889,8 +946,8 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ folderName: 'Kvitteringer' }),
       })
-      const ensureJson = await ensureRes.json() as { folderId?: string; error?: string }
-      if (!ensureRes.ok || !ensureJson.folderId) throw new Error(ensureJson.error ?? 'Fant ikke Drive-mappen')
+      const ensureJson = await parseJsonEllerFeil(ensureRes, 'Fant ikke Drive-mappen') as { folderId?: string; error?: string }
+      if (!ensureJson.folderId) throw new Error(ensureJson.error ?? 'Fant ikke Drive-mappen')
 
       const filnavn = byggKvitteringsfilnavn(dato, bilagsnummer, originalFil.name)
       const omdopt  = new File([originalFil], filnavn, { type: originalFil.type })
@@ -898,8 +955,7 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
       form.append('file', omdopt)
       form.append('folderId', ensureJson.folderId)
       const uploadRes = await fetch('/api/drive/upload', { method: 'POST', body: form })
-      const uploadJson = await uploadRes.json() as { webViewLink?: string; error?: string }
-      if (!uploadRes.ok) throw new Error(uploadJson.error ?? 'Opplasting feilet')
+      const uploadJson = await parseJsonEllerFeil(uploadRes, 'Opplasting feilet') as { webViewLink?: string; error?: string }
 
       setArkivStatus('ok')
       setArkivMelding('Kvitteringen er arkivert i Drive.')

@@ -4,6 +4,9 @@ import {
   sjekkSummering,
   normaliserBilagsnummer,
   byggKvitteringsfilnavn,
+  beregnMaalstorrelse,
+  velgKvitteringsstrategi,
+  VERCEL_PAYLOAD_GRENSE_BYTES,
   type KvitteringLinje,
   type KvitteringRabatt,
 } from './kvittering'
@@ -86,5 +89,46 @@ describe('byggKvitteringsfilnavn', () => {
   it('faller tilbake til jpg uten endelse i originalnavnet', () => {
     expect(byggKvitteringsfilnavn('2026-01-05', '02400100364815', 'kvittering'))
       .toBe('2026-01-05-02400100364815.jpg')
+  })
+})
+
+describe('beregnMaalstorrelse', () => {
+  it('skalerer ned et liggende bilde til 1568 på lengste side', () => {
+    expect(beregnMaalstorrelse(4000, 2000)).toEqual({ bredde: 1568, hoyde: 784 })
+  })
+
+  it('skalerer ned et stående bilde til 1568 på lengste side', () => {
+    expect(beregnMaalstorrelse(2000, 4000)).toEqual({ bredde: 784, hoyde: 1568 })
+  })
+
+  it('skalerer et kvadratisk bilde likt på begge kanter', () => {
+    expect(beregnMaalstorrelse(3000, 3000)).toEqual({ bredde: 1568, hoyde: 1568 })
+  })
+
+  it('skalerer aldri OPP et bilde som alt er mindre enn maksSide', () => {
+    expect(beregnMaalstorrelse(800, 600)).toEqual({ bredde: 800, hoyde: 600 })
+  })
+
+  it('lar et bilde nøyaktig på grensa stå urørt', () => {
+    expect(beregnMaalstorrelse(1568, 1000)).toEqual({ bredde: 1568, hoyde: 1000 })
+  })
+})
+
+describe('velgKvitteringsstrategi', () => {
+  it('skalerer når nettleseren kan dekode, uansett størrelse', () => {
+    expect(velgKvitteringsstrategi(true, 1)).toBe('skaler')
+    expect(velgKvitteringsstrategi(true, 50 * 1024 * 1024)).toBe('skaler')
+  })
+
+  it('sender originalen når den ikke kan dekodes, men er under Vercel-grensa', () => {
+    expect(velgKvitteringsstrategi(false, VERCEL_PAYLOAD_GRENSE_BYTES - 1)).toBe('send-original')
+  })
+
+  it('sender originalen nøyaktig PÅ grensa', () => {
+    expect(velgKvitteringsstrategi(false, VERCEL_PAYLOAD_GRENSE_BYTES)).toBe('send-original')
+  })
+
+  it('avviser når den verken kan dekodes eller er under grensa', () => {
+    expect(velgKvitteringsstrategi(false, VERCEL_PAYLOAD_GRENSE_BYTES + 1)).toBe('avvis')
   })
 })

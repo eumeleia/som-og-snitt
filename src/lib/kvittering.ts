@@ -78,3 +78,35 @@ export function byggKvitteringsfilnavn(dato: string, bilagsnummer: string, origi
   const endelse = prikk === -1 ? 'jpg' : originaltFilnavn.slice(prikk + 1).toLowerCase()
   return `${dato}-${bilagsnummer}.${endelse}`
 }
+
+// Vercel avviser request-bodyer over denne grensa med 413 FUNCTION_PAYLOAD_TOO_LARGE FØR
+// funksjonen kjører — udokumentert, men målt. MAKS_FILSTORRELSE i les-kvittering/route.ts
+// (20 MB) er dermed dødt for filer mellom denne grensa og 20 MB; plattformen har alt sagt nei.
+export const VERCEL_PAYLOAD_GRENSE_MB = 4.5
+export const VERCEL_PAYLOAD_GRENSE_BYTES = VERCEL_PAYLOAD_GRENSE_MB * 1024 * 1024
+
+/**
+ * Samme regel som sharp bruker server-side i lib/heic.ts (`fit: 'inside',
+ * withoutEnlargement: true`): skaler ned til maks `maksSide` på lengste kant, aldri opp.
+ */
+export function beregnMaalstorrelse(
+  bredde: number, hoyde: number, maksSide = 1568,
+): { bredde: number; hoyde: number } {
+  const lengsteSide = Math.max(bredde, hoyde)
+  if (lengsteSide <= maksSide) return { bredde, hoyde }
+  const skala = maksSide / lengsteSide
+  return { bredde: Math.round(bredde * skala), hoyde: Math.round(hoyde * skala) }
+}
+
+export type KvitteringSendestrategi = 'skaler' | 'send-original' | 'avvis'
+
+/**
+ * Kan nettleseren dekode bildet (PNG/JPEG, og HEIC der plattformen selv støtter det)?
+ * Da skaleres det ned client-side uansett størrelse. Kan den ikke (typisk HEIC i Chrome),
+ * er originalen eneste mulighet — send den hvis den er under Vercels grense, ellers finnes
+ * det ingenting denne koden kan gjøre med den.
+ */
+export function velgKvitteringsstrategi(kanDekodes: boolean, storrelseBytes: number): KvitteringSendestrategi {
+  if (kanDekodes) return 'skaler'
+  return storrelseBytes <= VERCEL_PAYLOAD_GRENSE_BYTES ? 'send-original' : 'avvis'
+}
