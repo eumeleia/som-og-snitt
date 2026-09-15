@@ -58,12 +58,20 @@ export function velgKandidat(kvitteringsnavn: string, kandidater: Kandidat[], te
     .map(k => ({ k, score: sammenlignNavn(kvitteringsnavn, k.navn) }))
     .sort((a, b) => b.score - a.score)
 
-  const beste = rangert[0]
-  const nestBeste = rangert[1]
-  if (beste.score >= terskel && beste.score - nestBeste.score >= 0.15) {
+  // Filtrer bort alt under terskelen FØR utfallet avgjøres — ellers ender en vare som er
+  // tatt av butikken (ingen ekte kandidat) opp med en «flereTreff»-liste full av
+  // urelaterte forslag, som for «Sateng fór petrol» (7029) som ga DMC-broderigarn og
+  // Gütermann-tråd.
+  const gode = rangert.filter(r => r.score >= terskel)
+  if (gode.length === 0) return { utfall: 'ikkeFunnet' }
+  if (gode.length === 1) return { utfall: 'valgt', kandidat: gode[0].k }
+
+  const beste = gode[0]
+  const nestBeste = gode[1]
+  if (beste.score - nestBeste.score >= 0.15) {
     return { utfall: 'valgt', kandidat: beste.k }
   }
-  return { utfall: 'flereTreff', kandidater }
+  return { utfall: 'flereTreff', kandidater: gode.map(r => r.k) }
 }
 
 /**
@@ -127,4 +135,71 @@ export function unikeProduktnumre(linjer: { produktnummer: string }[]): string[]
     if (!sett.has(l.produktnummer)) { sett.add(l.produktnummer); rekkefolge.push(l.produktnummer) }
   }
   return rekkefolge
+}
+
+export interface LagerVareForOppslag {
+  navn:           string
+  kategori:       'Stoff' | 'Tilbehør' | 'Utstyr'
+  underkategori?: string
+  utstyrstype?:   string
+  materiale?:     string
+  bredde?:        string
+  vekt?:          string
+  vask?:          string
+  krymp?:         string
+  sertifisering?: string
+  bilde?:         string
+  produktUrl?:    string
+  produktnummer?: string
+  mengde?:        string
+  antall?:        string
+}
+
+/**
+ * Bygger et treff direkte fra en vare som allerede ligger i lageret, uten nettkall.
+ * Betalt pris, kjøpsdato og bilagsnummer hører ALDRI hjemme her — de kommer fra DENNE
+ * kvitteringslinjen, aldri fra den lagrede varen (prisen endrer seg over tid — 9001
+ * kostet 142,95 i september 2025 og 159,95 i mai 2026). Kalleren henter dem selv fra
+ * kvitteringslinjen; denne funksjonen kan strukturelt ikke levere dem, siden verken
+ * inndata- eller utdatatypen har de feltene.
+ *
+ * Returnerer null når enheten (mengde vs. antall) ikke kan avgjøres fra den lagrede
+ * varen — da må det slås opp på nett i stedet.
+ */
+export function byggProduktFraLagerVare(vare: LagerVareForOppslag, produktnummer: string): {
+  url:            string
+  navn:           string
+  kategori:       'Stoff' | 'Tilbehør' | 'Utstyr'
+  underkategori?: string
+  utstyrstype?:   string
+  materiale?:     string
+  bredde?:        string
+  vekt?:          string
+  vask?:          string
+  krymp?:         string
+  sertifisering?: string
+  bilde?:         string
+  enhetsfelt:     'mengde' | 'antall'
+  sidenummer:     string
+  variantHale:    null
+} | null {
+  const enhetsfelt = vare.mengde ? 'mengde' : vare.antall ? 'antall' : null
+  if (!enhetsfelt) return null
+  return {
+    url: vare.produktUrl ?? '',
+    navn: vare.navn,
+    kategori: vare.kategori,
+    underkategori: vare.underkategori,
+    utstyrstype: vare.utstyrstype,
+    materiale: vare.materiale,
+    bredde: vare.bredde,
+    vekt: vare.vekt,
+    vask: vare.vask,
+    krymp: vare.krymp,
+    sertifisering: vare.sertifisering,
+    bilde: vare.bilde,
+    enhetsfelt,
+    sidenummer: vare.produktnummer ?? produktnummer,
+    variantHale: null,
+  }
 }

@@ -8,6 +8,7 @@ import {
   formaterMengdeAntall,
   tolkBrodsmulesti,
   unikeProduktnumre,
+  byggProduktFraLagerVare,
 } from './vareoppslag'
 
 describe('navnesammenligning', () => {
@@ -58,6 +59,76 @@ describe('velgKandidat — fire Gütermann-tråder holdes fra hverandre på numm
       { url: 'b', navn: 'Skråbånd sateng 18 mm hvit' },
     ])
     expect(valg.utfall).toBe('flereTreff')
+  })
+})
+
+describe('velgKandidat — filtrerer bort kandidater under terskelen', () => {
+  it('ingen kandidat over terskelen → ikkeFunnet, ikke flereTreff med urelaterte forslag', () => {
+    // «Sateng fór petrol» er tatt av butikken — søket ga kun urelaterte treff.
+    const valg = velgKandidat('Sateng fór petrol', [
+      { url: 'a', navn: 'DMC broderigarn Mouliné Spécial fargenr. 310' },
+      { url: 'b', navn: 'Gütermann sew all sytråd 200m' },
+      { url: 'c', navn: 'YKK glidelås usynlig spiral 20cm sort' },
+    ])
+    expect(valg).toEqual({ utfall: 'ikkeFunnet' })
+  })
+
+  it('to over terskelen og tjue under → flereTreff med bare de to', () => {
+    const gode = [
+      { url: 'a', navn: 'Skråbånd sateng 18 mm sort' },
+      { url: 'b', navn: 'Skråbånd sateng 18mm sort 5m' },
+    ]
+    const darlige = Array.from({ length: 20 }, (_, i) => (
+      { url: `x${i}`, navn: `Uhu Cabin Pluvimeter Fjordvær Vaskeekte Stoff #${i}` }
+    ))
+    const valg = velgKandidat('Skråbånd sateng 18 mm sort', [...gode, ...darlige])
+    expect(valg).toEqual({ utfall: 'flereTreff', kandidater: gode })
+  })
+
+  it('«klar vinner»-regelen er uendret når kandidatene faktisk er gode', () => {
+    // Begge kandidater klarer terskelen (1,0 og ~0,71) — den klare vinneren skal
+    // fortsatt slå gjennom, akkurat som før filtreringen ble lagt til.
+    const valg = velgKandidat('Blank sateng sort', [
+      { url: 'a', navn: 'Blank sateng sort' },
+      { url: 'b', navn: 'Blank sateng sort petrol' },
+    ])
+    expect(valg).toEqual({ utfall: 'valgt', kandidat: { url: 'a', navn: 'Blank sateng sort' } })
+  })
+})
+
+describe('byggProduktFraLagerVare', () => {
+  const stoffVare = {
+    navn: 'Blank sateng sort', kategori: 'Stoff' as const,
+    materiale: 'Acetat: 100%', produktUrl: 'https://www.selfmade.com/nb-no/blank-sateng-sort-7043/',
+    produktnummer: '7043', mengde: '0,3 m',
+  }
+
+  it('mengde satt på den lagrede varen → metervare', () => {
+    const treff = byggProduktFraLagerVare(stoffVare, '7043')
+    expect(treff?.enhetsfelt).toBe('mengde')
+  })
+
+  it('antall satt på den lagrede varen → stykkvare', () => {
+    const tilbehor = { navn: 'Knapp', kategori: 'Tilbehør' as const, antall: '3' }
+    const treff = byggProduktFraLagerVare(tilbehor, '123')
+    expect(treff?.enhetsfelt).toBe('antall')
+  })
+
+  it('verken mengde eller antall satt → null, altså fall tilbake til nettoppslag', () => {
+    const utenEnhet = { navn: 'Noe', kategori: 'Utstyr' as const }
+    expect(byggProduktFraLagerVare(utenEnhet, '999')).toBeNull()
+  })
+
+  it('bygger IKKE inn betalt pris, kjøpsdato eller bilagsnummer fra den lagrede varen', () => {
+    const treff = byggProduktFraLagerVare(stoffVare, '7043')
+    expect(treff).not.toHaveProperty('betaltPris')
+    expect(treff).not.toHaveProperty('kjopsdato')
+    expect(treff).not.toHaveProperty('bilagsnummer')
+  })
+
+  it('sidenummer faller tilbake til søkenøkkelen hvis varen selv mangler produktnummer', () => {
+    const utenNummer = { navn: 'Noe', kategori: 'Stoff' as const, mengde: '1 m' }
+    expect(byggProduktFraLagerVare(utenNummer, '555')?.sidenummer).toBe('555')
   })
 })
 

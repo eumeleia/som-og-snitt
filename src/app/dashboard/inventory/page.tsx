@@ -9,7 +9,7 @@ import { RecipePicker, type PickerRecipe } from '../_shared/RecipePicker'
 import { ProjectPicker, type PickerProject } from '../_shared/ProjectPicker'
 import { supabase } from '@/lib/supabase'
 import { deepClone } from '@/lib/deep-clone'
-import { unikeProduktnumre, formaterMengdeAntall, type Kandidat } from '@/lib/vareoppslag'
+import { unikeProduktnumre, formaterMengdeAntall, byggProduktFraLagerVare, type Kandidat } from '@/lib/vareoppslag'
 import {
   byggKvitteringsfilnavn, beregnMaalstorrelse, velgKvitteringsstrategi, VERCEL_PAYLOAD_GRENSE_MB,
 } from '@/lib/kvittering'
@@ -708,10 +708,13 @@ interface ProduktTreff {
   variantHale:    string | null
 }
 
+// kilde skiller UI-visningen av HVOR et treff kom fra — 'lager' (fantes fra før, ingen
+// nettkall gjort) og 'kvittering' (lagt inn med det kvitteringen selv oppgir, heller
+// ingen nettkall) skal begge merkes tydelig, i motsetning til et ekte selfmade.com-treff.
 type RadTilstand =
   | { fase: 'venter' }
   | { fase: 'slaarOpp' }
-  | { fase: 'funnet';      produkt: ProduktTreff }
+  | { fase: 'funnet';      produkt: ProduktTreff; kilde: 'selfmade' | 'lager' | 'kvittering' }
   | { fase: 'flereTreff';  kandidater: Kandidat[] }
   | { fase: 'ikkeFunnet' }
   | { fase: 'feil';        melding: string }
@@ -779,13 +782,26 @@ async function slaOppVare(produktnummer: string, kvitteringsnavn: string, valgtU
       body: JSON.stringify({ produktnummer, kvitteringsnavn, valgtUrl }),
     })
     const j = await parseJsonEllerFeil(res, 'Oppslag feilet')
-    if (j.tilstand === 'funnet')     return { fase: 'funnet', produkt: j.produkt }
+    if (j.tilstand === 'funnet')     return { fase: 'funnet', produkt: j.produkt, kilde: 'selfmade' }
     if (j.tilstand === 'flereTreff') return { fase: 'flereTreff', kandidater: j.kandidater }
     if (j.tilstand === 'ikkeFunnet') return { fase: 'ikkeFunnet' }
     return { fase: 'feil', melding: j.melding ?? 'Oppslag feilet' }
   } catch (err) {
     return { fase: 'feil', melding: err instanceof Error ? err.message : 'Oppslag feilet' }
   }
+}
+
+// Finner den nyeste lagerraden med samme produktnummer og bygger et treff av DEN, uten
+// nettkall — ca. 90 % av API-kostnaden på en kvittering er oppslag mot selfmade.com, og
+// de fleste linjene er varer som allerede finnes i lageret. byggProduktFraLagerVare
+// returnerer null når enheten (mengde/antall) ikke kan avgjøres fra den lagrede varen;
+// da faller kalleren tilbake til vanlig nettoppslag.
+function finnProduktFraLager(produktnummer: string, eksisterendeVarer: InventoryItem[]): ProduktTreff | null {
+  const treff = eksisterendeVarer
+    .filter(v => v.data.produktnummer === produktnummer)
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0]
+  if (!treff) return null
+  return byggProduktFraLagerVare(treff.data, produktnummer)
 }
 
 function byggInventoryDataFraKvittering(
@@ -822,6 +838,32 @@ function byggInventoryDataFraKvittering(
   return { ...base, utstyrstype: produkt.utstyrstype || '', detaljer: produkt.materiale || '' }
 }
 
+// Delt av ikkeFunnet- og flereTreff-radene — begge trenger samme «legg inn uten oppslag»-vei.
+function LeggInnFraKvitteringKnapp({ kategori, onKategoriChange, onLeggInn }: {
+  kategori: Kategori | undefined
+  onKategoriChange: (k: Kategori) => void
+  onLeggInn: () => void
+}) {
+  return (
+    <div className="flex gap-1.5 items-center">
+      <select
+        className="text-xs border border-stone-200 rounded-lg px-1.5 py-1"
+        value={kategori ?? ''}
+        onChange={e => onKategoriChange(e.target.value as Kategori)}
+      >
+        <option value="" disabled>Kategori…</option>
+        {KATEGORIER.map(k => <option key={k} value={k}>{k}</option>)}
+      </select>
+      <button
+        onClick={onLeggInn}
+        disabled={!kategori}
+        className="text-xs px-2.5 py-1 border border-stone-300 text-stone-600 rounded-lg hover:bg-stone-50 disabled:opacity-40 whitespace-nowrap transition-colors">
+        Legg inn fra kvitteringen
+      </button>
+    </div>
+  )
+}
+
 function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
   onClose: () => void
   eksisterendeVarer: InventoryItem[]
@@ -838,6 +880,7 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
   const [valgteRader, setValgteRader]     = useState<Set<number>>(new Set())
   const [manuellUrl, setManuellUrl]       = useState<Record<number, string>>({})
   const [manuellLaster, setManuellLaster] = useState<Record<number, boolean>>({})
+  const [manuellKategori, setManuellKategori] = useState<Record<number, Kategori>>({})
   const [bilagBekreftet, setBilagBekreftet] = useState(false)
   const [importerer, setImporterer]       = useState(false)
   const [importMelding, setImportMelding] = useState('')
@@ -864,7 +907,10 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
       const navn = svar.linjer[indekser[0]]?.navn ?? ''
 
       setRadTilstander(prev => { const neste = { ...prev }; indekser.forEach(idx => { neste[idx] = { fase: 'slaarOpp' } }); return neste })
-      const tilstand = await slaOppVare(produktnummer, navn)
+      const fraLager = finnProduktFraLager(produktnummer, eksisterendeVarer)
+      const tilstand: RadTilstand = fraLager
+        ? { fase: 'funnet', produkt: fraLager, kilde: 'lager' }
+        : await slaOppVare(produktnummer, navn)
       setRadTilstander(prev => { const neste = { ...prev }; indekser.forEach(idx => { neste[idx] = tilstand }); return neste })
 
       if (tilstand.fase === 'funnet' && !erProduktnummerDuplikat(produktnummer)) {
@@ -913,13 +959,28 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
         krymp: fabric.krymp, sertifisering: fabric.sertifisering, bilde: fabric.bilde,
         enhetsfelt: 'mengde', sidenummer: resultat?.linjer[i]?.produktnummer ?? '', variantHale: null,
       }
-      setRadTilstander(prev => ({ ...prev, [i]: { fase: 'funnet', produkt } }))
+      setRadTilstander(prev => ({ ...prev, [i]: { fase: 'funnet', produkt, kilde: 'selfmade' } }))
       setValgteRader(prev => new Set(prev).add(i))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Henting feilet')
     } finally {
       setManuellLaster(prev => ({ ...prev, [i]: false }))
     }
+  }
+
+  // Ingen URL å slå opp finnes for et stoff som er tatt av butikken — legg varen inn med
+  // det kvitteringen selv oppgir, uten nettkall. Kategorien vet kvitteringen ingenting
+  // om (gjettes ALDRI fra navnet), derfor krever den et eksplisitt valg per rad.
+  function leggInnFraKvittering(i: number, kategori: Kategori) {
+    const linje = resultat?.linjer[i]
+    if (!linje) return
+    const produkt: ProduktTreff = {
+      url: '', navn: linje.navn, kategori,
+      enhetsfelt: kategori === 'Stoff' ? 'mengde' : 'antall',
+      sidenummer: linje.produktnummer, variantHale: null,
+    }
+    setRadTilstander(prev => ({ ...prev, [i]: { fase: 'funnet', produkt, kilde: 'kvittering' } }))
+    setValgteRader(prev => new Set(prev).add(i))
   }
 
   function toggleRad(i: number) {
@@ -1121,6 +1182,12 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
                                   {tilstand.produkt.underkategori ? ` · ${tilstand.produkt.underkategori}` : ''}
                                   {tilstand.produkt.utstyrstype ? ` · ${tilstand.produkt.utstyrstype}` : ''}
                                 </p>
+                                {tilstand.kilde === 'lager' && (
+                                  <p className="text-xs text-sky-600 mt-0.5">Fra lageret — ikke slått opp på nett</p>
+                                )}
+                                {tilstand.kilde === 'kvittering' && (
+                                  <p className="text-xs text-sky-600 mt-0.5">Lagt inn fra kvitteringen — ikke slått opp mot Selfmade</p>
+                                )}
                                 {duplikat && (
                                   <p className="text-xs text-amber-600 mt-0.5">
                                     Finnes fra før i lageret (nummer {l.produktnummer}) — huk av for å legge til likevel.
@@ -1128,28 +1195,42 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
                                 )}
                               </div>
                             ) : tilstand.fase === 'flereTreff' ? (
-                              <select
-                                className="text-xs border border-stone-200 rounded-lg px-2 py-1 w-full max-w-xs"
-                                defaultValue=""
-                                onChange={e => { if (e.target.value) velgKandidatForRad(i, l.produktnummer, l.navn, e.target.value) }}
-                              >
-                                <option value="" disabled>Flere treff — velg riktig vare…</option>
-                                {tilstand.kandidater.map(k => <option key={k.url} value={k.url}>{k.navn}</option>)}
-                              </select>
-                            ) : tilstand.fase === 'ikkeFunnet' ? (
-                              <div className="flex gap-1.5">
-                                <input
-                                  type="text" placeholder="Lim inn produkt-URL…"
-                                  className="text-xs border border-stone-200 rounded-lg px-2 py-1 flex-1 min-w-0"
-                                  value={manuellUrl[i] ?? ''}
-                                  onChange={e => setManuellUrl(prev => ({ ...prev, [i]: e.target.value }))}
+                              <div className="space-y-1.5">
+                                <select
+                                  className="text-xs border border-stone-200 rounded-lg px-2 py-1 w-full max-w-xs"
+                                  defaultValue=""
+                                  onChange={e => { if (e.target.value) velgKandidatForRad(i, l.produktnummer, l.navn, e.target.value) }}
+                                >
+                                  <option value="" disabled>Flere treff — velg riktig vare…</option>
+                                  {tilstand.kandidater.map(k => <option key={k.url} value={k.url}>{k.navn}</option>)}
+                                </select>
+                                <LeggInnFraKvitteringKnapp
+                                  kategori={manuellKategori[i]}
+                                  onKategoriChange={k => setManuellKategori(prev => ({ ...prev, [i]: k }))}
+                                  onLeggInn={() => { const k = manuellKategori[i]; if (k) leggInnFraKvittering(i, k) }}
                                 />
-                                <button
-                                  onClick={() => hentManuelt(i, manuellUrl[i] ?? '')}
-                                  disabled={!manuellUrl[i]?.trim() || manuellLaster[i]}
-                                  className="text-xs px-2.5 py-1 bg-stone-700 text-white rounded-lg disabled:opacity-40 whitespace-nowrap">
-                                  {manuellLaster[i] ? 'Henter…' : 'Hent'}
-                                </button>
+                              </div>
+                            ) : tilstand.fase === 'ikkeFunnet' ? (
+                              <div className="space-y-1.5">
+                                <div className="flex gap-1.5">
+                                  <input
+                                    type="text" placeholder="Lim inn produkt-URL…"
+                                    className="text-xs border border-stone-200 rounded-lg px-2 py-1 flex-1 min-w-0"
+                                    value={manuellUrl[i] ?? ''}
+                                    onChange={e => setManuellUrl(prev => ({ ...prev, [i]: e.target.value }))}
+                                  />
+                                  <button
+                                    onClick={() => hentManuelt(i, manuellUrl[i] ?? '')}
+                                    disabled={!manuellUrl[i]?.trim() || manuellLaster[i]}
+                                    className="text-xs px-2.5 py-1 bg-stone-700 text-white rounded-lg disabled:opacity-40 whitespace-nowrap">
+                                    {manuellLaster[i] ? 'Henter…' : 'Hent'}
+                                  </button>
+                                </div>
+                                <LeggInnFraKvitteringKnapp
+                                  kategori={manuellKategori[i]}
+                                  onKategoriChange={k => setManuellKategori(prev => ({ ...prev, [i]: k }))}
+                                  onLeggInn={() => { const k = manuellKategori[i]; if (k) leggInnFraKvittering(i, k) }}
+                                />
                               </div>
                             ) : (
                               <span className="text-xs text-red-600">{tilstand.melding}</span>
