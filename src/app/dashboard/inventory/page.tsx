@@ -1370,6 +1370,10 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
   }
 
   const d         = form
+  let produktLenke = d.produktUrl
+  if (!produktLenke && d.kilde) {
+    try { new URL(d.kilde); produktLenke = d.kilde } catch { /* kilde er ikke en URL */ }
+  }
   const isStoff    = d.kategori === 'Stoff'
   const isTilbehor = d.kategori === 'Tilbehør'
   const isUtstyr   = d.kategori === 'Utstyr'
@@ -1765,6 +1769,34 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
           <p className="text-xs text-stone-400">
             {isStoff ? 'Skriv inn URL for å hente stoff-detaljer automatisk' : 'Skriv inn URL for å hente navn og bilde automatisk'}
           </p>
+        </div>
+
+        {/* Produkt — fra kvitteringsimport/etterfylling. produktUrl vises kun som lenke
+            her; kilde (over) er allerede redigeringsstedet for URL-en, så det finnes ikke
+            to felt som kan komme i utakt. */}
+        <SectionHeading>Produkt</SectionHeading>
+        <div className="space-y-5">
+          <div>
+            <label className={labelCls}>Produktnummer</label>
+            <input className={inputCls} value={d.produktnummer ?? ''}
+              onChange={e => upd({ produktnummer: e.target.value })}
+              placeholder="F.eks. 502164" />
+          </div>
+          <div>
+            <label className={labelCls}>Betalt pris</label>
+            <input className={inputCls} value={d.betaltPris ?? ''}
+              onChange={e => upd({ betaltPris: e.target.value })}
+              placeholder="F.eks. 142,56 kr" />
+          </div>
+          {produktLenke && (
+            <a href={produktLenke} target="_blank" rel="noopener noreferrer"
+              className="text-sm text-stone-500 hover:text-stone-700 underline underline-offset-2 inline-block">
+              Åpne produktsiden
+            </a>
+          )}
+          {d.bilagsnummer && (
+            <p className="text-xs text-stone-400">Bilagsnummer: {d.bilagsnummer}</p>
+          )}
         </div>
 
         {/* 7. Tenkt til */}
