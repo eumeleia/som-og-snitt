@@ -10,6 +10,9 @@ import { supabase } from '@/lib/supabase'
 import { useHistoryVisning } from '../_shared/useHistoryVisning'
 import { deepClone } from '@/lib/deep-clone'
 import { hentTekstFraSide } from '@/lib/pdf-text'
+import {
+  hentArbeidskopi, slettArbeidskopi, annotasjonerSomTekst, NOTAT_OVERSKRIFT,
+} from '@/lib/arbeidskopi'
 import { RecipePicker, type PickerRecipe } from '@/app/dashboard/_shared/RecipePicker'
 import {
   DndContext, closestCenter, PointerSensor, TouchSensor,
@@ -1605,6 +1608,10 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
   const [showGalleryPicker, setShowGalleryPicker] = useState(false)
   const [showPdfViewer, setShowPdfViewer]         = useState<PdfItem | null>(null)
   const [lastPdfPages, setLastPdfPages]           = useState<Record<string, number>>({})
+  const [arbeidskopiStatus, setArbeidskopiStatus] = useState('')
+  const [forrigeNotater, setForrigeNotater]       = useState<{ annotasjoner: PdfAnnotation[]; pdfs: PdfItem[] } | null>(null)
+  const henterRef = useRef<Set<string>>(new Set())
+  const [visFullfortDialog, setVisFullfortDialog] = useState(false)
   const [toast, setToast]                   = useState('')
   const [showRecipePicker, setShowRecipePicker] = useState(false)
   const [pickerRecipes, setPickerRecipes]   = useState<PickerRecipe[]>([])
@@ -1666,6 +1673,145 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
       })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.recipeId])
+
+  // ── Arbeidskopier ───────────────────────────────────────────────────────────
+  // PDF-leseren kjører i nettleseren og må ha filen på en adresse den selv kan
+  // hente bytes fra. Drive har ingen slik. Se src/lib/arbeidskopi.ts for hvorfor
+  // det ikke finnes noen vei utenom en kopi.
+
+  function oppdaterPdf(pdfId: string, patch: Partial<PdfItem>) {
+    setForm(f => {
+      const next = { ...f, pdfs: f.pdfs.map(p => p.id === pdfId ? { ...p, ...patch } : p) }
+      pendingRef.current = next
+      return next
+    })
+  }
+
+  async function hentInnEnPdf(pdfId: string) {
+    const pdf = pendingRef.current.pdfs.find(p => p.id === pdfId)
+    if (!pdf) return
+    setArbeidskopiStatus(`Henter «${pdf.displayName?.trim() || pdf.name}» fra Drive…`)
+    try {
+      const oppdatert = await hentArbeidskopi(pdf)
+      oppdaterPdf(pdfId, { url: oppdatert.url, storage: oppdatert.storage })
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Kunne ikke hente fra Drive')
+    } finally {
+      setArbeidskopiStatus('')
+    }
+  }
+
+  async function frigjorEnPdf(pdfId: string) {
+    const pdf = pendingRef.current.pdfs.find(p => p.id === pdfId)
+    if (!pdf) return
+    setArbeidskopiStatus('Frigjør plass…')
+    try {
+      const oppdatert = await slettArbeidskopi(pdf)
+      oppdaterPdf(pdfId, { url: oppdatert.url, storage: oppdatert.storage })
+      // Ut av henterRef, ellers ville et prosjekt som settes tilbake til Aktiv
+      // aldri hentet denne inn igjen i samme økt.
+      henterRef.current.delete(pdfId)
+      showToast('Arbeidskopien er slettet. Originalen ligger i Drive.')
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Kunne ikke slette arbeidskopien')
+    } finally {
+      setArbeidskopiStatus('')
+    }
+  }
+
+  async function frigjorAlle() {
+    const koe = pendingRef.current.pdfs.filter(p => p.storage === 'supabase' && p.driveFileId)
+    let frigjort = 0
+    for (let i = 0; i < koe.length; i++) {
+      setArbeidskopiStatus(`Frigjør ${i + 1} av ${koe.length}…`)
+      try {
+        const oppdatert = await slettArbeidskopi(koe[i])
+        oppdaterPdf(koe[i].id, { url: oppdatert.url, storage: oppdatert.storage })
+        henterRef.current.delete(koe[i].id)
+        frigjort++
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : 'Kunne ikke frigjøre plass')
+      }
+    }
+    setArbeidskopiStatus('')
+    setVisFullfortDialog(false)
+    if (frigjort > 0) showToast(`${frigjort} arbeidskopi${frigjort === 1 ? '' : 'er'} slettet. Originalene ligger i Drive.`)
+  }
+
+  // Aktivt prosjekt betyr at PDF-ene skal kunne åpnes i leseren. Hentes én om
+  // gangen, så en stor fil ikke holder de andre igjen — og bare ett forsøk per
+  // fil per montering (henterRef), ellers ville hver oppdatering av form.pdfs
+  // starte runden på nytt.
+  useEffect(() => {
+    if (form.status !== 'Aktiv') return
+    const koe = form.pdfs.filter(p => p.storage === 'drive' && p.driveFileId && !henterRef.current.has(p.id))
+    if (koe.length === 0) return
+    koe.forEach(p => henterRef.current.add(p.id))
+    let avbrutt = false
+    void (async () => {
+      for (let i = 0; i < koe.length; i++) {
+        if (avbrutt) return
+        setArbeidskopiStatus(`Henter PDF ${i + 1} av ${koe.length} fra Drive…`)
+        try {
+          const oppdatert = await hentArbeidskopi(koe[i])
+          if (avbrutt) return
+          oppdaterPdf(koe[i].id, { url: oppdatert.url, storage: oppdatert.storage })
+        } catch (err) {
+          if (!avbrutt) showToast(err instanceof Error ? err.message : 'Kunne ikke hente PDF fra Drive')
+        }
+      }
+      if (!avbrutt) setArbeidskopiStatus('')
+    })()
+    return () => { avbrutt = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.status, form.pdfs])
+
+  // Merknader hører til oppskriften, ikke prosjektet: syr du samme mønster igjen,
+  // er «her blir kanten smal» verdt mer andre gang enn første. Tilbys bare når
+  // prosjektet ikke har egne merknader ennå, så ingenting kan overskrives.
+  useEffect(() => {
+    const rid = form.recipeId ?? ''
+    if (!rid || (form.pdfAnnotations ?? []).length > 0) return
+    let avbrutt = false
+    void supabase.from('projects').select('*').eq('data->>recipeId', rid)
+      .order('created_at', { ascending: false })
+      .then(({ data, error }) => {
+        if (avbrutt || error || !data) return
+        for (const p of (data as Project[])) {
+          if (p.id === projectIdRef.current) continue
+          const ann = p.data.pdfAnnotations ?? []
+          if (ann.length > 0) { setForrigeNotater({ annotasjoner: ann, pdfs: p.data.pdfs ?? [] }); return }
+        }
+      })
+    return () => { avbrutt = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.recipeId, (form.pdfAnnotations ?? []).length])
+
+  // Merknadene peker på pdfId, som er unik per prosjekt — de må festes på nytt via
+  // PDF-ens navn. Finnes ikke navnet her, hoppes merknaden over og telles, i stedet
+  // for å bli liggende usynlig på en id som ikke finnes.
+  function taInnForrigeNotater() {
+    if (!forrigeNotater) return
+    const navnForGammelId = new Map(forrigeNotater.pdfs.map(p => [p.id, p.displayName?.trim() || p.name]))
+    const idForNavn = new Map(form.pdfs.map(p => [p.displayName?.trim() || p.name, p.id]))
+    const flyttet: PdfAnnotation[] = []
+    let uten = 0
+    for (const a of forrigeNotater.annotasjoner) {
+      const navn = navnForGammelId.get(a.pdfId)
+      const nyId = navn ? idForNavn.get(navn) : undefined
+      if (!nyId) { uten++; continue }
+      flyttet.push({ ...a, id: uid(), pdfId: nyId })
+    }
+    setForrigeNotater(null)
+    if (flyttet.length === 0) {
+      showToast('Fant ingen PDF-er med samme navn å feste merknadene på.')
+      return
+    }
+    upd({ pdfAnnotations: [...(form.pdfAnnotations ?? []), ...flyttet] })
+    showToast(uten > 0
+      ? `${flyttet.length} merknader hentet. ${uten} hørte til PDF-er som ikke finnes her.`
+      : `${flyttet.length} merknader hentet inn.`)
+  }
 
   function upd(patch: Partial<ProjectData>) {
     setForm(f => {
@@ -2666,6 +2812,27 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
               )}
             </div>
           </div>
+          {arbeidskopiStatus && (
+            <p className="text-xs text-stone-500 mb-2">{arbeidskopiStatus}</p>
+          )}
+          {forrigeNotater && (form.pdfAnnotations ?? []).length === 0 && (
+            <div className="mb-3 p-3 rounded-xl bg-amber-50 border border-amber-200">
+              <p className="text-xs text-stone-600 mb-2">
+                Du har {forrigeNotater.annotasjoner.length} merknad{forrigeNotater.annotasjoner.length === 1 ? '' : 'er'}
+                {' '}fra et tidligere prosjekt med samme oppskrift.
+              </p>
+              <div className="flex gap-2">
+                <button onClick={taInnForrigeNotater}
+                  className="text-xs px-2.5 py-1.5 rounded-lg bg-stone-800 text-white hover:bg-stone-700 transition-colors">
+                  Hent dem inn
+                </button>
+                <button onClick={() => setForrigeNotater(null)}
+                  className="text-xs px-2.5 py-1.5 text-stone-500 hover:text-stone-700 transition-colors">
+                  Nei takk
+                </button>
+              </div>
+            </div>
+          )}
           {form.pdfs.length > 0 ? (
             <ul className="divide-y divide-stone-100">
               {form.pdfs.map(pdf => {
@@ -2757,6 +2924,18 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
                             <a href={pdf.url} target="_blank" rel="noopener noreferrer"
                               className="text-xs text-sky-500 hover:underline">Åpne ↗</a>
                           )}
+                          {pdf.driveFileId && (isDrive ? (
+                            <button onClick={() => hentInnEnPdf(pdf.id)} disabled={!!arbeidskopiStatus}
+                              className="text-xs text-emerald-600 hover:underline disabled:opacity-40">
+                              Hent inn
+                            </button>
+                          ) : (
+                            <button onClick={() => frigjorEnPdf(pdf.id)} disabled={!!arbeidskopiStatus}
+                              className="text-xs text-stone-400 hover:text-stone-600 hover:underline disabled:opacity-40"
+                              title="Sletter arbeidskopien i Supabase. Originalen blir liggende i Drive.">
+                              Frigjør plass
+                            </button>
+                          ))}
                           <select value={typeVal}
                             onChange={e => updatePdfType(pdf.id, e.target.value as PdfType)}
                             className="text-xs text-stone-400 bg-transparent border-none outline-none cursor-pointer hover:text-stone-600 transition-colors">
@@ -2810,7 +2989,27 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
         {form.status !== 'Fullført' && (
           <div className="pt-4 border-t border-stone-100">
             <button
-              onClick={() => upd({ status: 'Fullført', completedDate: toDay() })}
+              onClick={() => {
+                // Merknadene blir uansett liggende i pdfAnnotations — dette gjør dem
+                // lesbare uten å åpne PDF-leseren. Overskriften brukes som markør så
+                // en ny fullføring ikke skriver dem inn en gang til.
+                const alleredeSkrevet = (form.notes ?? '').includes(NOTAT_OVERSKRIFT)
+                const tekst = alleredeSkrevet ? '' : annotasjonerSomTekst(
+                  form.pdfAnnotations ?? [],
+                  id => {
+                    const p = form.pdfs.find(x => x.id === id)
+                    return p?.displayName?.trim() || p?.name || 'PDF'
+                  },
+                )
+                const notes = tekst
+                  ? `${(form.notes ?? '').trimEnd()}${(form.notes ?? '').trim() ? '\n\n' : ''}${NOTAT_OVERSKRIFT}\n${tekst}`
+                  : form.notes
+                upd({ status: 'Fullført', completedDate: toDay(), notes })
+                // Dialogen vises bare når det faktisk finnes noe å frigjøre.
+                if (form.pdfs.some(p => p.storage === 'supabase' && p.driveFileId)) {
+                  setVisFullfortDialog(true)
+                }
+              }}
               className="w-full py-3 rounded-xl bg-sky-50 border border-sky-200 text-sky-700 text-sm font-medium hover:bg-sky-100 transition-colors flex items-center justify-center gap-2"
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2821,6 +3020,36 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
           </div>
         )}
       </div>
+
+      {visFullfortDialog && (() => {
+        const antall = form.pdfs.filter(p => p.storage === 'supabase' && p.driveFileId).length
+        return (
+          <div className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => !arbeidskopiStatus && setVisFullfortDialog(false)}>
+            <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-xl" onClick={e => e.stopPropagation()}>
+              <h3 className="font-serif text-xl text-stone-800 mb-2">Gratulerer med fullført prosjekt</h3>
+              <p className="text-sm text-stone-600 mb-2">
+                {antall} PDF{antall === 1 ? '' : '-er'} ligger fortsatt som arbeidskopi. Vil du frigjøre plassen?
+              </p>
+              <p className="text-xs text-stone-400 mb-5">
+                Anbefalt. Originalene blir liggende i Drive og merknadene dine står urørt —
+                filene kan hentes inn igjen når du vil.
+              </p>
+              {arbeidskopiStatus && <p className="text-xs text-stone-500 mb-3">{arbeidskopiStatus}</p>}
+              <div className="flex gap-2">
+                <button onClick={frigjorAlle} disabled={!!arbeidskopiStatus}
+                  className="flex-1 py-2.5 rounded-xl bg-stone-800 text-white text-sm hover:bg-stone-700 transition-colors disabled:opacity-40">
+                  Ja, frigjør plass
+                </button>
+                <button onClick={() => setVisFullfortDialog(false)} disabled={!!arbeidskopiStatus}
+                  className="flex-1 py-2.5 rounded-xl border border-stone-200 text-stone-600 text-sm hover:bg-stone-50 transition-colors disabled:opacity-40">
+                  Nei takk
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {showImgModal && <ImageUploadModal onAdd={addImage} onClose={() => setShowImgModal(false)} />}
 

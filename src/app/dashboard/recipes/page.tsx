@@ -12,6 +12,7 @@ import { deepClone } from '@/lib/deep-clone'
 import { describeError, type ErrorDetails } from '@/lib/error-details'
 import { ErrorDetailsView } from '@/components/ErrorDetailsView'
 import { hentTekstFraSide } from '@/lib/pdf-text'
+import { hentArbeidskopi, slettArbeidskopi } from '@/lib/arbeidskopi'
 import {
   DndContext, closestCenter, PointerSensor, TouchSensor,
   useSensor, useSensors, type DragEndEvent,
@@ -714,14 +715,11 @@ function NewRecipeModal({ onCreate, onClose }: {
                 // Annet: Drive only (ingen Supabase-kopi)
                 return { id: uid(), name: file.name, url: webViewLink, type, source: 'upload' as const, storage: 'drive' as const, driveFileId: fileId, driveLink: webViewLink }
               }
-              // Oppskrift: Drive arkiv + Supabase arbeidskopi
-              const filename = `recipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.pdf`
-              const { error: uploadErr } = await supabase.storage
-                .from('project-images')
-                .upload(filename, file, { contentType: 'application/pdf' })
-              if (uploadErr) throw new Error(`Opplasting av «${file.name}» feilet`)
-              const { data: urlData } = supabase.storage.from('project-images').getPublicUrl(filename)
-              return { id: uid(), name: file.name, url: urlData.publicUrl, type, source: 'upload' as const, storage: 'supabase' as const, driveFileId: fileId, driveLink: webViewLink }
+              // Oppskrift: Drive only, som mønstrene. Den faste Supabase-kopien er
+              // fjernet — 41 slike kopier var 241 MB, en tredel av hele filkvoten.
+              // En kopi opprettes nå bare mens et prosjekt er aktivt, og slettes når
+              // det fullføres. Se src/lib/arbeidskopi.ts.
+              return { id: uid(), name: file.name, url: webViewLink, type, source: 'upload' as const, storage: 'drive' as const, driveFileId: fileId, driveLink: webViewLink }
             }
             driveGrunn = driveResult.grunn
           }
@@ -1681,22 +1679,41 @@ function RecipeDetail({ recipe, onBack, onSaved, onDelete }: {
     setSizesProgress('')
     try {
       if (!pdfTextCacheRef.current[oppskriftPdf.id]) {
-        let data: Uint8Array
-        if (oppskriftPdf.source === 'upload') {
-          const res = await fetch(oppskriftPdf.url)
-          if (!res.ok) throw new Error(`HTTP ${res.status}`)
-          data = new Uint8Array(await res.arrayBuffer())
-        } else {
-          const base64 = await apiFetchPdf(oppskriftPdf.url)
-          const binary = atob(base64)
-          data = new Uint8Array(binary.length)
-          for (let i = 0; i < binary.length; i++) data[i] = binary.charCodeAt(i)
+        // Ligger oppskriften bare i Drive, må den innom Supabase for å kunne leses
+        // av nettleseren — se src/lib/arbeidskopi.ts. Kopien slettes igjen så snart
+        // teksten er hentet ut, så en størrelsesavlesning ikke legger igjen plass.
+        // Teksten mellomlagres uansett, så dette skjer én gang per oppskrift.
+        let midlertidig: typeof oppskriftPdf | null = null
+        try {
+          let lesbar = oppskriftPdf
+          if (oppskriftPdf.storage === 'drive' && oppskriftPdf.driveFileId) {
+            setSizesProgress('Henter PDF fra Drive…')
+            lesbar = await hentArbeidskopi(oppskriftPdf)
+            midlertidig = lesbar
+          }
+          let data: Uint8Array
+          if ((lesbar.source ?? 'link') === 'upload' && lesbar.storage !== 'drive') {
+            const res = await fetch(lesbar.url)
+            if (!res.ok) throw new Error(`HTTP ${res.status}`)
+            data = new Uint8Array(await res.arrayBuffer())
+          } else {
+            const base64 = await apiFetchPdf(lesbar.url)
+            const binary = atob(base64)
+            data = new Uint8Array(binary.length)
+            for (let i = 0; i < binary.length; i++) data[i] = binary.charCodeAt(i)
+          }
+          const text = await extractPdfText(data, (page, total) =>
+            setSizesProgress(`Leser PDF side ${page} av ${total}…`)
+          )
+          if (!text.trim()) throw new Error('PDF-en inneholder ingen lesbar tekst (kanskje skannet?)')
+          pdfTextCacheRef.current[oppskriftPdf.id] = text.slice(0, 50000)
+        } finally {
+          if (midlertidig) {
+            // Feiler oppryddingen, blir kopien liggende til neste fullføring rydder
+            // den — det skal ikke velte selve avlesningen.
+            try { await slettArbeidskopi(midlertidig) } catch { /* ryddes senere */ }
+          }
         }
-        const text = await extractPdfText(data, (page, total) =>
-          setSizesProgress(`Leser PDF side ${page} av ${total}…`)
-        )
-        if (!text.trim()) throw new Error('PDF-en inneholder ingen lesbar tekst (kanskje skannet?)')
-        pdfTextCacheRef.current[oppskriftPdf.id] = text.slice(0, 50000)
       }
       setSizesProgress('Analyserer størrelser…')
       const text = pdfTextCacheRef.current[oppskriftPdf.id]
