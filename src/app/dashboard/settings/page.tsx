@@ -2,7 +2,7 @@
 
 import { useState, useEffect, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
-import { supabase } from '@/lib/supabase'
+import { supabase, erSupabaseStorageUrl } from '@/lib/supabase'
 
 interface DriveStatus { connected: boolean }
 
@@ -114,10 +114,18 @@ async function slaOppKunNummer(kilde: string): Promise<BackfillTilstand> {
   }
 }
 
+// Delt av «Etterfyll produktnummer» og «Etterfyll produktbilder» — begge er samme
+// tørrkjør-så-skriv-rapport over navngitte lagerrad-grupper, bare med ulik logikk for
+// hva som avgjør gruppene og hva som skrives.
+interface RapportRad {
+  id:   string
+  data: { navn?: string; kategori?: string; [key: string]: unknown }
+}
+
 function BackfillRadListe({ tittel, rader, ekstra }: {
   tittel: string
-  rader: BackfillItem[]
-  ekstra?: (rad: BackfillItem) => string
+  rader: RapportRad[]
+  ekstra?: (rad: RapportRad) => string
 }) {
   return (
     <details className="border border-stone-200 rounded-xl px-3 py-2">
@@ -189,7 +197,7 @@ function BackfillProduktnummer() {
   const bekreftetRader = gruppert ? gruppert.selfmade.filter(r => tilstander[r.id]?.fase === 'bekreftet') : []
   const uavklartCount  = gruppert ? gruppert.selfmade.filter(r => tilstander[r.id]?.fase === 'uavklart').length : 0
 
-  function tilstandTekst(rad: BackfillItem): string {
+  function tilstandTekst(rad: RapportRad): string {
     const t = tilstander[rad.id]
     if (!t) return kjorer ? 'venter…' : ''
     if (t.fase === 'slaarOpp')  return 'slår opp…'
@@ -245,6 +253,205 @@ function BackfillProduktnummer() {
             >
               {skriver ? 'Skriver…' : `Skriv til lageret (${bekreftetRader.length})`}
             </button>
+          )}
+          {skriveMelding && <p className="text-sm text-green-700">{skriveMelding}</p>}
+        </div>
+      )}
+    </section>
+  )
+}
+
+// ── Etterfyll produktbilder — ENGANGSJOBB ────────────────────────────────────
+// data.bilde på gamle lagerrader peker på selgerens egen server (typisk selfmade.com),
+// ikke på vår Supabase Storage — forsvinner produktsiden, forsvinner bildet. Har alt
+// skjedd: «Twill, navy» og «Blank sateng petrol» viser alt-tekst i lageret nå. Nye
+// importer lagrer bildet permanent selv (se lagreProduktbildePermanent i
+// inventory/page.tsx); dette henter opp resten. Fjern hele denne seksjonen (typene,
+// funksjonene og <BildeBackfill /> i SettingsContent) når jobben er kjørt og bekreftet.
+
+interface BildeBackfillItem {
+  id:   string
+  data: {
+    navn?:  string
+    kategori?: string
+    bilde?: string
+    [key: string]: unknown
+  }
+}
+
+type BildeTilstand =
+  | { fase: 'sjekker' }
+  | { fase: 'ok' }
+  | { fase: 'lagret'; url: string }
+  | { fase: 'dod'; grunn: string }
+
+interface BildeGrupper {
+  iSupabase:  BildeBackfillItem[]
+  eksternUrl: BildeBackfillItem[]
+  ingenBilde: BildeBackfillItem[]
+}
+
+function grupperForBildeBackfill(rader: BildeBackfillItem[]): BildeGrupper {
+  const iSupabase:  BildeBackfillItem[] = []
+  const eksternUrl: BildeBackfillItem[] = []
+  const ingenBilde: BildeBackfillItem[] = []
+
+  for (const rad of rader) {
+    const bilde = typeof rad.data.bilde === 'string' ? rad.data.bilde.trim() : ''
+    if (!bilde) { ingenBilde.push(rad); continue }
+    if (erSupabaseStorageUrl(bilde)) iSupabase.push(rad)
+    else eksternUrl.push(rad)
+  }
+  return { iSupabase, eksternUrl, ingenBilde }
+}
+
+// dryRun henter og validerer bildet uten å laste opp noe — tørrkjøringen skal si hvilke
+// URL-er som ikke lenger svarer FØR noe lastes opp.
+async function sjekkBilde(url: string): Promise<BildeTilstand> {
+  try {
+    const res = await fetch('/api/lagre-produktbilde', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, dryRun: true }),
+    })
+    const j = await res.json()
+    if (j.ok) return { fase: 'ok' }
+    return { fase: 'dod', grunn: typeof j.error === 'string' ? j.error : 'ukjent feil' }
+  } catch (err) {
+    return { fase: 'dod', grunn: err instanceof Error ? err.message : 'ukjent feil' }
+  }
+}
+
+async function lagreBilde(url: string): Promise<BildeTilstand> {
+  try {
+    const res = await fetch('/api/lagre-produktbilde', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    })
+    const j = await res.json()
+    if (j.ok && typeof j.url === 'string') return { fase: 'lagret', url: j.url }
+    return { fase: 'dod', grunn: typeof j.error === 'string' ? j.error : 'ukjent feil' }
+  } catch (err) {
+    return { fase: 'dod', grunn: err instanceof Error ? err.message : 'ukjent feil' }
+  }
+}
+
+function BildeBackfill() {
+  const [gruppert, setGruppert]       = useState<BildeGrupper | null>(null)
+  const [tilstander, setTilstander]   = useState<Record<string, BildeTilstand>>({})
+  const [fremdrift, setFremdrift]     = useState<{ gjort: number; totalt: number } | null>(null)
+  const [kjorer, setKjorer]           = useState(false)
+  const [feilmelding, setFeilmelding] = useState('')
+  const [skriver, setSkriver]         = useState(false)
+  const [skriveFremdrift, setSkriveFremdrift] = useState<{ gjort: number; totalt: number } | null>(null)
+  const [skrevet, setSkrevet]         = useState(false)
+  const [skriveMelding, setSkriveMelding] = useState('')
+
+  async function kjorTorrt() {
+    setKjorer(true); setFeilmelding(''); setSkriveMelding(''); setSkrevet(false); setTilstander({})
+    const { data, error } = await supabase.from('inventory').select('*')
+    if (error) {
+      setFeilmelding(error.message)
+      setKjorer(false)
+      return
+    }
+    const g = grupperForBildeBackfill((data ?? []) as BildeBackfillItem[])
+    setGruppert(g)
+    setFremdrift({ gjort: 0, totalt: g.eksternUrl.length })
+    for (let i = 0; i < g.eksternUrl.length; i++) {
+      const rad = g.eksternUrl[i]
+      setTilstander(prev => ({ ...prev, [rad.id]: { fase: 'sjekker' } }))
+      const tilstand = await sjekkBilde(rad.data.bilde ?? '')
+      setTilstander(prev => ({ ...prev, [rad.id]: tilstand }))
+      setFremdrift({ gjort: i + 1, totalt: g.eksternUrl.length })
+    }
+    setKjorer(false)
+  }
+
+  async function skrivTilLageret() {
+    if (!gruppert) return
+    const okRader = gruppert.eksternUrl.filter(r => tilstander[r.id]?.fase === 'ok')
+    setSkriver(true)
+    setSkriveFremdrift({ gjort: 0, totalt: okRader.length })
+    let antallLagret = 0
+    for (let i = 0; i < okRader.length; i++) {
+      const rad = okRader[i]
+      const resultat = await lagreBilde(rad.data.bilde ?? '')
+      if (resultat.fase === 'lagret') {
+        await supabase.from('inventory').update({ data: { ...rad.data, bilde: resultat.url } }).eq('id', rad.id)
+        antallLagret++
+      }
+      setTilstander(prev => ({ ...prev, [rad.id]: resultat }))
+      setSkriveFremdrift({ gjort: i + 1, totalt: okRader.length })
+    }
+    setSkriver(false)
+    setSkrevet(true)
+    setSkriveMelding(`Lagret ${antallLagret} ${antallLagret === 1 ? 'bilde' : 'bilder'} permanent i Supabase Storage.`)
+  }
+
+  const okRader  = gruppert ? gruppert.eksternUrl.filter(r => tilstander[r.id]?.fase === 'ok') : []
+  const dodeRader = gruppert ? gruppert.eksternUrl.filter(r => tilstander[r.id]?.fase === 'dod') : []
+
+  function tilstandTekst(rad: RapportRad): string {
+    const t = tilstander[rad.id]
+    if (!t) return kjorer ? 'venter…' : ''
+    if (t.fase === 'sjekker') return 'sjekker…'
+    if (t.fase === 'ok')      return 'svarer — kan hentes'
+    if (t.fase === 'lagret')  return 'lagret permanent'
+    return `død — ${t.grunn}`
+  }
+
+  return (
+    <section className="bg-white rounded-2xl border border-stone-100 p-5 shadow-sm space-y-4">
+      <div>
+        <h2 className="font-medium text-stone-800">Etterfyll produktbilder</h2>
+        <p className="text-sm text-stone-500 mt-0.5">
+          Engangsjobb: laster ned eksterne produktbilder og lagrer dem permanent i
+          Supabase Storage, i stedet for at lagervaren peker videre til selgerens egen
+          server. Tørrkjøringen laster ikke opp noe — den sjekker bare hvilke URL-er som
+          fortsatt svarer. «Skriv til lageret» dukker opp når rapporten står klar.
+        </p>
+      </div>
+
+      <button
+        onClick={kjorTorrt}
+        disabled={kjorer}
+        className="px-4 py-2 text-sm rounded-xl bg-stone-800 text-white hover:bg-stone-700 transition-colors disabled:opacity-40"
+      >
+        {kjorer ? 'Sjekker…' : 'Tørrkjør'}
+      </button>
+
+      {feilmelding && <p className="text-xs text-red-500">{feilmelding}</p>}
+
+      {fremdrift && kjorer && (
+        <p className="text-xs text-stone-400 inline-flex items-center gap-1.5">
+          <Spinner /> Sjekker {fremdrift.gjort} av {fremdrift.totalt}…
+        </p>
+      )}
+
+      {gruppert && !kjorer && (
+        <div className="space-y-3">
+          <p className="text-sm text-stone-600">
+            Svarer og kan hentes: {okRader.length} · Døde URL-er: {dodeRader.length} · Hoppet over:
+            allerede i Supabase {gruppert.iSupabase.length}, ingen bilde {gruppert.ingenBilde.length}
+          </p>
+
+          <BackfillRadListe tittel="Allerede i Supabase" rader={gruppert.iSupabase} />
+          <BackfillRadListe tittel="Ekstern URL" rader={gruppert.eksternUrl} ekstra={tilstandTekst} />
+          <BackfillRadListe tittel="Ingen bilde" rader={gruppert.ingenBilde} />
+
+          {okRader.length > 0 && !skrevet && (
+            <button
+              onClick={skrivTilLageret}
+              disabled={skriver}
+              className="px-4 py-2 text-sm rounded-xl border border-stone-200 text-stone-600 hover:bg-stone-50 transition-colors disabled:opacity-40"
+            >
+              {skriver ? 'Laster opp…' : `Last opp og lagre (${okRader.length})`}
+            </button>
+          )}
+          {skriver && skriveFremdrift && (
+            <p className="text-xs text-stone-400 inline-flex items-center gap-1.5">
+              <Spinner /> Laster opp {skriveFremdrift.gjort} av {skriveFremdrift.totalt}…
+            </p>
           )}
           {skriveMelding && <p className="text-sm text-green-700">{skriveMelding}</p>}
         </div>
@@ -361,6 +568,7 @@ function SettingsContent() {
       </section>
 
       <BackfillProduktnummer />
+      <BildeBackfill />
     </main>
   )
 }

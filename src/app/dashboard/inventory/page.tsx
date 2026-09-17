@@ -7,7 +7,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useHistoryVisning } from '../_shared/useHistoryVisning'
 import { RecipePicker, type PickerRecipe } from '../_shared/RecipePicker'
 import { ProjectPicker, type PickerProject } from '../_shared/ProjectPicker'
-import { supabase } from '@/lib/supabase'
+import { supabase, erSupabaseStorageUrl } from '@/lib/supabase'
 import { deepClone } from '@/lib/deep-clone'
 import {
   unikeProduktnumre, formaterMengdeAntall, byggProduktFraLagerVare, enhetsfeltFraKategori, type Kandidat,
@@ -137,6 +137,27 @@ async function apiImportFabric(url: string) {
     navn: string; materiale: string; bredde: string
     vekt: string; vask: string; bilde: string
     krymp: string; sertifisering: string
+  }
+}
+
+// Laster ned et eksternt produktbilde og lagrer det permanent i Supabase Storage, i
+// stedet for å la lagerraden peke videre til selgerens server — den kan fjerne bildet
+// når som helst («Twill, navy» og «Blank sateng petrol» viser alt-tekst i lageret i dag,
+// nettopp av den grunn). Kaster ALDRI: feiler henting eller opplasting, faller den
+// tilbake til den opprinnelige URL-en og sier fra via lagretPermanent, slik at en
+// bilde-feil aldri kan stoppe en import.
+async function lagreProduktbildePermanent(bildeUrl: string): Promise<{ url: string; lagretPermanent: boolean }> {
+  if (!bildeUrl || erSupabaseStorageUrl(bildeUrl)) return { url: bildeUrl, lagretPermanent: true }
+  try {
+    const res = await fetch('/api/lagre-produktbilde', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: bildeUrl }),
+    })
+    const j = await res.json()
+    if (j.ok && j.url) return { url: j.url, lagretPermanent: true }
+    return { url: bildeUrl, lagretPermanent: false }
+  } catch {
+    return { url: bildeUrl, lagretPermanent: false }
   }
 }
 
@@ -330,6 +351,7 @@ function NewInventoryModal({ onCreate, onClose, initialKategori = 'Stoff' }: {
     setError('')
     try {
       const result = await apiImportFabric(importUrl.trim())
+      const bilde = result.bilde ? (await lagreProduktbildePermanent(result.bilde)).url : ''
       let data: InventoryItemData
       if (kategori === 'Stoff') {
         data = {
@@ -342,7 +364,7 @@ function NewInventoryModal({ onCreate, onClose, initialKategori = 'Stoff' }: {
           vask:      result.vask      || '',
           krymp:         result.krymp         || '',
           sertifisering: result.sertifisering || '',
-          bilde:     result.bilde     || '',
+          bilde,
           kilde:     importUrl.trim(),
         }
       } else if (kategori === 'Tilbehør') {
@@ -350,7 +372,7 @@ function NewInventoryModal({ onCreate, onClose, initialKategori = 'Stoff' }: {
           ...emptyData('Tilbehør'),
           navn:          result.navn  || 'Nytt tilbehør',
           farge:         result.materiale || '',
-          bilde:         result.bilde || '',
+          bilde,
           underkategori: underkategori.trim(),
           kilde:         importUrl.trim(),
         }
@@ -359,7 +381,7 @@ function NewInventoryModal({ onCreate, onClose, initialKategori = 'Stoff' }: {
           ...emptyData('Utstyr'),
           navn:       result.navn  || 'Nytt utstyr',
           detaljer:   result.materiale || '',
-          bilde:      result.bilde || '',
+          bilde,
           utstyrstype: utstyrstype.trim(),
           kilde:      importUrl.trim(),
         }
@@ -1034,14 +1056,28 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
     if (!resultat) return
     setImporterer(true); setError('')
     try {
-      const dataListe: InventoryItemData[] = []
+      const valgte: { linje: KvitteringLinjeVisning; tilstand: RadTilstand & { fase: 'funnet' } }[] = []
       resultat.linjer.forEach((linje, i) => {
         const tilstand = radTilstander[i]
-        if (!valgteRader.has(i) || !tilstand || tilstand.fase !== 'funnet') return
-        dataListe.push(byggInventoryDataFraKvittering(linje, tilstand.produkt, resultat))
+        if (valgteRader.has(i) && tilstand?.fase === 'funnet') valgte.push({ linje, tilstand })
       })
+
+      let bildeFeil = 0
+      const dataListe = await Promise.all(valgte.map(async ({ linje, tilstand }) => {
+        let produkt = tilstand.produkt
+        if (produkt.bilde) {
+          const lagret = await lagreProduktbildePermanent(produkt.bilde)
+          produkt = { ...produkt, bilde: lagret.url }
+          if (!lagret.lagretPermanent) bildeFeil++
+        }
+        return byggInventoryDataFraKvittering(linje, produkt, resultat)
+      }))
+
       await onImporter(dataListe)
-      setImportMelding(`${dataListe.length} ${dataListe.length === 1 ? 'vare' : 'varer'} lagt til i lageret.`)
+      setImportMelding(
+        `${dataListe.length} ${dataListe.length === 1 ? 'vare' : 'varer'} lagt til i lageret.` +
+        (bildeFeil > 0 ? ` ${bildeFeil} ${bildeFeil === 1 ? 'bilde' : 'bilder'} kunne ikke lagres permanent.` : ''),
+      )
       setValgteRader(new Set())
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Import feilet')
@@ -1386,6 +1422,13 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
     try {
       const result = await apiImportFabric(trimmed)
       const d = form
+      let bilde = result.bilde || d.bilde
+      let bildeMerknad = ''
+      if (result.bilde) {
+        const lagret = await lagreProduktbildePermanent(result.bilde)
+        bilde = lagret.url
+        if (!lagret.lagretPermanent) bildeMerknad = ' Bildet kunne ikke lagres permanent.'
+      }
       if (d.kategori === 'Stoff') {
         upd({
           navn:      result.navn      || d.navn,
@@ -1393,25 +1436,25 @@ function InventoryDetail({ item, onBack, onSaved, onDelete }: {
           bredde:    result.bredde    || d.bredde,
           vekt:      result.vekt      || d.vekt,
           vask:      result.vask      || d.vask,
-          bilde:     result.bilde     || d.bilde,
+          bilde,
           kilde:     trimmed,
         })
       } else if (d.kategori === 'Tilbehør') {
         upd({
           navn:  result.navn  || d.navn,
           farge: result.materiale || d.farge,
-          bilde: result.bilde || d.bilde,
+          bilde,
           kilde: trimmed,
         })
       } else {
         upd({
           navn:    result.navn  || d.navn,
           detaljer: result.materiale || d.detaljer,
-          bilde:   result.bilde || d.bilde,
+          bilde,
           kilde:   trimmed,
         })
       }
-      setImportNote('Importert!')
+      setImportNote('Importert!' + bildeMerknad)
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Import feilet.')
     } finally {
