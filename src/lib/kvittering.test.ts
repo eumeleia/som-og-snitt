@@ -7,8 +7,10 @@ import {
   beregnMaalstorrelse,
   velgKvitteringsstrategi,
   VERCEL_PAYLOAD_GRENSE_BYTES,
+  grupperImporterteKvitteringer,
   type KvitteringLinje,
   type KvitteringRabatt,
+  type ImportertKvitteringRad,
 } from './kvittering'
 
 describe('parseKvitteringDato', () => {
@@ -130,5 +132,46 @@ describe('velgKvitteringsstrategi', () => {
 
   it('avviser når den verken kan dekodes eller er under grensa', () => {
     expect(velgKvitteringsstrategi(false, VERCEL_PAYLOAD_GRENSE_BYTES + 1)).toBe('avvis')
+  })
+})
+
+describe('grupperImporterteKvitteringer', () => {
+  it('to importer av samme bilagsnummer på ulike tidspunkt blir to grupper', () => {
+    const rader: ImportertKvitteringRad[] = [
+      { id: 'a', createdAt: '2026-09-11T09:00:00.000000+00:00', bilagsnummer: '02400100381832' },
+      { id: 'b', createdAt: '2026-09-11T09:00:00.000000+00:00', bilagsnummer: '02400100381832' },
+      { id: 'c', createdAt: '2026-09-20T14:00:00.000000+00:00', bilagsnummer: '02400100381832' },
+    ]
+    const grupper = grupperImporterteKvitteringer(rader)
+    expect(grupper).toHaveLength(2)
+    expect(grupper.map(g => g.varer.length).sort()).toEqual([1, 2])
+  })
+
+  it('varer uten bilagsnummer havner ikke i noen gruppe', () => {
+    const rader: ImportertKvitteringRad[] = [
+      { id: 'a', createdAt: '2026-09-11T09:00:00.000000+00:00' },
+      { id: 'b', createdAt: '2026-09-11T09:00:00.000000+00:00', bilagsnummer: '' },
+    ]
+    expect(grupperImporterteKvitteringer(rader)).toEqual([])
+  })
+
+  it('gruppene sorteres nyeste først', () => {
+    const rader: ImportertKvitteringRad[] = [
+      { id: 'a', createdAt: '2026-08-01T09:00:00.000000+00:00', bilagsnummer: '111' },
+      { id: 'b', createdAt: '2026-09-15T09:00:00.000000+00:00', bilagsnummer: '222' },
+      { id: 'c', createdAt: '2026-08-20T09:00:00.000000+00:00', bilagsnummer: '333' },
+    ]
+    const grupper = grupperImporterteKvitteringer(rader)
+    expect(grupper.map(g => g.bilagsnummer)).toEqual(['222', '333', '111'])
+  })
+
+  it('flere rader med samme bilagsnummer og created_at samles i én gruppe', () => {
+    const rader: ImportertKvitteringRad[] = [
+      { id: 'a', createdAt: '2026-09-11T09:47:08.950222+00:00', bilagsnummer: '02400100364815', navn: 'Vare 1' },
+      { id: 'b', createdAt: '2026-09-11T09:47:08.950222+00:00', bilagsnummer: '02400100364815', navn: 'Vare 2' },
+    ]
+    const grupper = grupperImporterteKvitteringer(rader)
+    expect(grupper).toHaveLength(1)
+    expect(grupper[0].varer.map(v => v.navn)).toEqual(['Vare 1', 'Vare 2'])
   })
 })

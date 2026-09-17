@@ -14,6 +14,7 @@ import {
 } from '@/lib/vareoppslag'
 import {
   byggKvitteringsfilnavn, beregnMaalstorrelse, velgKvitteringsstrategi, VERCEL_PAYLOAD_GRENSE_MB,
+  grupperImporterteKvitteringer, type ImportertKvitteringGruppe,
 } from '@/lib/kvittering'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -892,10 +893,11 @@ function LeggInnFraKvitteringKnapp({ kategori, onKategoriChange, onLeggInn }: {
   )
 }
 
-function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
+function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter, onAngreImport }: {
   onClose: () => void
   eksisterendeVarer: InventoryItem[]
-  onImporter: (dataListe: InventoryItemData[]) => Promise<void>
+  onImporter: (dataListe: InventoryItemData[]) => Promise<string[]>
+  onAngreImport: (ider: string[]) => Promise<void>
 }) {
   const [file, setFile]       = useState<File | null>(null)
   const [lesing, setLesing]   = useState(false)
@@ -916,6 +918,17 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
   const [arkivMelding, setArkivMelding]   = useState('')
   const [arkivLenke, setArkivLenke]       = useState('')
   const [arkivStatus, setArkivStatus]     = useState<'ok' | 'feil' | null>(null)
+  // Tar vare på hva den siste importen faktisk skrev, slik at «Angre importen» kan slette
+  // nøyaktig de radene og sette avkryssingene tilbake. Kvitteringsbildet i Drive røres
+  // ALDRI av angring — å slette det er en ekstra feilvei, og en ny import gir fila samme
+  // navn uansett (byggKvitteringsfilnavn er deterministisk på dato+bilagsnummer).
+  const [sisteImport, setSisteImport]     = useState<{ ider: string[]; valgteRader: Set<number> } | null>(null)
+  const [angrerImport, setAngrerImport]   = useState(false)
+  // Angre en TIDLIGERE import: gruppa som er åpnet for gjennomgang, hvilke varer i den
+  // som fortsatt er avhuket for sletting, og om slettingen pågår.
+  const [angreGruppe, setAngreGruppe]     = useState<ImportertKvitteringGruppe | null>(null)
+  const [angreValgte, setAngreValgte]     = useState<Set<string>>(new Set())
+  const [angrerGruppe, setAngrerGruppe]   = useState(false)
 
   const bilagsnummerDuplikat = resultat
     ? eksisterendeVarer.some(v => v.data.bilagsnummer && v.data.bilagsnummer === resultat.bilagsnummer)
@@ -1074,6 +1087,7 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
 
   async function handleImporter() {
     if (!resultat) return
+    const valgteVedImport = new Set(valgteRader)
     setImporterer(true); setError('')
     try {
       const valgte: { linje: KvitteringLinjeVisning; tilstand: RadTilstand & { fase: 'funnet' } }[] = []
@@ -1093,7 +1107,8 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
         return byggInventoryDataFraKvittering(linje, produkt, resultat)
       }))
 
-      await onImporter(dataListe)
+      const importerteIder = await onImporter(dataListe)
+      setSisteImport({ ider: importerteIder, valgteRader: valgteVedImport })
       setImportMelding(
         `${dataListe.length} ${dataListe.length === 1 ? 'vare' : 'varer'} lagt til i lageret.` +
         (bildeFeil > 0 ? ` ${bildeFeil} ${bildeFeil === 1 ? 'bilde' : 'bilder'} kunne ikke lagres permanent.` : ''),
@@ -1108,10 +1123,52 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
     if (file) await arkiverKvitteringsbilde(file, resultat.dato, resultat.bilagsnummer)
   }
 
+  async function angreSisteImport() {
+    if (!sisteImport) return
+    setAngrerImport(true)
+    await onAngreImport(sisteImport.ider)
+    setValgteRader(sisteImport.valgteRader)
+    setImportMelding('')
+    setSisteImport(null)
+    setAngrerImport(false)
+  }
+
+  // Angre en TIDLIGERE import (ikke den ferske) — bygget av eksisterendeVarer som
+  // allerede ligger i minnet, ingen nye spørringer. Aldri blind sletting på bilagsnummer:
+  // brukeren ser navnene og avhuker selv, siden inventory ikke har updated_at og koden
+  // derfor ikke kan vite om en rad er redigert etter importen.
+  const tidligereGrupper = grupperImporterteKvitteringer(
+    eksisterendeVarer.map(v => ({
+      id: v.id, createdAt: v.created_at,
+      bilagsnummer: v.data.bilagsnummer, navn: v.data.navn, kjopsdato: v.data.kjopsdato,
+    })),
+  )
+
+  function apneAngreGruppe(gruppe: ImportertKvitteringGruppe) {
+    setAngreGruppe(gruppe)
+    setAngreValgte(new Set(gruppe.varer.map(v => v.id)))
+  }
+
+  function toggleAngreVare(id: string) {
+    setAngreValgte(prev => {
+      const neste = new Set(prev)
+      if (neste.has(id)) neste.delete(id); else neste.add(id)
+      return neste
+    })
+  }
+
+  async function bekreftAngreGruppe() {
+    if (angreValgte.size === 0) return
+    setAngrerGruppe(true)
+    await onAngreImport([...angreValgte])
+    setAngrerGruppe(false)
+    setAngreGruppe(null)
+  }
+
   function nyLesing() {
     setResultat(null); setFile(null); setError('')
     setRadTilstander({}); setFremdrift(null); setValgteRader(new Set()); setBilagBekreftet(false); setImportMelding('')
-    setArkiverer(false); setArkivMelding(''); setArkivLenke(''); setArkivStatus(null)
+    setArkiverer(false); setArkivMelding(''); setArkivLenke(''); setArkivStatus(null); setSisteImport(null)
   }
 
   const nok = (n: number) => n.toLocaleString('nb-NO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -1127,7 +1184,7 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
             Leser en Selfmade-kvittering og viser det som ble lest. Ingenting lagres ennå.
           </p>
 
-          {!resultat && (
+          {!resultat && !angreGruppe && (
             <div className="space-y-4">
               <div onClick={() => fileInputRef.current?.click()}
                 className="border-2 border-dashed border-stone-200 rounded-xl p-8 text-center cursor-pointer hover:border-stone-300 hover:bg-stone-50 transition-colors">
@@ -1162,10 +1219,61 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
                   Avbryt
                 </button>
               </div>
+
+              {tidligereGrupper.length > 0 && (
+                <details className="border border-stone-200 rounded-xl px-3 py-2">
+                  <summary className="text-sm text-stone-600 cursor-pointer">
+                    Tidligere importerte kvitteringer ({tidligereGrupper.length})
+                  </summary>
+                  <ul className="mt-2 space-y-1.5">
+                    {tidligereGrupper.map(g => (
+                      <li key={`${g.bilagsnummer} ${g.createdAt}`}
+                        className="flex items-center justify-between gap-2 text-xs text-stone-500">
+                        <span>
+                          {g.kjopsdato || '—'} · bilag {g.bilagsnummer} · {g.varer.length} {g.varer.length === 1 ? 'vare' : 'varer'}
+                        </span>
+                        <button onClick={() => apneAngreGruppe(g)}
+                          className="text-stone-400 hover:text-stone-600 underline underline-offset-2 whitespace-nowrap">
+                          Angre
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
             </div>
           )}
 
-          {resultat && (
+          {angreGruppe && (
+            <div className="space-y-4">
+              <p className="text-sm text-stone-600">
+                {angreGruppe.varer.length} {angreGruppe.varer.length === 1 ? 'vare' : 'varer'} fra
+                kvittering {angreGruppe.bilagsnummer}{angreGruppe.kjopsdato ? ` (${angreGruppe.kjopsdato})` : ''}.
+                Alle er avhuket — fjern haken på dem du vil beholde.
+              </p>
+              <ul className="space-y-1.5 max-h-64 overflow-y-auto">
+                {angreGruppe.varer.map(v => (
+                  <li key={v.id} className="flex items-center gap-2 text-sm text-stone-700">
+                    <input type="checkbox" checked={angreValgte.has(v.id)} onChange={() => toggleAngreVare(v.id)} />
+                    {v.navn || '(uten navn)'}
+                  </li>
+                ))}
+              </ul>
+              <div className="flex gap-3">
+                <button onClick={bekreftAngreGruppe} disabled={angreValgte.size === 0 || angrerGruppe}
+                  className="flex-1 py-2.5 bg-red-700 text-white text-sm rounded-xl hover:bg-red-800 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                  {angrerGruppe && <Spinner />}
+                  {angrerGruppe ? 'Sletter…' : `Slett valgte (${angreValgte.size})`}
+                </button>
+                <button onClick={() => setAngreGruppe(null)} disabled={angrerGruppe}
+                  className="px-5 py-2.5 text-sm text-stone-400 hover:text-stone-600 transition-colors disabled:opacity-40">
+                  Avbryt
+                </button>
+              </div>
+            </div>
+          )}
+
+          {resultat && !angreGruppe && (
             <div className="space-y-5">
               <div className={`rounded-xl border p-4 text-sm ${
                 resultat.summeringssjekk.ok ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'
@@ -1329,7 +1437,20 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
               )}
 
               {error && <p className="text-xs text-red-500">{error}</p>}
-              {importMelding && <p className="text-sm text-green-700 font-medium">{importMelding}</p>}
+              {importMelding && (
+                <p className="text-sm text-green-700 font-medium">
+                  {importMelding}
+                  {sisteImport && (
+                    <>
+                      {' '}
+                      <button onClick={angreSisteImport} disabled={angrerImport}
+                        className="underline underline-offset-2 disabled:opacity-40 font-normal">
+                        {angrerImport ? 'Angrer…' : `Angre importen (${sisteImport.ider.length} ${sisteImport.ider.length === 1 ? 'vare' : 'varer'})`}
+                      </button>
+                    </>
+                  )}
+                </p>
+              )}
               {arkiverer && (
                 <p className="text-xs text-stone-400 inline-flex items-center gap-1.5"><Spinner /> Arkiverer kvitteringsbilde…</p>
               )}
@@ -2195,11 +2316,21 @@ function InventoryPageInner() {
   // Brukes av kvitteringsimporten — setter inn flere varer i ett kall og blir på
   // listevisningen etterpå, i motsetning til createItem som navigerer til den ene nye
   // varens detaljvisning (riktig for enkeltimport, feil for en haug med varer på én gang).
-  async function importerFlereVarer(dataListe: InventoryItemData[]): Promise<void> {
-    if (dataListe.length === 0) return
+  async function importerFlereVarer(dataListe: InventoryItemData[]): Promise<string[]> {
+    if (dataListe.length === 0) return []
     const { data: rows, error } = await supabase.from('inventory').insert(dataListe.map(data => ({ data }))).select()
     if (error) throw error
     setItems(prev => [...(rows as InventoryItem[]), ...prev])
+    return (rows as InventoryItem[]).map(r => r.id)
+  }
+
+  // Brukes av kvitteringsimportens «Angre» — både rett etter en fersk import og for en
+  // tidligere. Rører ALDRI kvitteringsbildet i Drive, se kommentaren ved sisteImport i
+  // KvitteringImportModal.
+  async function angreImport(ider: string[]) {
+    if (ider.length === 0) return
+    await supabase.from('inventory').delete().in('id', ider)
+    setItems(prev => prev.filter(item => !ider.includes(item.id)))
   }
 
   async function deleteItem(id: string) {
@@ -2688,6 +2819,7 @@ function InventoryPageInner() {
           onClose={() => setShowKvitteringModal(false)}
           eksisterendeVarer={items}
           onImporter={importerFlereVarer}
+          onAngreImport={angreImport}
         />
       )}
 
