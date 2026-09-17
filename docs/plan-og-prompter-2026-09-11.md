@@ -20,6 +20,8 @@ Bakgrunn og beslutninger for kvitteringsimporten ligger i
 | 8 | Lageroppslag før nettet, filtrerte kandidater, «legg inn fra kvitteringen» | `d8c56bb` |
 | 9 | Enhet utledes fra kategori når lagervaren mangler mengde/antall | `c68645c` |
 | 10 | Produktbilder lagres permanent i Supabase Storage, med etterfylling | `3b71768` |
+| 11 | Kategorien kan endres eller angres etter «legg inn fra kvitteringen» | `4c39ca6` |
+| 12 | Angre import — rett etter, og for tidligere kvitteringer | `f07e7ec` |
 
 Prompt 1–3 står i sin helhet i `docs/kvitteringsimport-2026-09-11.md`.
 
@@ -56,16 +58,11 @@ hele kostnaden. Prompt C angriper nettopp den.
 
 ## Klar til kjøring
 
-Ingenting. Køen er tom.
+Ingenting. Kvitteringsimporten er ferdig.
 
-**Bekreftet i produksjon:** 133 bilder hentet og lagret, 160 av 163 lagerrader peker nå på
-supabase.co. Tre står igjen som ekte døde: «Twill, navy», «DMC broderigarn Mouliné Spécial
-fargenr. 310» og duplikatraden «Vevet jacquard med stretch og lurex sand» — alle HTTP 404.
-De må få bilde manuelt.
-
-**Gjenstår å bekrefte fra C (`d8c56bb` + `c68645c`):** importer en kvittering og se at de
-fleste radene sier «Fra lageret — ikke slått opp på nett», ikke bare stoffet. Før `c68645c`
-traff bare to av tretten.
+**Gjenstår å bekrefte selv:** klikkeflyten i angre-del 1 (importer, angre, importer på
+nytt) og at kategorivelgeren kan byttes og angres. Begge er verifisert i logikken, ikke i
+nettleseren.
 
 ---
 
@@ -84,7 +81,7 @@ så mange ganger du vil.
 
 **Fjerne «Etterfyll produktnummer»-seksjonen** fra Innstillinger når den er ferdig brukt.
 
-**Angre import.** Billig å bygge: `importerFlereVarer` får de innsatte radene tilbake, og
+**(Flyttet til prompt F — var aldri parkert av Maria.)** Angre import. Billig å bygge: `importerFlereVarer` får de innsatte radene tilbake, og
 hver importert rad bærer `bilagsnummer`. To nivåer: angre rett etter import i modalen, og
 angre en tidligere import fra en liste gruppert på `bilagsnummer` + `created_at`. Slettingen
 må vise navnene med avkryssing — tabellen har ingen `updated_at`, så koden kan ikke vite om
