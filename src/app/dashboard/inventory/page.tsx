@@ -735,10 +735,15 @@ interface ProduktTreff {
 // kilde skiller UI-visningen av HVOR et treff kom fra — 'lager' (fantes fra før, ingen
 // nettkall gjort) og 'kvittering' (lagt inn med det kvitteringen selv oppgir, heller
 // ingen nettkall) skal begge merkes tydelig, i motsetning til et ekte selfmade.com-treff.
+// Tilstanden en rad hadde FØR «legg inn fra kvitteringen» ble trykt — tatt vare på slik at
+// «Angre» kan gå tilbake dit, kandidatliste og alt, i stedet for at raden bare forsvinner.
+type ForrigeTilstand = { fase: 'ikkeFunnet' } | { fase: 'flereTreff'; kandidater: Kandidat[] }
+
 type RadTilstand =
   | { fase: 'venter' }
   | { fase: 'slaarOpp' }
-  | { fase: 'funnet';      produkt: ProduktTreff; kilde: 'selfmade' | 'lager' | 'kvittering' }
+  | { fase: 'funnet';      produkt: ProduktTreff; kilde: 'selfmade' | 'lager' }
+  | { fase: 'funnet';      produkt: ProduktTreff; kilde: 'kvittering'; forrigeTilstand: ForrigeTilstand }
   | { fase: 'flereTreff';  kandidater: Kandidat[] }
   | { fase: 'ikkeFunnet' }
   | { fase: 'feil';        melding: string }
@@ -993,17 +998,32 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
 
   // Ingen URL å slå opp finnes for et stoff som er tatt av butikken — legg varen inn med
   // det kvitteringen selv oppgir, uten nettkall. Kategorien vet kvitteringen ingenting
-  // om (gjettes ALDRI fra navnet), derfor krever den et eksplisitt valg per rad.
+  // om (gjettes ALDRI fra navnet), derfor krever den et eksplisitt valg per rad. Kalles
+  // på nytt når kategorivelgeren endres ETTER at raden alt er lagt inn — da må
+  // forrigeTilstand hentes fra den eksisterende kvittering-tilstanden, ikke settes til
+  // seg selv, ellers mister «Angre» det opprinnelige ikkeFunnet/flereTreff-resultatet.
   function leggInnFraKvittering(i: number, kategori: Kategori) {
     const linje = resultat?.linjer[i]
     if (!linje) return
+    const gjeldende = radTilstander[i]
+    const forrigeTilstand: ForrigeTilstand =
+      gjeldende?.fase === 'funnet' && gjeldende.kilde === 'kvittering' ? gjeldende.forrigeTilstand
+      : gjeldende?.fase === 'flereTreff' ? gjeldende
+      : { fase: 'ikkeFunnet' }
     const produkt: ProduktTreff = {
       url: '', navn: linje.navn, kategori,
       enhetsfelt: enhetsfeltFraKategori(kategori),
       sidenummer: linje.produktnummer, variantHale: null,
     }
-    setRadTilstander(prev => ({ ...prev, [i]: { fase: 'funnet', produkt, kilde: 'kvittering' } }))
+    setRadTilstander(prev => ({ ...prev, [i]: { fase: 'funnet', produkt, kilde: 'kvittering', forrigeTilstand } }))
     setValgteRader(prev => new Set(prev).add(i))
+  }
+
+  function angreLeggInnFraKvittering(i: number) {
+    const tilstand = radTilstander[i]
+    if (tilstand?.fase !== 'funnet' || tilstand.kilde !== 'kvittering') return
+    setRadTilstander(prev => ({ ...prev, [i]: tilstand.forrigeTilstand }))
+    setValgteRader(prev => { const neste = new Set(prev); neste.delete(i); return neste })
   }
 
   function toggleRad(i: number) {
@@ -1223,7 +1243,23 @@ function KvitteringImportModal({ onClose, eksisterendeVarer, onImporter }: {
                                   <p className="text-xs text-sky-600 mt-0.5">Fra lageret — ikke slått opp på nett</p>
                                 )}
                                 {tilstand.kilde === 'kvittering' && (
-                                  <p className="text-xs text-sky-600 mt-0.5">Lagt inn fra kvitteringen — ikke slått opp mot Selfmade</p>
+                                  <>
+                                    <p className="text-xs text-sky-600 mt-0.5">Lagt inn fra kvitteringen — ikke slått opp mot Selfmade</p>
+                                    <div className="flex items-center gap-2 mt-1">
+                                      <select
+                                        className="text-xs border border-stone-200 rounded-lg px-1.5 py-1"
+                                        value={tilstand.produkt.kategori}
+                                        onChange={e => leggInnFraKvittering(i, e.target.value as Kategori)}
+                                      >
+                                        {KATEGORIER.map(k => <option key={k} value={k}>{k}</option>)}
+                                      </select>
+                                      <button
+                                        onClick={() => angreLeggInnFraKvittering(i)}
+                                        className="text-xs text-stone-400 hover:text-stone-600 underline underline-offset-2">
+                                        Angre
+                                      </button>
+                                    </div>
+                                  </>
                                 )}
                                 {duplikat && (
                                   <p className="text-xs text-amber-600 mt-0.5">
