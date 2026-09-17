@@ -18,6 +18,8 @@ Bakgrunn og beslutninger for kvitteringsimporten ligger i
 | 6 | Sporing av sharps native bibliotek inn i lesefunksjonen | `304846c` |
 | 7 | Produktnummer, betalt pris og produktlenke synlig på varen | `b9c2869` |
 | 8 | Lageroppslag før nettet, filtrerte kandidater, «legg inn fra kvitteringen» | `d8c56bb` |
+| 9 | Enhet utledes fra kategori når lagervaren mangler mengde/antall | `c68645c` |
+| 10 | Produktbilder lagres permanent i Supabase Storage, med etterfylling | `3b71768` |
 
 Prompt 1–3 står i sin helhet i `docs/kvitteringsimport-2026-09-11.md`.
 
@@ -54,83 +56,16 @@ hele kostnaden. Prompt C angriper nettopp den.
 
 ## Klar til kjøring
 
-Bare D står igjen.
+Ingenting. Køen er tom.
 
-**Gjenstår å bekrefte i nettleseren fra C (`d8c56bb`):** at rader med varer du har fra før
-viser treff fra lageret og ikke gjør nettkall, at fremdriftstelleren går raskere, og at
-«legg inn fra kvitteringen» faktisk lagrer en rad. Klientlogikken er typesjekket og
-byggeklossene er testet, men klikkeflyten er ikke kjørt.
+**Bekreftet i produksjon:** 133 bilder hentet og lagret, 160 av 163 lagerrader peker nå på
+supabase.co. Tre står igjen som ekte døde: «Twill, navy», «DMC broderigarn Mouliné Spécial
+fargenr. 310» og duplikatraden «Vevet jacquard med stretch og lurex sand» — alle HTTP 404.
+De må få bilde manuelt.
 
-### D — Lagre produktbilder permanent
-
-`bilde`-feltet peker på Selfmades server. Når en produktside forsvinner, forsvinner
-bildet — «Twill, navy» og «Blank sateng petrol» viser allerede alt-tekst i lageret.
-
-````
-Lagre produktbilder permanent i stedet for å peke på selfmade.com.
-
-`bilde`-feltet på en lagervare inneholder i dag en URL til Selfmades server. Forsvinner
-produktsiden, forsvinner bildet. Det har alt skjedd: «Twill, navy» og «Blank sateng
-petrol» viser alt-tekst i lageret nå.
-
-Appen bruker allerede Supabase Storage med bucketen `project-images` — se
-`inventory/page.tsx:578-592` for mønsteret (opplasting med generert filnavn, så
-`getPublicUrl`).
-
-## 1. Ved import
-
-Når en vare importeres og produktdataene har en bilde-URL: hent bildet server-side, last
-det opp til `project-images`, og lagre DEN URL-en i `bilde`. Gjelder begge veier inn —
-URL-importen (`apiImportFabric`-flyten) og kvitteringsimporten.
-
-Filnavn i samme stil som det eksisterende: `inventory-<tidsstempel>-<tilfeldig>.<endelse>`.
-
-Skaler ned til maks 800 px på lengste side før opplasting. Et produktbilde trenger ikke å
-være større i denne appen, og det holder totalen nede.
-
-**Bildelagringen skal aldri stoppe importen.** Feiler hentingen eller opplastingen, fall
-tilbake til å lagre den opprinnelige URL-en slik som i dag, og si fra i grensesnittet at
-bildet ikke ble lagret permanent. Ingen exception som ruller tilbake importen.
-
-## 2. Etterfylling av eksisterende bilder
-
-Samme mønster som «Etterfyll produktnummer»-seksjonen i Innstillinger, som allerede
-finnes og virker: en seksjon med tørrkjøring først, rapport med navngitte grupper, og en
-egen knapp for å skrive.
-
-Grupper radene: bilde allerede i Supabase (hoppes over), bilde med ekstern URL (disse
-hentes), ingen bilde. Tørrkjøringen skal si hvor mange det gjelder og hvilke URL-er som
-ikke lenger svarer, FØR noe lastes opp.
-
-Rader der den eksterne URL-en er død kan ikke reddes — de skal listes med navn så jeg kan
-legge inn bilde manuelt.
-
-Et bilde som forsvinner fra butikken er tapt for godt — «Twill, navy» og «Blank sateng
-petrol» er allerede der. Det går sakte (to av 163 så langt), men det går én vei, så denne
-jobben blir ikke billigere av å vente. Etterfyllingen skal hente ALLE eksterne bilder som
-svarer, ikke bare dem fra Selfmade.
-
-Kjøres sekvensielt med fremdriftsteller, samme mønster som `slaaOppAlle`.
-
-## Omfang og størrelse
-
-163 lagervarer, produktbilder på ~800 px blir 80–150 kB hver — altså 15–25 MB totalt.
-Ikke bygg noe opplegg for opprydding av ubrukte bilder i denne omgangen; det finnes en
-kjent hale på 42 foreldreløse bilder i bucketen fra før, og den tar jeg separat.
-
-## Kontroll
-
-Tørrkjør etterfyllingen og vis meg rapporten før du skriver noe. Etter skriving: åpne
-«Twill, navy» og se at bildet vises igjen, og sjekk at `bilde` peker på
-supabase.co og ikke på selfmade.com.
-
-Importer så en ny vare fra URL og bekreft at bildet havner i Supabase med en gang.
-
-`npm test`, `npx tsc --noEmit`, `npx eslint`. eslint-basislinja er 35 errors og 42
-warnings, alle eldre enn dette arbeidet.
-
-git add . && git commit -m "Store product images in Supabase Storage instead of hotlinking"
-````
+**Gjenstår å bekrefte fra C (`d8c56bb` + `c68645c`):** importer en kvittering og se at de
+fleste radene sier «Fra lageret — ikke slått opp på nett», ikke bare stoffet. Før `c68645c`
+traff bare to av tretten.
 
 ---
 
@@ -176,3 +111,12 @@ Branchen `vercel-python-bundles` kan slettes.
 **Pushe sjeldnere.** Hver push er en deployment på ~446 MB. `git.deploymentEnabled` i
 `vercel.json` kan slå av automatiske deployments for branchmønstre hvis det trengs en
 teknisk sperre.
+
+**Dubletter i lageret.** «Vevet jacquard med stretch og lurex sand» finnes som to rader
+(den ene med død bilde-URL), og «Luksus bomullslerret» hadde samme mønster i
+produktnummer-jobben. Verdt en opprydding en gang.
+
+**`/api/lagre-produktbilde` har ingen autentisering** og bruker service role-nøkkelen til
+å skrive til Storage. Den henter en URL du sender inn og legger bildet i bucketen. Samme
+mønster som resten av API-rutene i appen, men denne skriver — så hvem som helst som finner
+ruta kan fylle bucketen. Ikke akutt på en privat app, men verdt å vite.
