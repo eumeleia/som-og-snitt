@@ -1772,9 +1772,15 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
   // løkken skriver selv til form.pdfs via oppdaterPdf, og sto effekten på
   // form.pdfs direkte ville hver vellykkede henting trigge et nytt kjør av
   // effekten — som kansellerer det pågående kjøret midt i løkken (cleanup setter
-  // avbrutt=true på samme lukking løkken selv bruker) og lar arbeidskopiStatus
-  // stå fast på siste "Henter PDF X av Y…" for alltid, siden returnen skjer før
-  // linjen som skulle nullstilt den.
+  // avbrutt=true på samme lukking løkken selv bruker).
+  //
+  // Men effekten skal fortsatt avbrytes når form.status forlater 'Aktiv' (f.eks.
+  // Fullfør prosjekt) — det er en reell, tiltenkt kansellering, ikke en selv-
+  // utløst en. Cleanup må derfor nullstille arbeidskopiStatus selv, ellers står
+  // den fast på siste "Henter PDF X av Y…" for alltid (løkken returnerer jo før
+  // linjen som ellers ville nullstilt den) — og det låser alt annet som gater på
+  // samme arbeidskopiStatus, blant annet «Fullført prosjekt»-dialogens knapper,
+  // som ikke har noe med denne hentingen å gjøre.
   useEffect(() => {
     if (form.status !== 'Aktiv') return
     const koe = form.pdfs.filter(p => p.storage === 'drive' && p.driveFileId && !henterRef.current.has(p.id))
@@ -1800,7 +1806,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
       }
       if (!avbrutt) setArbeidskopiStatus('')
     })()
-    return () => { avbrutt = true }
+    return () => { avbrutt = true; setArbeidskopiStatus('') }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.status, nyDrivePdfTick])
 
