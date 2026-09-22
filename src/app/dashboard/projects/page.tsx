@@ -249,8 +249,9 @@ function SectionHeading({ children, first = false }: { children: ReactNode; firs
 
 // ── ProjectCard ───────────────────────────────────────────────────────────────
 
-function ProjectCard({ project, onEdit, onDelete, onOpenRecipePdf }: {
+function ProjectCard({ project, onEdit, onDelete, onOpenRecipePdf, isFetchingPdf }: {
   project: Project; onEdit: () => void; onDelete: () => void; onOpenRecipePdf?: () => void
+  isFetchingPdf?: boolean
 }) {
   const d = project.data
   const cover = d.images[0]?.url
@@ -323,10 +324,11 @@ function ProjectCard({ project, onEdit, onDelete, onOpenRecipePdf }: {
         <div className="px-3 pb-2 text-xs">
           {onOpenRecipePdf ? (
             <button
-              onClick={e => { e.stopPropagation(); onOpenRecipePdf() }}
-              className="text-[#C9A57A] hover:text-[#8B6340] hover:underline transition-colors"
+              onClick={e => { e.stopPropagation(); if (!isFetchingPdf) onOpenRecipePdf() }}
+              disabled={isFetchingPdf}
+              className="text-[#C9A57A] hover:text-[#8B6340] hover:underline transition-colors disabled:opacity-60 disabled:no-underline disabled:cursor-wait"
             >
-              Oppskrift ↗
+              {isFetchingPdf ? 'Henter fra Drive…' : 'Oppskrift ↗'}
             </button>
           ) : (
             <a
@@ -357,9 +359,9 @@ function ProjectCard({ project, onEdit, onDelete, onOpenRecipePdf }: {
 
 // ── SortableProjectCard ───────────────────────────────────────────────────────
 
-function SortableProjectCard({ project, onEdit, onDelete, isDragMode, onOpenRecipePdf }: {
+function SortableProjectCard({ project, onEdit, onDelete, isDragMode, onOpenRecipePdf, isFetchingPdf }: {
   project: Project; onEdit: () => void; onDelete: () => void; isDragMode: boolean
-  onOpenRecipePdf?: () => void
+  onOpenRecipePdf?: () => void; isFetchingPdf?: boolean
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: project.id,
@@ -378,6 +380,7 @@ function SortableProjectCard({ project, onEdit, onDelete, isDragMode, onOpenReci
         onEdit={onEdit}
         onDelete={onDelete}
         onOpenRecipePdf={onOpenRecipePdf}
+        isFetchingPdf={isFetchingPdf}
       />
     </div>
   )
@@ -1657,7 +1660,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
   useEffect(() => {
     if (!initialOpenPdfId) return
     const pdf = (form.pdfs ?? []).find(p => p.id === initialOpenPdfId)
-    if (pdf) setShowPdfViewer(pdf)
+    if (pdf) void openPdfViewer(pdf)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialOpenPdfId])
 
@@ -1714,6 +1717,26 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
       showToast('Arbeidskopien er slettet. Originalen ligger i Drive.')
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Kunne ikke slette arbeidskopien')
+    } finally {
+      setArbeidskopiStatus('')
+    }
+  }
+
+  // Åpner PDF-leseren. pdf.url peker på Drive når storage er 'drive' — leseren kan
+  // ikke hente den selv (CORS), så en arbeidskopi hentes inn først. henterRef er
+  // samme kø-vakt som brukes under, slik at dette ikke starter en ekstra henting
+  // av en fil bulk-effekten allerede henter.
+  async function openPdfViewer(pdf: PdfItem) {
+    if (pdf.storage !== 'drive' || !pdf.driveFileId) { setShowPdfViewer(pdf); return }
+    if (henterRef.current.has(pdf.id)) return
+    henterRef.current.add(pdf.id)
+    setArbeidskopiStatus(`Henter «${pdf.displayName?.trim() || pdf.name}» fra Drive…`)
+    try {
+      const oppdatert = await hentArbeidskopi(pdf)
+      oppdaterPdf(pdf.id, { url: oppdatert.url, storage: oppdatert.storage })
+      setShowPdfViewer({ ...pdf, url: oppdatert.url, storage: oppdatert.storage })
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Kunne ikke hente PDF fra Drive')
     } finally {
       setArbeidskopiStatus('')
     }
@@ -2321,7 +2344,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
               className="flex-1 flex items-center gap-2 px-3 py-2 bg-white rounded-xl border border-stone-200 cursor-pointer hover:bg-stone-50 transition-colors min-w-0"
               onClick={() => {
                 const pdf = (form.pdfs ?? []).find(p => (p.type ?? 'Annet') === 'Oppskrift')
-                if (pdf) setShowPdfViewer(pdf)
+                if (pdf) void openPdfViewer(pdf)
               }}
               title="Åpne oppskrift"
             >
@@ -3171,7 +3194,10 @@ function ProjectsPageInner() {
   const [listPdfViewer, setListPdfViewer]       = useState<{ project: Project; pdf: PdfItem } | null>(null)
   const [listPdfAnnotations, setListPdfAnnotations] = useState<PdfAnnotation[]>([])
   const [listPdfBookmarks, setListPdfBookmarks]     = useState<Record<string, number>>({})
+  const [listPdfFetchingId, setListPdfFetchingId]   = useState<string | null>(null)
+  const [toast, setToast]                           = useState('')
   const listPdfViewerRef = useRef<{ project: Project; pdf: PdfItem } | null>(null)
+  const listPdfFetchingRef = useRef(false)
   const catDropdownRef  = useRef<HTMLDivElement>(null)
   const sortDropdownRef = useRef<HTMLDivElement>(null)
 
@@ -3317,16 +3343,49 @@ function ProjectsPageInner() {
   function openNew()            { setShowNewModal(true); pushVisning({ v: 'ny' }) }
   const handleBack = closeToBase
 
-  // Open the recipe PDF as a modal overlay directly from the list,
-  // so closing it returns the user to the list (same filter/tab).
-  function handleOpenRecipePdf(p: Project) {
-    const pdf = (p.data.pdfs ?? []).find(x => (x.type ?? 'Annet') === 'Oppskrift')
-    if (!pdf) return
+  function openListPdfViewer(p: Project, pdf: PdfItem) {
     const viewer = { project: p, pdf }
     listPdfViewerRef.current = viewer
     setListPdfViewer(viewer)
     setListPdfAnnotations(p.data.pdfAnnotations ?? [])
     setListPdfBookmarks(p.data.pdfBookmarks ?? {})
+  }
+
+  function showToast(msg: string) {
+    setToast(msg)
+    setTimeout(() => setToast(''), 3500)
+  }
+
+  // Open the recipe PDF as a modal overlay directly from the list, so closing it
+  // returns the user to the list (same filter/tab). pdf.url points at Drive when
+  // storage is 'drive' — the reader can't fetch that itself (CORS), so an
+  // arbeidskopi is pulled into Supabase Storage first. See src/lib/arbeidskopi.ts.
+  async function handleOpenRecipePdf(p: Project) {
+    const pdf = (p.data.pdfs ?? []).find(x => (x.type ?? 'Annet') === 'Oppskrift')
+    if (!pdf) return
+    if (listPdfFetchingRef.current) return
+    if (pdf.storage !== 'drive' || !pdf.driveFileId) {
+      openListPdfViewer(p, pdf)
+      return
+    }
+    listPdfFetchingRef.current = true
+    setListPdfFetchingId(p.id)
+    try {
+      const oppdatert = await hentArbeidskopi(pdf)
+      const newPdfs = (p.data.pdfs ?? []).map(x =>
+        x.id === pdf.id ? { ...x, url: oppdatert.url, storage: oppdatert.storage } : x)
+      const newData = { ...p.data, pdfs: newPdfs }
+      const { error } = await supabase.from('projects').update({ data: newData }).eq('id', p.id)
+      if (error) throw error
+      const updatedProject = { ...p, data: newData }
+      setProjects(ps => ps.map(x => x.id === p.id ? updatedProject : x))
+      openListPdfViewer(updatedProject, { ...pdf, url: oppdatert.url, storage: oppdatert.storage })
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Kunne ikke hente PDF fra Drive')
+    } finally {
+      listPdfFetchingRef.current = false
+      setListPdfFetchingId(null)
+    }
   }
 
   function saveListPdfData(annotations: PdfAnnotation[], bookmarks: Record<string, number>) {
@@ -3561,6 +3620,7 @@ function ProjectsPageInner() {
                     onOpenRecipePdf={(p.data.pdfs ?? []).some(x => (x.type ?? 'Annet') === 'Oppskrift')
                       ? () => handleOpenRecipePdf(p)
                       : undefined}
+                    isFetchingPdf={listPdfFetchingId === p.id}
                   />
                 ))}
               </div>
@@ -3638,6 +3698,12 @@ function ProjectsPageInner() {
             setListPdfViewer(null)
           }}
         />
+      )}
+
+      {toast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-red-600 text-white text-sm px-4 py-2 rounded-lg shadow-lg whitespace-nowrap z-50">
+          {toast}
+        </div>
       )}
     </>
   )
