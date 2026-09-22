@@ -1613,6 +1613,11 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
   const [lastPdfPages, setLastPdfPages]           = useState<Record<string, number>>({})
   const [arbeidskopiStatus, setArbeidskopiStatus] = useState('')
   const [forrigeNotater, setForrigeNotater]       = useState<{ annotasjoner: PdfAnnotation[]; pdfs: PdfItem[] } | null>(null)
+  // Trigger for bulk-hentingen under: økes bare når en NY Drive-PDF dukker opp
+  // (handlePdfUpload), aldri av bulk-hentingens egne skriv til form.pdfs. Sto den
+  // på form.pdfs direkte, ville hver vellykkede henting i køen trigge effekten på
+  // nytt midt i løkken og kansellere seg selv via samme avbrutt-lukking.
+  const [nyDrivePdfTick, setNyDrivePdfTick]       = useState(0)
   const henterRef = useRef<Set<string>>(new Set())
   const [visFullfortDialog, setVisFullfortDialog] = useState(false)
   const [toast, setToast]                   = useState('')
@@ -1763,17 +1768,27 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
 
   // Aktivt prosjekt betyr at PDF-ene skal kunne åpnes i leseren. Hentes én om
   // gangen, så en stor fil ikke holder de andre igjen — og bare ett forsøk per
-  // fil per montering (henterRef), ellers ville hver oppdatering av form.pdfs
-  // starte runden på nytt.
+  // fil per montering (henterRef). Dependency er nyDrivePdfTick, ikke form.pdfs:
+  // løkken skriver selv til form.pdfs via oppdaterPdf, og sto effekten på
+  // form.pdfs direkte ville hver vellykkede henting trigge et nytt kjør av
+  // effekten — som kansellerer det pågående kjøret midt i løkken (cleanup setter
+  // avbrutt=true på samme lukking løkken selv bruker) og lar arbeidskopiStatus
+  // stå fast på siste "Henter PDF X av Y…" for alltid, siden returnen skjer før
+  // linjen som skulle nullstilt den.
   useEffect(() => {
     if (form.status !== 'Aktiv') return
     const koe = form.pdfs.filter(p => p.storage === 'drive' && p.driveFileId && !henterRef.current.has(p.id))
     if (koe.length === 0) return
-    koe.forEach(p => henterRef.current.add(p.id))
     let avbrutt = false
     void (async () => {
       for (let i = 0; i < koe.length; i++) {
         if (avbrutt) return
+        // Merkes først når forsøket faktisk starter, ikke for hele køen på forhånd:
+        // i dev kjører StrictMode denne effekten mount→cleanup→mount, og hadde alle
+        // vært merket allerede ved første kjør, ville det ekte (andre) kjøret sett
+        // en tom kø og ikke startet noe — selv om det første ble kansellert før
+        // henting nummer én rakk å fullføre.
+        henterRef.current.add(koe[i].id)
         setArbeidskopiStatus(`Henter PDF ${i + 1} av ${koe.length} fra Drive…`)
         try {
           const oppdatert = await hentArbeidskopi(koe[i])
@@ -1787,7 +1802,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
     })()
     return () => { avbrutt = true }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.status, form.pdfs])
+  }, [form.status, nyDrivePdfTick])
 
   // Merknader hører til oppskriften, ikke prosjektet: syr du samme mønster igjen,
   // er «her blir kanten smal» verdt mer andre gang enn første. Tilbys bare når
@@ -1948,6 +1963,7 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
               ...(pdfType === 'Mønster' ? { formatLabel: guessFormatLabel(pdfFile.name) } : {}),
             }],
           })
+          setNyDrivePdfTick(t => t + 1)
           setPdfFile(null)
           setPdfName('')
           return
