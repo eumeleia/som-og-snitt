@@ -1766,9 +1766,11 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
     if (frigjort > 0) showToast(`${frigjort} arbeidskopi${frigjort === 1 ? '' : 'er'} slettet. Originalene ligger i Drive.`)
   }
 
-  // Aktivt prosjekt betyr at PDF-ene skal kunne åpnes i leseren. Hentes én om
-  // gangen, så en stor fil ikke holder de andre igjen — og bare ett forsøk per
-  // fil per montering (henterRef). Dependency er nyDrivePdfTick, ikke form.pdfs:
+  // Aktivt prosjekt betyr at oppskrift-PDF-en skal kunne åpnes i leseren — bare
+  // typen Oppskrift, ikke Mønster/Annet, som brukeren uansett bare klikker seg
+  // videre til Drive fra. Hentes én om gangen, så en stor fil ikke holder de
+  // andre igjen — og bare ett forsøk per fil per montering (henterRef).
+  // Dependency er nyDrivePdfTick, ikke form.pdfs:
   // løkken skriver selv til form.pdfs via oppdaterPdf, og sto effekten på
   // form.pdfs direkte ville hver vellykkede henting trigge et nytt kjør av
   // effekten — som kansellerer det pågående kjøret midt i løkken (cleanup setter
@@ -1783,7 +1785,8 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
   // som ikke har noe med denne hentingen å gjøre.
   useEffect(() => {
     if (form.status !== 'Aktiv') return
-    const koe = form.pdfs.filter(p => p.storage === 'drive' && p.driveFileId && !henterRef.current.has(p.id))
+    const koe = form.pdfs.filter(p => p.storage === 'drive' && p.driveFileId
+      && (p.type ?? 'Annet') === 'Oppskrift' && !henterRef.current.has(p.id))
     if (koe.length === 0) return
     let avbrutt = false
     void (async () => {
