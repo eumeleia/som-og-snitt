@@ -1077,6 +1077,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
       // over) — denne lagringen rører bare sporingAndel/mellomromAndel.
       const eksisterende = (bundleRow.data as EmbroideryBundleData).fontMetrikk
       const nyFontMetrikk: FontMetrikk = {
+        ...eksisterende, // bx (BX-metrikken per tomme) må overleve denne lagringen
         tegn: eksisterende?.tegn ?? {},
         sporingAndel: xHeightMm > 0 ? sporingMm / xHeightMm : eksisterende?.sporingAndel,
         mellomromAndel: mellomromMm != null && xHeightMm > 0 ? mellomromMm / xHeightMm : eksisterende?.mellomromAndel,
@@ -1970,10 +1971,20 @@ function TextVerktoy({ bundleId, bundleNavn, fontMetrikk, vms, biblioteket, onLe
   // lerretet i hovedkomponenten), ikke fra denne dialogen. sporingAndel er lagret som
   // andel av x-høyden nettopp for å gjelde i ALLE tommestørrelser — regnes derfor om til
   // mm på nytt for den tommen som faktisk er valgt, se beregnSporingMm under.
-  function beregnSporingMm(t: string): number {
-    if (!t || fontMetrikk?.sporingAndel == null) return 0
+  // Rekkefølge for startverdien: lagret sporingAndel (satt med øyet) → BX-fila sin
+  // ltrSpace for denne tommen → 0. BX-verdien skrives aldri til sporingAndel, så en lagret
+  // verdi alltid betyr «satt manuelt».
+  function beregnSporing(t: string): { mm: number; kilde: 'manuelt' | 'BX' | 'standard' } {
+    if (!t) return { mm: 0, kilde: 'standard' }
     const fd = buildFontData(vms, t, biblioteket, fontMetrikk)
-    return Math.round(fontMetrikk.sporingAndel * fd.metrics.xHeight * 10) / 10
+    if (fontMetrikk?.sporingAndel != null) {
+      return { mm: Math.round(fontMetrikk.sporingAndel * fd.metrics.xHeight * 10) / 10, kilde: 'manuelt' }
+    }
+    if (fd.bx?.ltrSpaceMm != null) return { mm: Math.round(fd.bx.ltrSpaceMm * 10) / 10, kilde: 'BX' }
+    return { mm: 0, kilde: 'standard' }
+  }
+  function beregnSporingMm(t: string): number {
+    return beregnSporing(t).mm
   }
 
   const [tomme, setTomme] = useState<string>(tilgjengeligeTommes[0] ?? '')
@@ -1996,6 +2007,18 @@ function TextVerktoy({ bundleId, bundleNavn, fontMetrikk, vms, biblioteket, onLe
     () => tomme ? buildFontData(vms, tomme, biblioteket, fontMetrikk) : null,
     [vms, tomme, biblioteket, fontMetrikk],
   )
+
+  const sporingStart = useMemo(
+    () => beregnSporing(tomme),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [vms, tomme, biblioteket, fontMetrikk],
+  )
+
+  const grunnlinjeTelling = useMemo(() => {
+    const n = { manuell: 0, bx: 0, utledet: 0 }
+    for (const t of Object.values(fontData?.tegn ?? {})) n[t.grunnlinjeKilde]++
+    return n
+  }, [fontData])
 
   const layout: TextLayout | null = useMemo(
     () => (fontData && tekst.trim()) ? layoutTekst(tekst, fontData, { tracking, mellomromFaktor }) : null,
@@ -2103,6 +2126,12 @@ function TextVerktoy({ bundleId, bundleNavn, fontMetrikk, vms, biblioteket, onLe
               step={0.1} value={tracking}
               onChange={e => setTracking(parseFloat(e.target.value))}
               className="w-full accent-[#C9A57A]" />
+            <p className="text-[11px] text-stone-400 mt-1">
+              Startverdi {sporingStart.mm.toFixed(1)} mm — {
+                sporingStart.kilde === 'manuelt' ? 'lagret manuelt'
+                  : sporingStart.kilde === 'BX' ? 'fra BX-fila (ltrSpace)'
+                  : 'standard, ingen lagret verdi eller BX'}
+            </p>
           </div>
           <div>
             <div className="flex justify-between text-xs text-stone-500 mb-1.5">
@@ -2112,8 +2141,40 @@ function TextVerktoy({ bundleId, bundleNavn, fontMetrikk, vms, biblioteket, onLe
             <input type="range" min={0.3} max={1.2} step={0.05} value={mellomromFaktor}
               onChange={e => setMellomromFaktor(parseFloat(e.target.value))}
               className="w-full accent-[#C9A57A]" />
+            <p className="text-[11px] text-stone-400 mt-1">
+              Startverdi {(fontMetrikk?.mellomromAndel ?? 0.6).toFixed(2)}× — {
+                fontMetrikk?.mellomromAndel != null ? 'lagret manuelt' : 'standard (BX-ens wSpace er ikke tatt i bruk)'}
+            </p>
           </div>
         </div>
+
+        {/* Hvor grunnlinja kommer fra, per tegn i denne størrelsen */}
+        {fontData && Object.keys(fontData.tegn).length > 0 && (
+          <div className="text-xs text-stone-500 space-y-1">
+            <p>
+              Grunnlinje ({tomme}&quot;):{' '}
+              {[
+                [grunnlinjeTelling.bx, 'fra BX'],
+                [grunnlinjeTelling.manuell, 'manuelt'],
+                [grunnlinjeTelling.utledet, 'utledet'],
+              ].filter(([n]) => (n as number) > 0).map(([n, t]) => `${n} ${t}`).join(' · ')}
+              {fontData.bx && <span className="text-stone-400"> — {fontData.bx.filnavn}</span>}
+            </p>
+            {fontData.bx && fontData.bx.avvik.length > 0 && (
+              <p className="text-amber-600">
+                BX og PES-fil har ulike mål, så grunnlinja er utledet for:{' '}
+                {fontData.bx.avvik.map(a =>
+                  `«${a.tegn}» (BX ${a.bxMal.bredde}×${a.bxMal.hoyde}, PES ${a.pesMal.bredde}×${a.pesMal.hoyde})`,
+                ).join(', ')}
+              </p>
+            )}
+            {fontData.bx && fontData.bx.manglerFil.length > 0 && (
+              <p className="text-stone-400">
+                I BX-fila, men uten PES-fil i {tomme}&quot;: {fontData.bx.manglerFil.map(t => `«${t}»`).join(' ')}
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Character preview */}
         {tekst && (

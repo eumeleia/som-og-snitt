@@ -15,6 +15,8 @@ import {
   SortableContext, useSortable, rectSortingStrategy, arrayMove,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
+import type { FontMetrikk } from './arranger/types'
+import { lesBxFiler, slaaInnBx, tommerForSizes, type BxFil, type BxParseSvar } from './arranger/bxMetrikk'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -64,6 +66,7 @@ interface EmbroideryBundleData {
   notater: string
   rating?: number
   sortOrder?: number
+  fontMetrikk?: FontMetrikk
 }
 
 interface EmbroideryBundle {
@@ -409,6 +412,31 @@ function base64ToBlob(b64: string, mimeType: string): Blob {
 }
 
 const PES_RENDER_TIMEOUT_MS = 15000
+
+// api/parse-bx svarer 422 med en feilmelding når fila ikke kan tolkes — kastes her og
+// fanges per fil i lesBxFiler, som gjør den om til en melding.
+async function parseBxViaApi(bx: Uint8Array): Promise<BxParseSvar> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 30000)
+  try {
+    const res = await fetch('/api/parse-bx', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bx_data: uint8ToBase64(bx) }),
+      signal: controller.signal,
+    })
+    const raw = await res.text()
+    let body: unknown = null
+    try { body = JSON.parse(raw) } catch { /* not JSON */ }
+    if (!res.ok) {
+      const melding = (body as { error?: string } | null)?.error ?? `HTTP ${res.status}`
+      throw new Error(melding)
+    }
+    return body as BxParseSvar
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 // Rendering happens server-side (/api/render-pes); on mobile networks a stalled request
 // or a hung serverless invocation never rejects on its own, so a plain `await fetch(...)`
@@ -863,6 +891,7 @@ function UploadModal({ onDone, onClose }: {
   const [errorDetails, setErrorDetails] = useState<ErrorDetails | null>(null)
   const [doneResult, setDoneResult] = useState<{ results: Embroidery[]; summary: string } | null>(null)
   const [uploadMode, setUploadMode] = useState<'loose' | 'bundle'>('loose')
+  const [bxMeldinger, setBxMeldinger] = useState<string[]>([])
   const [bundleName, setBundleName] = useState('')
   const [dragOver, setDragOver] = useState(false)
   const zipRef = useRef<HTMLInputElement>(null)
@@ -878,6 +907,8 @@ function UploadModal({ onDone, onClose }: {
     setError(null)
     setErrorDetails(null)
     setDoneResult(null)
+    setBxMeldinger([])
+    const bxMeldingerSamlet: string[] = []
     try {
       type PesEntry = { name: string; path: string; getData: () => Promise<Uint8Array> }
       type ImgEntry = { name: string; path: string; ext: string; getData: () => Promise<Uint8Array> }
@@ -895,9 +926,15 @@ function UploadModal({ onDone, onClose }: {
         pesFiles: PesEntry[],
         imageFiles: ImgEntry[],
         batchName: string,
-        onFileDone: () => void = () => {}
+        onFileDone: () => void = () => {},
+        bxFiles: BxFil[] = [],
       ) {
-        if (pesFiles.length === 0) return
+        if (pesFiles.length === 0) {
+          if (bxFiles.length > 0) {
+            bxMeldingerSamlet.push(`${batchName}: BX-filer uten PES-filer — bruk «Last inn BX» på bundlen i stedet`)
+          }
+          return
+        }
         const zipBundleName = bundleName.trim() || batchName
 
         const motifMap = new Map<string, { sizeLabel: string; pesFile: PesEntry }[]>()
@@ -1154,7 +1191,24 @@ function UploadModal({ onDone, onClose }: {
                 .update({ data: { ...motif.data, bundleId: bundle.id } })
                 .eq('id', motif.id)
             }
+            if (bxFiles.length > 0) {
+              setProgress(`Leser fontmetrikk fra ${bxFiles.length} BX-filer…`)
+              const tommer = tommerForSizes(batchResults.flatMap(m => m.data.sizes))
+              const { perTomme, meldinger } = await lesBxFiler(bxFiles, parseBxViaApi, tommer)
+              bxMeldingerSamlet.push(...meldinger.map(m => `${zipBundleName}: ${m}`))
+              if (Object.keys(perTomme).length > 0) {
+                const { error: bxErr } = await supabase.from('embroidery_bundles')
+                  .update({ data: slaaInnBx(bundle.data, perTomme) }).eq('id', bundle.id)
+                bxMeldingerSamlet.push(bxErr
+                  ? `${zipBundleName}: BX-metrikken ble ikke lagret (${bxErr.message})`
+                  : `${zipBundleName}: BX-metrikk lest inn for ${Object.keys(perTomme).sort((a, b) => parseFloat(a) - parseFloat(b)).map(t => `${t}"`).join(', ')} — merket som font`)
+              }
+            }
           }
+        } else if (bxFiles.length > 0) {
+          bxMeldingerSamlet.push(uploadMode === 'bundle'
+            ? `${batchName}: ${bxFiles.length} BX-filer ikke lest inn — ingen motiver ble lastet opp`
+            : `${batchName}: ${bxFiles.length} BX-filer ignorert — fontmetrikk leses bare inn i bundle-modus`)
         }
 
         results.push(...batchResults)
@@ -1164,10 +1218,11 @@ function UploadModal({ onDone, onClose }: {
       const zipFiles = files.filter(f => /\.zip$/i.test(f.name))
       const pesRawFiles = files.filter(f => /\.pes$/i.test(f.name))
       const imgRawFiles = files.filter(f => /\.(bmp|jpg|jpeg|png)$/i.test(f.name))
+      const bxRawFiles = files.filter(f => /\.bx$/i.test(f.name))
 
       // ── Phase 1: Collect all batches (unzip ZIPs) without processing them yet.
       //    This lets us count total PES files across the whole job before starting.
-      type Batch = { pes: PesEntry[]; img: ImgEntry[]; name: string }
+      type Batch = { pes: PesEntry[]; img: ImgEntry[]; bx: BxFil[]; name: string }
       const batches: Batch[] = []
 
       const JSZip = (await import('jszip')).default
@@ -1177,6 +1232,7 @@ function UploadModal({ onDone, onClose }: {
 
         const zipPes: PesEntry[] = []
         const zipImg: ImgEntry[] = []
+        const zipBx: BxFil[] = []
 
         // JSZip reads entry names directly from ZIP binary headers — original case is preserved.
         zip.forEach((relativePath, zipEntry) => {
@@ -1190,6 +1246,8 @@ function UploadModal({ onDone, onClose }: {
           const name = relativePath.replace(/\\/g, '/').split('/').pop() ?? relativePath
           if (lower.endsWith('.pes')) {
             zipPes.push({ name, path: relativePath, getData: () => zipEntry.async('uint8array') })
+          } else if (lower.endsWith('.bx')) {
+            zipBx.push({ sti: relativePath, getData: () => zipEntry.async('uint8array') })
           } else if (/\.(bmp|jpg|jpeg|png)$/.test(lower)) {
             const ext = lower.split('.').pop()!
             zipImg.push({ name, path: relativePath, ext, getData: () => zipEntry.async('uint8array') })
@@ -1198,7 +1256,7 @@ function UploadModal({ onDone, onClose }: {
 
         const batchName = bundleName.trim() ||
           zipFile.name.replace(/\.zip$/i, '').replace(/[-_]/g, ' ')
-        batches.push({ pes: zipPes, img: zipImg, name: batchName })
+        batches.push({ pes: zipPes, img: zipImg, bx: zipBx, name: batchName })
       }
 
       if (pesRawFiles.length > 0) {
@@ -1215,7 +1273,10 @@ function UploadModal({ onDone, onClose }: {
         const looseDefaultName = firstRelative
           ? firstRelative.split('/')[0]
           : pesRawFiles[0].name.replace(/\.pes$/i, '')
-        batches.push({ pes: pesBatch, img: imgBatch, name: bundleName.trim() || looseDefaultName })
+        const bxBatch: BxFil[] = bxRawFiles.map(f => ({ sti: f.webkitRelativePath || f.name, getData: () => fileBytes(f) }))
+        batches.push({ pes: pesBatch, img: imgBatch, bx: bxBatch, name: bundleName.trim() || looseDefaultName })
+      } else if (bxRawFiles.length > 0) {
+        bxMeldingerSamlet.push(`${bxRawFiles.length} BX-filer uten PES-filer — bruk «Last inn BX» på bundlen i stedet`)
       }
 
       // ── Phase 2: Count total PES files, then process all batches with progress tracking.
@@ -1227,7 +1288,7 @@ function UploadModal({ onDone, onClose }: {
         await processBatch(batch.pes, batch.img, batch.name, () => {
           donePes++
           setProgressPct(Math.round(donePes / totalPes * 100))
-        })
+        }, batch.bx)
       }
 
       setProgressPct(100)
@@ -1236,6 +1297,7 @@ function UploadModal({ onDone, onClose }: {
         : ''
       setProgress(`Ferdig${previewNote}`)
 
+      setBxMeldinger(bxMeldingerSamlet)
       setUploading(false)
       const summary = failedFiles > 0
         ? `${results.length} motiver lagt til, ${failedFiles} filer feilet`
@@ -1255,7 +1317,7 @@ function UploadModal({ onDone, onClose }: {
     e.preventDefault()
     setDragOver(false)
     const files = Array.from(e.dataTransfer.files).filter(f =>
-      /\.(zip|pes|bmp|jpg|jpeg|png)$/i.test(f.name)
+      /\.(zip|pes|bx|bmp|jpg|jpeg|png)$/i.test(f.name)
     )
     if (files.length > 0) handleFiles(files)
   }
@@ -1355,6 +1417,11 @@ function UploadModal({ onDone, onClose }: {
                 {progress && <p className="text-stone-400">{progress}</p>}
               </div>
             </div>
+            {bxMeldinger.length > 0 && (
+              <ul className="text-xs text-stone-500 space-y-1 bg-stone-50 rounded-xl px-3 py-2">
+                {bxMeldinger.map((m, i) => <li key={i}>{m}</li>)}
+              </ul>
+            )}
             <button
               onClick={() => onDone(doneResult.results, doneResult.summary)}
               className="w-full py-2.5 bg-stone-800 text-white text-sm rounded-xl hover:bg-stone-700 transition-colors"
@@ -2306,6 +2373,72 @@ function BundleDetail({ bundle, motifs, onBack, onSaved, onDelete, onMotifClick,
     update({ customImage: urlData.publicUrl, useCustomImage: true })
   }
 
+  // ── BX-fontmetrikk ────────────────────────────────────────────────────────────
+  // For en bundle som allerede finnes: les BX-filene (én per tomme) inn i fontMetrikk.bx.
+  // fontMetrikk hentes FERSK fra databasen før skriving — manuell kalibrering kan være
+  // lagret fra arrangeringsverktøyet etter at denne siden ble åpnet, og skal ikke
+  // overskrives av skjemaets gamle kopi.
+  const bxFilRef = useRef<HTMLInputElement>(null)
+  const bxMappeRef = useRef<HTMLInputElement>(null)
+  const [bxLaster, setBxLaster] = useState(false)
+  const [bxMeldinger, setBxMeldinger] = useState<string[]>([])
+
+  useEffect(() => {
+    if (bxMappeRef.current) bxMappeRef.current.setAttribute('webkitdirectory', '')
+  }, [])
+
+  async function lastInnBx(files: File[]) {
+    setBxLaster(true)
+    setBxMeldinger([])
+    try {
+      const bxFiler: BxFil[] = []
+      for (const f of files) {
+        if (/\.zip$/i.test(f.name)) {
+          const JSZip = (await import('jszip')).default
+          const zip = await JSZip.loadAsync(f)
+          zip.forEach((sti, entry) => {
+            if (!entry.dir && sti.toLowerCase().endsWith('.bx')) {
+              bxFiler.push({ sti, getData: () => entry.async('uint8array') })
+            }
+          })
+        } else if (/\.bx$/i.test(f.name)) {
+          bxFiler.push({ sti: f.webkitRelativePath || f.name, getData: () => f.arrayBuffer().then(b => new Uint8Array(b)) })
+        }
+      }
+      if (bxFiler.length === 0) {
+        setBxMeldinger(['Fant ingen .bx-filer i det som ble valgt'])
+        return
+      }
+      const tommer = tommerForSizes(motifs.flatMap(m => m.data.sizes))
+      const { perTomme, meldinger } = await lesBxFiler(bxFiler, parseBxViaApi, tommer)
+      const lest = Object.keys(perTomme).sort((a, b) => parseFloat(a) - parseFloat(b))
+      if (lest.length > 0) {
+        const { data: fersk, error } = await supabase
+          .from('embroidery_bundles').select('data').eq('id', idRef.current).single()
+        if (error || !fersk) throw new Error(error?.message ?? 'Fant ikke bundelen i databasen')
+        const ny = slaaInnBx(
+          { ...pendingRef.current, fontMetrikk: (fersk.data as EmbroideryBundleData).fontMetrikk },
+          perTomme,
+        )
+        const { error: lagreErr } = await supabase.from('embroidery_bundles').update({ data: ny }).eq('id', idRef.current)
+        if (lagreErr) throw new Error(lagreErr.message)
+        // Ventende skjemaendringer lå i pendingRef og er lagret med — tidtakeren trengs ikke.
+        if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null }
+        pendingRef.current = ny
+        setForm(ny)
+        onSaved()
+        meldinger.unshift(`Lest inn for ${lest.map(t => `${t}"`).join(', ')}`)
+      }
+      setBxMeldinger(meldinger)
+    } catch (err) {
+      setBxMeldinger([`Innlesingen feilet: ${err instanceof Error ? err.message : String(err)}`])
+    } finally {
+      setBxLaster(false)
+      if (bxFilRef.current) bxFilRef.current.value = ''
+      if (bxMappeRef.current) bxMappeRef.current.value = ''
+    }
+  }
+
   // ── Bundle motif edit mode ────────────────────────────────────────────────────
 
   const [bundleEditMode, setBundleEditMode] = useState(false)
@@ -2498,6 +2631,44 @@ function BundleDetail({ bundle, motifs, onBack, onSaved, onDelete, onMotifClick,
             <label className="block text-xs text-stone-500 mb-1.5">Vurdering</label>
             <StarRating rating={d.rating} onRate={r => update({ rating: r })} />
           </div>
+        </section>
+
+        <section className="bg-white rounded-2xl border border-stone-100 shadow-sm p-5 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="font-serif text-lg text-stone-700">Fontmetrikk (BX)</h3>
+            <div className="flex gap-2 flex-shrink-0">
+              <button onClick={() => bxFilRef.current?.click()} disabled={bxLaster}
+                className="h-8 px-3 rounded-xl border border-stone-200 text-sm text-stone-600 hover:border-[#C9A57A] hover:text-[#8B6340] transition-colors disabled:opacity-50">
+                {bxLaster ? 'Leser…' : 'Last inn BX'}
+              </button>
+              <button onClick={() => bxMappeRef.current?.click()} disabled={bxLaster}
+                className="h-8 px-3 rounded-xl border border-stone-200 text-sm text-stone-600 hover:border-[#C9A57A] hover:text-[#8B6340] transition-colors disabled:opacity-50">
+                Mappe
+              </button>
+            </div>
+          </div>
+          <input ref={bxFilRef} type="file" accept=".bx,.zip" multiple className="hidden"
+            onChange={e => { if (e.target.files?.length) lastInnBx(Array.from(e.target.files)) }} />
+          <input ref={bxMappeRef} type="file" multiple className="hidden"
+            onChange={e => { if (e.target.files?.length) lastInnBx(Array.from(e.target.files)) }} />
+          {d.fontMetrikk?.bx && Object.keys(d.fontMetrikk.bx).length > 0 ? (
+            <ul className="text-xs text-stone-500 space-y-0.5">
+              {Object.entries(d.fontMetrikk.bx)
+                .sort(([a], [b]) => parseFloat(a) - parseFloat(b))
+                .map(([t, m]) => (
+                  <li key={t}>{t}&quot; — {m.filnavn}, {m.glyphs.length} glyfer</li>
+                ))}
+            </ul>
+          ) : (
+            <p className="text-xs text-stone-400">
+              Ingen BX lest inn — grunnlinja utledes fra x-høyden. Velg ZIP-en, mappen eller .bx-filene fra fontpakken.
+            </p>
+          )}
+          {bxMeldinger.length > 0 && (
+            <ul className="text-xs text-stone-600 space-y-1 bg-stone-50 rounded-xl px-3 py-2">
+              {bxMeldinger.map((m, i) => <li key={i}>{m}</li>)}
+            </ul>
+          )}
         </section>
 
         <section className="bg-white rounded-2xl border border-stone-100 shadow-sm p-5">

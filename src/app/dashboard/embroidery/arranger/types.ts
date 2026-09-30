@@ -67,10 +67,46 @@ export interface Embroidery {
 // mellom ord (mellomromAndel er ALLEREDE en x-høyde-andel internt i layoutTekst, så den
 // lagres uendret, uten om- og tilbakeregning). Ingen lagret verdi → glideren starter på 0
 // (sporing) / dagens standard 0,6 (mellomrom) — se buildFontData/TextVerktoy.
+// bx: fontmetrikk lest ut av BX-fila som følger fontpakken (api/parse-bx), én per
+// tommestørrelse. Nøkkelen er PER TOMME, i motsetning til tegn over: digitaliserens
+// underlengdeAndel varierer mellom størrelsene (g: 0,44–0,51 i Seraphine), så én andel for
+// alle størrelser ville satt g ved 2,5" ~2 mm feil. Mål i tiendedels mm, som i fila.
+// Manuell kalibrering i tegn vinner alltid over bx — se buildFontData.
 export interface FontMetrikk {
   sporingAndel?: number
   mellomromAndel?: number
   tegn: { [tegn: string]: { underlengdeAndel: number; kilde: 'manuell'; oppdatert: string } }
+  bx?: { [tomme: string]: BxMetrikk }
+}
+
+export interface BxGlyf {
+  tegn: string | null      // null når desname ikke er et kjent tegn
+  noekkel: string          // desname: a–z, AU–ZU, 0–9, tegnsetting
+  bredde: number
+  hoyde: number
+  grunnlinjeY: number
+  underlengdeAndel: number
+  // pesname fra BX-en — fontens GAMLE navn (SCVintageLove_…), ikke PES-filnavnet i pakken.
+  // Bare til visning; koblingen til PES-fila går på tegn, med målsjekk.
+  kildenavn: string | null
+}
+
+export interface BxMetrikk {
+  fontName: string | null
+  ltrSpace: number | null
+  // Lagret, men ikke brukt: 15,6 tiendedels mm (1,5") er for lite til å være hele
+  // ordmellomrommet, og betydningen er ikke forstått.
+  wSpace: number | null
+  intraRHS: number | null
+  kern: number | null
+  mHeight: number
+  defsz: number | null
+  minsz: number | null
+  maxsz: number | null
+  availableChars: string[]
+  glyphs: BxGlyf[]
+  filnavn: string
+  lastInn: string
 }
 
 export interface EmbroideryBundleData {

@@ -78,6 +78,30 @@ export function utledTommeFraSizeLabel(sizeLabel: string): string[] {
   return []
 }
 
+// Tomme for en BX-fil ut fra stien. StitchConcept-pakker legger én BX per størrelse i en
+// mappe som «1_5inches/BX/Seraphine_Satin_ 1_5''.bx» — mappenavnet prøves først, så
+// filnavnets «1_5''»/«2''», så PES-mønstrene i utledTomme. Resultatet MÅ kryssjekkes mot
+// fontens mHeight med bxTommeStemmer før det brukes.
+export function utledTommeFraBxSti(sti: string): string | null {
+  const deler = sti.replace(/\\/g, '/').split('/')
+  const filnavn = deler.pop() ?? sti
+  for (const del of [...deler].reverse()) {
+    const m = /^(\d+)(?:_(\d))?inch(?:es)?$/i.exec(del)
+    if (m) return m[2] ? `${m[1]}.${m[2]}` : m[1]
+  }
+  const base = filnavn.replace(/\.bx$/i, '')
+  const anf = /(?:^|[_\s])(\d+)(?:_(\d))?(?:''|")$/.exec(base)
+  if (anf) return anf[2] ? `${anf[1]}.${anf[2]}` : anf[1]
+  return utledTomme(base)?.tomme ?? null
+}
+
+// mHeight er fontens høyde i tiendedels mm. Seraphine ligger 0,03–0,04" over nominell
+// størrelse i alle åtte filene, så 0,1" skiller en riktig tomme fra nabostørrelsen (0,5").
+export function bxTommeStemmer(tomme: string, mHeightTiendedelMm: number): boolean {
+  const t = parseFloat(tomme)
+  return Number.isFinite(t) && Math.abs(mHeightTiendedelMm / 254 - t) <= 0.1
+}
+
 // Gjenkjenner enkelt-tegn fra en motividentitet.
 // Håndterer:
 //   - Direkte enkelt-tegn: "J", "a", "3"

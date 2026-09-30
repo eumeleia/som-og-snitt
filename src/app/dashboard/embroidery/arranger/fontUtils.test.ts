@@ -3,7 +3,7 @@ import {
   buildFontData, layoutTekst, klassifiser, malSporingFraPosisjoner, omplasserTekstgruppe,
   trekkFraFellesForskyvning,
 } from './fontUtils'
-import type { Embroidery, VirtuelMotiv } from './types'
+import type { BxGlyf, BxMetrikk, Embroidery, FontMetrikk, VirtuelMotiv } from './types'
 
 // Ekte, målte bbokser fra Seraphine 2" (docs/fontmaling-2026-08-13.md), bredde×høyde i mm.
 const SERAPHINE_2IN: Record<string, { widthMm: number; heightMm: number }> = {
@@ -629,5 +629,123 @@ describe('buildFontData uten BX — festet oppførsel fra før BX', () => {
         "totalHøydeMm": 71.10000000000001,
       }
     `)
+  })
+})
+
+// BX-metrikk (api/parse-bx): tall fra Seraphine Satin 1,5" — BX-glyfene fra fila, PES-målene
+// fra pyembroidery-kryssjekken (lower_a 184×125, Upper_A 495×389, lower_p 227×318).
+describe('buildFontData med BX-metrikk', () => {
+  const PES_1_5: Record<string, { fil: string; widthMm: number; heightMm: number }> = {
+    a: { fil: 'SCSeraphine_Satin_1_5inch_lower_a.PES', widthMm: 18.4, heightMm: 12.5 },
+    p: { fil: 'SCSeraphine_Satin_1_5inch_lower_p.PES', widthMm: 22.7, heightMm: 31.8 },
+    A: { fil: 'SCSeraphine_Satin_1_5inch_Upper_A.PES', widthMm: 49.5, heightMm: 38.9 },
+  }
+  function vm15(tegn: string): VirtuelMotiv {
+    return { ...vm(tegn), sizes: [{ embroideryId: `e15-${tegn}`, sizeId: 's', tommeLabel: '1.5', sizeLabel: '1.5"' }] }
+  }
+  function emb15(tegn: string): Embroidery {
+    const { fil, widthMm, heightMm } = PES_1_5[tegn]
+    return {
+      id: `e15-${tegn}`, created_at: '',
+      data: {
+        navn: tegn, coverImage: '', bmpPreview: '', customImage: '', useCustomImage: false,
+        sizes: [{ id: 's', sizeLabel: '1.5"', pesUrl: '', pesFilename: fil, widthMm, heightMm }],
+      },
+    }
+  }
+  function glyf(tegn: string, noekkel: string, bredde: number, hoyde: number, grunnlinjeY: number, kildenavn: string): BxGlyf {
+    return { tegn, noekkel, bredde, hoyde, grunnlinjeY, underlengdeAndel: (grunnlinjeY + hoyde / 2) / hoyde, kildenavn }
+  }
+  const BX_1_5: BxMetrikk = {
+    fontName: "Seraphine_Satin_ 1_5''", ltrSpace: 11.7, wSpace: 15.6, intraRHS: 0, kern: 0,
+    mHeight: 390, defsz: 390, minsz: 195, maxsz: 975, availableChars: [],
+    filnavn: "Seraphine_Satin_ 1_5''.bx", lastInn: '2026-09-30',
+    glyphs: [
+      glyf('a', 'a', 184, 126, -63, 'SCVintageLove_REG_1_5inch_lower_a.EMB'),
+      glyf('p', 'p', 228, 318, -2.25, 'SCVintageLove_REG_1_5inch_lower_p.EMB'),
+      glyf('g', 'g', 168, 208, -9.5, 'SCVintageLove_REG_1_5inch_lower_g.EMB'),
+      glyf('A', 'AU', 496, 390, -195, 'SCVintageLove_REG_1_5inch_Upper_A.EMB'),
+    ],
+  }
+  const tegn15 = ['a', 'p', 'A']
+  const vms15 = tegn15.map(vm15)
+  const bibl15 = tegn15.map(emb15)
+  const medBx: FontMetrikk = { tegn: {}, bx: { '1.5': BX_1_5 } }
+
+  it('p får digitaliserens grunnlinje: 31,8 × (1 − 0,4929) = 16,12 mm', () => {
+    const fd = buildFontData(vms15, '1.5', bibl15, medBx)
+    expect(fd.tegn.p.grunnlinjeKilde).toBe('bx')
+    expect(fd.tegn.p.bifMm).toBeCloseTo(16.12, 2)
+    // Heuristikken ville gitt x-høyden (a = 12,5 mm) — BX-en flytter p 3,6 mm ned.
+    expect(buildFontData(vms15, '1.5', bibl15).tegn.p.bifMm).toBe(12.5)
+  })
+
+  it('a og A står på egen bunn også etter BX (andel 0)', () => {
+    const fd = buildFontData(vms15, '1.5', bibl15, medBx)
+    for (const t of ['a', 'A']) {
+      expect(fd.tegn[t].grunnlinjeKilde).toBe('bx')
+      expect(fd.tegn[t].bifMm).toBeCloseTo(PES_1_5[t].heightMm, 6)
+    }
+  })
+
+  it('kobler på tegn, ikke pesname: kildenavn som peker på a sin PES-fil brukes ikke', () => {
+    // En glyf for «o» med a sin PES-fil som kildenavn — ville vunnet en navnematching.
+    const lokkeglyf = glyf('o', 'o', 184, 125, 0, 'SCSeraphine_Satin_1_5inch_lower_a.PES')
+    const fm: FontMetrikk = { tegn: {}, bx: { '1.5': { ...BX_1_5, glyphs: [lokkeglyf, ...BX_1_5.glyphs] } } }
+    const fd = buildFontData(vms15, '1.5', bibl15, fm)
+    expect(fd.tegn.a.bifMm).toBeCloseTo(12.5, 6)            // glyf «a», andel 0
+    expect(fd.tegn.p.bifMm).toBeCloseTo(31.8 * (1 - 156.75 / 318), 6)
+    expect(fd.bx?.manglerFil).toContain('o')
+  })
+
+  it('mål som ikke stemmer: synlig avvik, ingen BX-metrikk, heuristikken som før', () => {
+    const feilP = { ...BX_1_5, glyphs: BX_1_5.glyphs.map(g => g.tegn === 'p' ? { ...g, hoyde: 330 } : g) }
+    const fd = buildFontData(vms15, '1.5', bibl15, { tegn: {}, bx: { '1.5': feilP } })
+    expect(fd.tegn.p.grunnlinjeKilde).toBe('utledet')
+    expect(fd.tegn.p.bifMm).toBe(12.5)
+    expect(fd.bx?.avvik).toEqual([{ tegn: 'p', bxMal: { bredde: 228, hoyde: 330 }, pesMal: { bredde: 227, hoyde: 318 } }])
+  })
+
+  it('manuell kalibrering vinner over BX', () => {
+    const fm: FontMetrikk = { ...medBx, tegn: { p: { underlengdeAndel: 0.3, kilde: 'manuell', oppdatert: '' } } }
+    const fd = buildFontData(vms15, '1.5', bibl15, fm)
+    expect(fd.tegn.p.grunnlinjeKilde).toBe('manuell')
+    expect(fd.tegn.p.bifMm).toBeCloseTo(31.8 * 0.7, 6)
+    expect(fd.tegn.a.grunnlinjeKilde).toBe('bx')
+  })
+
+  it('BX for en annen tomme brukes ikke', () => {
+    const fd = buildFontData(vms15, '1.5', bibl15, { tegn: {}, bx: { '2': BX_1_5 } })
+    expect(fd.bx).toBeNull()
+    expect(Object.values(fd.tegn).every(t => t.grunnlinjeKilde === 'utledet')).toBe(true)
+  })
+
+  it('BX-data som ikke lar seg tolke gir heuristikken, ikke en kastet feil', () => {
+    const uten = buildFontData(vms15, '1.5', bibl15)
+    for (const odelagt of [
+      { mHeight: '390', glyphs: [] },
+      { mHeight: 390, glyphs: 'ingen' },
+      { mHeight: 390, glyphs: [{ tegn: 'p', hoyde: 0 }] },
+      null,
+    ]) {
+      const fm = { tegn: {}, bx: { '1.5': odelagt } } as unknown as FontMetrikk
+      const fd = buildFontData(vms15, '1.5', bibl15, fm)
+      expect(fd.bx).toBeNull()
+      expect(fd).toEqual(uten)
+    }
+  })
+
+  it('ltrSpace gis i mm som startverdi for sporing, og er 0,093 × x-høyde for Seraphine 1,5"', () => {
+    const fd = buildFontData(vms15, '1.5', bibl15, medBx)
+    expect(fd.bx?.ltrSpaceMm).toBeCloseTo(1.17, 6)
+    expect(fd.bx!.ltrSpaceMm! / fd.metrics.xHeight).toBeCloseTo(0.093, 2)
+  })
+
+  it('grunnlinja er uavhengig av bokstav- og ordavstand', () => {
+    const fd = buildFontData(vms15, '1.5', bibl15, medBx)
+    const y = (tracking: number, mellomromFaktor: number) =>
+      layoutTekst('Aa pa', fd, { tracking, mellomromFaktor }).bokstaver.map(b => b.posYTiendedelMm)
+    expect(y(3, 1.2)).toEqual(y(0, 0.6))
+    expect(y(-2, 0.3)).toEqual(y(0, 0.6))
   })
 })

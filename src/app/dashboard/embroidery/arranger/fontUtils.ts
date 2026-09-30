@@ -1,4 +1,5 @@
-import type { Embroidery, FontMetrikk, VirtuelMotiv } from './types'
+import type { BxGlyf, Embroidery, FontMetrikk, VirtuelMotiv } from './types'
+import { gyldigBxMetrikk } from './bxMetrikk'
 
 // Bokstavklassifisering for grunnlinjeplassering — IKKE det samme som Karakter.type i
 // tomme.ts (stor/liten/tall/symbol, brukt til fontrad-gjenkjenning). Denne styrer hvor
@@ -52,9 +53,31 @@ export interface FontTegn {
   // faktisk er MÅLT (xHeightMalt), er bifMm i stedet den målte xHeight-en — grunnlinjen
   // ligger da der x-høyde-bokstavene faktisk står, ikke ved bunnen av tegnets egen hale.
   // En manuell fontMetrikk.tegn[tegn].underlengdeAndel (kalibrert med øyet) overstyrer alltid
-  // begge deler, uansett klassifisering.
+  // begge deler, uansett klassifisering. Finnes BX-metrikk for tegnet i denne tommen, og
+  // målene stemmer med PES-fila, brukes digitaliserens egen grunnlinje før heuristikken.
   bifMm: number
+  grunnlinjeKilde: 'manuell' | 'bx' | 'utledet'
 }
+
+// Tegn der BX-glyfen og PES-fila ikke har samme mål — koblingen på tegn kan da ikke
+// bekreftes, og tegnet får ingen BX-metrikk (heuristikken tar over).
+export interface BxAvvik {
+  tegn: string
+  bxMal: { bredde: number; hoyde: number }   // tiendedels mm
+  pesMal: { bredde: number; hoyde: number }  // tiendedels mm
+}
+
+export interface BxStatus {
+  filnavn: string
+  ltrSpaceMm: number | null
+  avvik: BxAvvik[]
+  // Tegn BX-en har glyf for, men som mangler PES-fil i denne tommen.
+  manglerFil: string[]
+}
+
+// Toleranse for at BX-glyf og PES-fil er samme tegn: kryssjekken mot pyembroidery ga én
+// enhets avvik (avrunding) på a, A og p.
+const BX_MAALTOLERANSE_TIENDEDEL = 2
 
 export interface FontMetrics {
   xHeight: number       // mm — MÅLT median av x-høyde-bokstavene som finnes i denne
@@ -71,6 +94,7 @@ export interface FontMetrics {
 export interface FontData {
   metrics: FontMetrics
   tegn: Record<string, FontTegn>  // actual character → file info
+  bx: BxStatus | null             // null: ingen (gyldig) BX-metrikk for denne tommen
 }
 
 // Build font data for a specific inch size from virtual motifs and the embroidery library.
@@ -104,6 +128,16 @@ export function buildFontData(
   const xHeightMalt = xRefHeights.length > 0
   const xHeight = xHeightMalt ? xRefHeights[Math.floor(xRefHeights.length / 2)] : XHEIGHT_RESERVE_MM
 
+  // BX-glyfene for denne tommen, slått opp på TEGN — aldri på pesname, som er fontens
+  // gamle navn og ikke matcher PES-filene i pakken.
+  const bxRaa = fontMetrikk?.bx?.[tomme]
+  const bxMetrikk = gyldigBxMetrikk(bxRaa) ? bxRaa : null
+  const bxGlyfer = new Map<string, BxGlyf>()
+  for (const g of bxMetrikk?.glyphs ?? []) {
+    if (g.tegn && !bxGlyfer.has(g.tegn)) bxGlyfer.set(g.tegn, g)
+  }
+  const bxAvvik: BxAvvik[] = []
+
   // Andre passering: bygg tegn-oppslaget, med grunnlinjen for underlengder utledet fra den
   // MÅLTE xHeight-en over (aldri fra reserveverdien — se xHeightMalt-sjekken).
   const tegn: Record<string, FontTegn> = {}
@@ -116,9 +150,25 @@ export function buildFontData(
     if (!eSize?.widthMm || !eSize?.heightMm) continue
 
     const manuellAndel = fontMetrikk?.tegn[vm.karakter.tegn]?.underlengdeAndel
+    const glyf = bxGlyfer.get(vm.karakter.tegn)
+    const glyfStemmer = glyf != null
+      && Math.abs(glyf.bredde - eSize.widthMm * 10) <= BX_MAALTOLERANSE_TIENDEDEL
+      && Math.abs(glyf.hoyde - eSize.heightMm * 10) <= BX_MAALTOLERANSE_TIENDEDEL
+    if (glyf && !glyfStemmer && !bxAvvik.some(a => a.tegn === vm.karakter!.tegn)) {
+      bxAvvik.push({
+        tegn: vm.karakter.tegn,
+        bxMal: { bredde: glyf.bredde, hoyde: glyf.hoyde },
+        pesMal: { bredde: Math.round(eSize.widthMm * 10), hoyde: Math.round(eSize.heightMm * 10) },
+      })
+    }
     let bifMm: number
+    let grunnlinjeKilde: FontTegn['grunnlinjeKilde'] = 'utledet'
     if (manuellAndel != null) {
       bifMm = eSize.heightMm * (1 - manuellAndel) // kalibrert med øyet — vinner alltid
+      grunnlinjeKilde = 'manuell'
+    } else if (glyf && glyfStemmer) {
+      bifMm = eSize.heightMm * (1 - glyf.underlengdeAndel) // digitaliserens egen grunnlinje
+      grunnlinjeKilde = 'bx'
     } else if (xHeightMalt && klassifiser(vm.karakter.tegn) === 'underlengde') {
       bifMm = xHeight // grunnlinjen er den målte x-høyden — resten av tegnet er halen
     } else {
@@ -132,10 +182,19 @@ export function buildFontData(
       widthMm: eSize.widthMm,
       heightMm: eSize.heightMm,
       bifMm,
+      grunnlinjeKilde,
     }
   }
 
-  return { metrics: { xHeight, xHeightMalt }, tegn }
+  const bx: BxStatus | null = bxMetrikk && {
+    filnavn: typeof bxMetrikk.filnavn === 'string' ? bxMetrikk.filnavn : '',
+    ltrSpaceMm: typeof bxMetrikk.ltrSpace === 'number' && Number.isFinite(bxMetrikk.ltrSpace)
+      ? bxMetrikk.ltrSpace / 10 : null,
+    avvik: bxAvvik,
+    manglerFil: [...bxGlyfer.keys()].filter(t => !tegn[t]),
+  }
+
+  return { metrics: { xHeight, xHeightMalt }, tegn, bx }
 }
 
 export interface LayoutBokstav {
