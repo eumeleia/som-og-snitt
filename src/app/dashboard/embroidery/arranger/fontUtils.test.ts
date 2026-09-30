@@ -301,3 +301,333 @@ describe('trekkFraFellesForskyvning', () => {
     expect(advarselTegn).toEqual(new Set(['p']))
   })
 })
+
+// Fester buildFontData/layoutTekst SLIK DE VAR før BX-metrikken kom inn. Skrevet og kjørt
+// grønt mot den urørte funksjonen — skal aldri redigeres for å få en senere endring til å
+// passere. Bare feltene som fantes da sammenlignes, så nye felt (grunnlinjeKilde o.l.)
+// ikke bryter festingen.
+describe('buildFontData uten BX — festet oppførsel fra før BX', () => {
+  function gammelForm(fd: ReturnType<typeof buildFontData>) {
+    return {
+      metrics: { xHeight: fd.metrics.xHeight, xHeightMalt: fd.metrics.xHeightMalt },
+      tegn: Object.fromEntries(Object.entries(fd.tegn).map(([k, t]) => [k, {
+        embroideryId: t.embroideryId, sizeId: t.sizeId, widthMm: t.widthMm, heightMm: t.heightMm, bifMm: t.bifMm,
+      }])),
+    }
+  }
+  function layoutForm(l: ReturnType<typeof layoutTekst>) {
+    return {
+      bokstaver: l.bokstaver.map(b => [b.tegn, b.indeksITekst, b.posXTiendedelMm, b.posYTiendedelMm]),
+      mangler: l.mangler, totalBreddeMm: l.totalBreddeMm, totalHøydeMm: l.totalHøydeMm,
+    }
+  }
+  const manuell = {
+    sporingAndel: 0.1, mellomromAndel: 0.8,
+    tegn: {
+      p: { underlengdeAndel: 0.4, kilde: 'manuell' as const, oppdatert: '2026-09-01' },
+      H: { underlengdeAndel: -0.05, kilde: 'manuell' as const, oppdatert: '2026-09-01' },
+    },
+  }
+
+  it('hele Seraphine 2"-settet, ingen fontMetrikk', () => {
+    expect(gammelForm(buildFontData(vms, '2', biblioteket))).toMatchInlineSnapshot(`
+      {
+        "metrics": {
+          "xHeight": 16.4,
+          "xHeightMalt": true,
+        },
+        "tegn": {
+          "A": {
+            "bifMm": 51.6,
+            "embroideryId": "e-A",
+            "heightMm": 51.6,
+            "sizeId": "s",
+            "widthMm": 65.8,
+          },
+          "H": {
+            "bifMm": 51.6,
+            "embroideryId": "e-H",
+            "heightMm": 51.6,
+            "sizeId": "s",
+            "widthMm": 72.2,
+          },
+          "O": {
+            "bifMm": 51.6,
+            "embroideryId": "e-O",
+            "heightMm": 51.6,
+            "sizeId": "s",
+            "widthMm": 45.2,
+          },
+          "c": {
+            "bifMm": 16.4,
+            "embroideryId": "e-c",
+            "heightMm": 16.4,
+            "sizeId": "s",
+            "widthMm": 18,
+          },
+          "e": {
+            "bifMm": 15.8,
+            "embroideryId": "e-e",
+            "heightMm": 15.8,
+            "sizeId": "s",
+            "widthMm": 18.1,
+          },
+          "g": {
+            "bifMm": 16.4,
+            "embroideryId": "e-g",
+            "heightMm": 27.3,
+            "sizeId": "s",
+            "widthMm": 22.1,
+          },
+          "o": {
+            "bifMm": 16.7,
+            "embroideryId": "e-o",
+            "heightMm": 16.7,
+            "sizeId": "s",
+            "widthMm": 16.6,
+          },
+          "p": {
+            "bifMm": 16.4,
+            "embroideryId": "e-p",
+            "heightMm": 42.3,
+            "sizeId": "s",
+            "widthMm": 29.9,
+          },
+          "y": {
+            "bifMm": 16.4,
+            "embroideryId": "e-y",
+            "heightMm": 30.9,
+            "sizeId": "s",
+            "widthMm": 27.5,
+          },
+        },
+      }
+    `)
+  })
+
+  it('manuell kalibrering på p og H', () => {
+    expect(gammelForm(buildFontData(vms, '2', biblioteket, manuell))).toMatchInlineSnapshot(`
+      {
+        "metrics": {
+          "xHeight": 16.4,
+          "xHeightMalt": true,
+        },
+        "tegn": {
+          "A": {
+            "bifMm": 51.6,
+            "embroideryId": "e-A",
+            "heightMm": 51.6,
+            "sizeId": "s",
+            "widthMm": 65.8,
+          },
+          "H": {
+            "bifMm": 54.18000000000001,
+            "embroideryId": "e-H",
+            "heightMm": 51.6,
+            "sizeId": "s",
+            "widthMm": 72.2,
+          },
+          "O": {
+            "bifMm": 51.6,
+            "embroideryId": "e-O",
+            "heightMm": 51.6,
+            "sizeId": "s",
+            "widthMm": 45.2,
+          },
+          "c": {
+            "bifMm": 16.4,
+            "embroideryId": "e-c",
+            "heightMm": 16.4,
+            "sizeId": "s",
+            "widthMm": 18,
+          },
+          "e": {
+            "bifMm": 15.8,
+            "embroideryId": "e-e",
+            "heightMm": 15.8,
+            "sizeId": "s",
+            "widthMm": 18.1,
+          },
+          "g": {
+            "bifMm": 16.4,
+            "embroideryId": "e-g",
+            "heightMm": 27.3,
+            "sizeId": "s",
+            "widthMm": 22.1,
+          },
+          "o": {
+            "bifMm": 16.7,
+            "embroideryId": "e-o",
+            "heightMm": 16.7,
+            "sizeId": "s",
+            "widthMm": 16.6,
+          },
+          "p": {
+            "bifMm": 25.38,
+            "embroideryId": "e-p",
+            "heightMm": 42.3,
+            "sizeId": "s",
+            "widthMm": 29.9,
+          },
+          "y": {
+            "bifMm": 16.4,
+            "embroideryId": "e-y",
+            "heightMm": 30.9,
+            "sizeId": "s",
+            "widthMm": 27.5,
+          },
+        },
+      }
+    `)
+  })
+
+  it('ingen x-høyde-bokstaver, og en tomme som ikke finnes', () => {
+    const kun = ['g', 'p', 'y']
+    expect(gammelForm(buildFontData(kun.map(vm), '2', kun.map(emb)))).toMatchInlineSnapshot(`
+      {
+        "metrics": {
+          "xHeight": 1.6,
+          "xHeightMalt": false,
+        },
+        "tegn": {
+          "g": {
+            "bifMm": 27.3,
+            "embroideryId": "e-g",
+            "heightMm": 27.3,
+            "sizeId": "s",
+            "widthMm": 22.1,
+          },
+          "p": {
+            "bifMm": 42.3,
+            "embroideryId": "e-p",
+            "heightMm": 42.3,
+            "sizeId": "s",
+            "widthMm": 29.9,
+          },
+          "y": {
+            "bifMm": 30.9,
+            "embroideryId": "e-y",
+            "heightMm": 30.9,
+            "sizeId": "s",
+            "widthMm": 27.5,
+          },
+        },
+      }
+    `)
+    expect(gammelForm(buildFontData(vms, '3', biblioteket))).toMatchInlineSnapshot(`
+      {
+        "metrics": {
+          "xHeight": 1.6,
+          "xHeightMalt": false,
+        },
+        "tegn": {},
+      }
+    `)
+  })
+
+  it('layoutTekst «Hoppy gy» med og uten manuell kalibrering', () => {
+    const opts = { tracking: 0.5, mellomromFaktor: 0.6 }
+    expect(layoutForm(layoutTekst('Hoppy gy', buildFontData(vms, '2', biblioteket), opts))).toMatchInlineSnapshot(`
+      {
+        "bokstaver": [
+          [
+            "H",
+            0,
+            -829,
+            -258,
+          ],
+          [
+            "o",
+            1,
+            -380,
+            -83,
+          ],
+          [
+            "p",
+            2,
+            -143,
+            48,
+          ],
+          [
+            "p",
+            3,
+            161,
+            48,
+          ],
+          [
+            "y",
+            4,
+            453,
+            -9,
+          ],
+          [
+            "g",
+            6,
+            800,
+            -27,
+          ],
+          [
+            "y",
+            7,
+            1053,
+            -9,
+          ],
+        ],
+        "mangler": [],
+        "totalBreddeMm": 238.04000000000002,
+        "totalHøydeMm": 77.5,
+      }
+    `)
+    expect(layoutForm(layoutTekst('Hoppy gy', buildFontData(vms, '2', biblioteket, manuell), opts))).toMatchInlineSnapshot(`
+      {
+        "bokstaver": [
+          [
+            "H",
+            0,
+            -829,
+            -284,
+          ],
+          [
+            "o",
+            1,
+            -380,
+            -83,
+          ],
+          [
+            "p",
+            2,
+            -143,
+            -42,
+          ],
+          [
+            "p",
+            3,
+            161,
+            -42,
+          ],
+          [
+            "y",
+            4,
+            453,
+            -9,
+          ],
+          [
+            "g",
+            6,
+            800,
+            -27,
+          ],
+          [
+            "y",
+            7,
+            1053,
+            -9,
+          ],
+        ],
+        "mangler": [],
+        "totalBreddeMm": 238.04000000000002,
+        "totalHøydeMm": 71.10000000000001,
+      }
+    `)
+  })
+})
