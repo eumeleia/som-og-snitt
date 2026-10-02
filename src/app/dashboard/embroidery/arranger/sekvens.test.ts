@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { byggFargePerBlokk, finnSammenslaingsforslag, effektivTradfarge, tellSting, type SekvensKontekst } from './sekvens'
+import { byggFargePerBlokk, finnSammenslaingsforslag, finnLagkonflikter, effektivTradfarge, tellSting, type SekvensKontekst } from './sekvens'
 import { snappTilPalett } from './broderPalett'
 import { byggPecTilEkteMap, type MinTrad } from './minTraadpalett'
 import type { BroderiBbox, BroderiMotivData, BroderiStingblokk, PlassertMotiv, SekvensElement, SekvensKjoring } from './types'
@@ -195,5 +195,89 @@ describe('effektivTradfarge — to-stegs-koblingen mot brukerens egen trådpalet
     expect(vist?.ekte).toBe(true)
     expect(vist?.hex).toBe(minEgenTrad.hex) // det VISTE er brukerens egen farge, ikke pecFasit
     expect(snappTilPalett(vist!.hex).hex).toBe(pecFasit) // men snapper TILBAKE til samme bøtte
+  })
+})
+
+// Punkt A, docs/onsker-2026-10-02.md: omrokkering advarer bare når to kjøringer som bytter
+// innbyrdes rekkefølge faktisk deler sting, og aldri ved samme tråd.
+describe('finnLagkonflikter', () => {
+  const BLÅ = '#0e1f7c' // Prussian Blue — eksakt palettfarge
+  const GRØNN = '#008777' // Teal Green — eksakt palettfarge
+
+  // Fylt kvadrat sentrert på (cx, cy): rader som sveiper hele bredden, så interpolerSting
+  // fyller innsiden.
+  function kvadrat(farge_hex: string, cx: number, cy: number, halv = 20): BroderiStingblokk {
+    const sting: [number, number][] = []
+    for (let y = cy - halv; y <= cy + halv; y += 5) sting.push([cx - halv, y], [cx + halv, y])
+    return blokk({ farge_hex, sting, bbox: { min_x: cx - halv, max_x: cx + halv, min_y: cy - halv, max_y: cy + halv } })
+  }
+
+  function motivMedBlokker(blokker: BroderiStingblokk[]): BroderiMotivData {
+    return motivData({
+      bbox: {
+        min_x: Math.min(...blokker.map(b => b.bbox.min_x)),
+        max_x: Math.max(...blokker.map(b => b.bbox.max_x)),
+        min_y: Math.min(...blokker.map(b => b.bbox.min_y)),
+        max_y: Math.max(...blokker.map(b => b.bbox.max_y)),
+      },
+      stingblokker: blokker,
+      fargekjoringer: blokker.map((b, i) => ({
+        farge_hex: b.farge_hex, tradnavn_auto: null, fra_index: i, til_index: i, antall_blokker: 1, antall_sting: b.sting.length,
+      })),
+    })
+  }
+
+  function ettMotiv(blokker: BroderiStingblokk[]): SekvensKontekst {
+    return { motiver: [plassert('pm', 'e', 's')], resolved: { 'e:s': motivMedBlokker(blokker) } }
+  }
+
+  const k0: SekvensKjoring = { id: 'k0', type: 'kjoring', plassertMotivId: 'pm', fargekjoringIndex: 0 }
+  const k1: SekvensKjoring = { id: 'k1', type: 'kjoring', plassertMotivId: 'pm', fargekjoringIndex: 1 }
+
+  it('samme motiv, ulik farge, disjunkt geometri, byttet rekkefølge → ingen konflikt', () => {
+    const ctx = ettMotiv([kvadrat(BLÅ, -100, 0), kvadrat(GRØNN, 100, 0)])
+    expect(finnLagkonflikter([k0, k1], [k1, k0], ctx, new Map())).toEqual([])
+  })
+
+  it('samme motiv, ulik farge, overlappende geometri, byttet rekkefølge → én konflikt med begge id-ene', () => {
+    const ctx = ettMotiv([kvadrat(BLÅ, 0, 0), kvadrat(GRØNN, 5, 5)])
+    const ut = finnLagkonflikter([k0, k1], [k1, k0], ctx, new Map())
+    expect(ut).toHaveLength(1)
+    // a er den som ligger først i ny.
+    expect(ut[0]).toMatchObject({ aId: 'k1', bId: 'k0' })
+    expect(ut[0].aFarge).toBe(effektivTradfarge(ctx, k1)?.hex)
+    expect(ut[0].bFarge).toBe(effektivTradfarge(ctx, k0)?.hex)
+  })
+
+  it('overlappende geometri, men to rå hex-verdier som snapper til samme PEC-farge → ingen konflikt', () => {
+    const raaA = BLÅ
+    const raaB = '#0f207d'
+    expect(raaA).not.toBe(raaB)
+    expect(snappTilPalett(raaA).hex).toBe(snappTilPalett(raaB).hex)
+    const ctx = ettMotiv([kvadrat(raaA, 0, 0), kvadrat(raaB, 5, 5)])
+    expect(finnLagkonflikter([k0, k1], [k1, k0], ctx, new Map())).toEqual([])
+  })
+
+  it('gammel og ny identiske → ingen konflikt', () => {
+    const ctx = ettMotiv([kvadrat(BLÅ, 0, 0), kvadrat(GRØNN, 5, 5)])
+    expect(finnLagkonflikter([k0, k1], [k0, k1], ctx, new Map())).toEqual([])
+  })
+
+  it('bare en pause flyttet → ingen konflikt', () => {
+    const ctx = ettMotiv([kvadrat(BLÅ, 0, 0), kvadrat(GRØNN, 5, 5)])
+    const pause: SekvensElement = { id: 'p', type: 'pause' }
+    expect(finnLagkonflikter([k0, pause, k1], [pause, k0, k1], ctx, new Map())).toEqual([])
+  })
+
+  it('ulike motiver med overlappende geometri, byttet rekkefølge → én konflikt (ny oppførsel)', () => {
+    const ctx: SekvensKontekst = {
+      motiver: [plassert('pm-a', 'ea', 'sa'), plassert('pm-b', 'eb', 'sb')],
+      resolved: { 'ea:sa': motivMedBlokker([kvadrat(BLÅ, 0, 0)]), 'eb:sb': motivMedBlokker([kvadrat(GRØNN, 0, 0)]) },
+    }
+    const a: SekvensKjoring = { id: 'a', type: 'kjoring', plassertMotivId: 'pm-a', fargekjoringIndex: 0 }
+    const b: SekvensKjoring = { id: 'b', type: 'kjoring', plassertMotivId: 'pm-b', fargekjoringIndex: 0 }
+    const ut = finnLagkonflikter([a, b], [b, a], ctx, new Map())
+    expect(ut).toHaveLength(1)
+    expect(ut[0]).toMatchObject({ aId: 'b', bId: 'a' })
   })
 })

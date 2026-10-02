@@ -249,6 +249,65 @@ export interface SammenslaingForslag {
 
 const MAKS_FORSLAG = 8
 
+export interface Lagkonflikt {
+  aId: string
+  bId: string
+  aFarge: string // effektiv trådfarge, hex
+  bFarge: string
+}
+
+// Hvilke par av kjøringer som har byttet innbyrdes rekkefølge mellom gammel og ny OG faktisk
+// deler sting — altså der det som ligger øverst i den ferdige broderingen blir et annet.
+// a er den av de to som ligger først i ny (sys først, havner under). Motiv-agnostisk med
+// vilje: to overlappende motiver har akkurat samme lagproblem som to kjøringer i samme motiv.
+// Hvert steg under er der for å slippe det neste, dyrere: fortegnsbytte → samme tråd →
+// bbox → raster.
+export function finnLagkonflikter(
+  gammel: SekvensElement[],
+  ny: SekvensElement[],
+  ctx: SekvensKontekst,
+  rasterCache: Map<string, Set<string> | null>,
+): Lagkonflikt[] {
+  // Indeks i HELE arrayet, pauser inkludert — de endrer ikke fortegnet på en differanse.
+  const gIdx = new Map(gammel.map((el, i) => [el.id, i]))
+  const nIdx = new Map(ny.map((el, i) => [el.id, i]))
+  const kjoringer = ny.filter((el): el is SekvensKjoring => el.type === 'kjoring')
+  const ut: Lagkonflikt[] = []
+
+  for (let x = 0; x < kjoringer.length; x++) {
+    for (let y = x + 1; y < kjoringer.length; y++) {
+      const a = kjoringer[x]
+      const b = kjoringer[y]
+      const gA = gIdx.get(a.id)
+      const gB = gIdx.get(b.id)
+      if (gA === undefined || gB === undefined) continue
+      const nA = nIdx.get(a.id) as number
+      const nB = nIdx.get(b.id) as number
+      if (Math.sign(gA - gB) === Math.sign(nA - nB)) continue
+
+      // Samme tråd over samme tråd ser likt ut uansett rekkefølge.
+      const aFarge = effektivTradfarge(ctx, a)?.hex
+      const bFarge = effektivTradfarge(ctx, b)?.hex
+      if (!aFarge || !bFarge || aFarge === bFarge) continue
+
+      const aBbox = plassertFargekjoringBbox(ctx, a)
+      const bBbox = plassertFargekjoringBbox(ctx, b)
+      if (!aBbox || !bBbox || !bokserOverlapper(aBbox, bBbox)) continue
+
+      const aRaster = plassertFargekjoringRaster(ctx, a, rasterCache)
+      const bRaster = plassertFargekjoringRaster(ctx, b, rasterCache)
+      if (aRaster && bRaster && cellerKolliderer(aRaster, bRaster)) {
+        ut.push({ aId: a.id, bId: b.id, aFarge, bFarge })
+      }
+    }
+  }
+  // kjoringer er allerede i ny-rekkefølge og a ligger alltid før b, så lista er sortert på nA.
+  return ut
+}
+
+// IKKE lenger en brukerregel — brukeren kan fritt flytte på tvers av den (se
+// finnLagkonflikter for det som faktisk advares om). Brukes bare som filter for hvilke
+// sammenslåinger finnSammenslaingsforslag foreslår av seg selv.
 // Returnerer true hvis sekvensen bevarer rekkefølgen innenfor hvert motiv:
 // for et gitt plassertMotivId må fargekjoringIndex-verdiene øke monotont gjennom sekvensen.
 export function bevarerMotivRekkefølge(sekvens: SekvensElement[]): boolean {

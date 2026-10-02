@@ -13,7 +13,7 @@ import { FargePicker } from './FargePicker'
 import {
   finnFargekjoring, effektivFargeRaa, effektivTradfarge, tellOmtredninger, flyttElementEtter,
   finnSammenslaingsforslag, sjekkFasesortering, fasesorter, nyPause,
-  plassertFargekjoringRaster, bevarerMotivRekkefølge, type SekvensKontekst, type SammenslaingForslag,
+  plassertFargekjoringRaster, finnLagkonflikter, type SekvensKontekst, type SammenslaingForslag, type Lagkonflikt,
 } from './sekvens'
 import { plassertPunkter } from './geometri'
 import type { MinTrad } from './minTraadpalett'
@@ -41,7 +41,11 @@ export function SekvensPanel({
 }) {
   const [fargePickerForId, setFargePickerForId] = useState<string | null>(null)
   const [forhåndsvisForslag, setForhåndsvisForslag] = useState<SammenslaingForslag | null>(null)
-  const [dndFeil, setDndFeil] = useState<string | null>(null)
+  // gammel ligger med for å oppdage at sekvensen har endret seg mens dialogen sto åpen (f.eks.
+  // synkroniserSekvens når et motiv blir ferdig tolket) — da ville ny slette de nye elementene.
+  const [flyttKonflikt, setFlyttKonflikt] = useState<
+    { gammel: SekvensElement[]; ny: SekvensElement[]; konflikter: Lagkonflikt[] } | null
+  >(null)
   // Fasesorter og Tilbakestill sletter ALLE pauser uten varsel ellers — de gamle
   // pause-posisjonene gir ikke mening etter en fullstendig ombygging av rekkefølgen, så
   // pausene skal fjernes, men brukeren skal få vite det FØR det skjer (angre-stacken
@@ -84,16 +88,14 @@ export function SekvensPanel({
     const newIndex = sekvens.findIndex(el => el.id === over.id)
     if (oldIndex === -1 || newIndex === -1) return
     const ny = arrayMove(sekvens, oldIndex, newIndex)
-    if (!bevarerMotivRekkefølge(ny)) {
-      const el = sekvens[oldIndex]
-      const motivNavn = el.type === 'kjoring'
-        ? (finnFargekjoring(ctx, el)?.pm.navn ?? 'motivet')
-        : 'motivet'
-      setDndFeil(`Kan ikke flytte hit — dette ville endret rekkefølgen inni ${motivNavn}.`)
-      return
-    }
-    setDndFeil(null)
-    onChange(ny)
+    const konflikter = finnLagkonflikter(sekvens, ny, ctx, rasterCache)
+    if (konflikter.length === 0) { onChange(ny); return }
+    setFlyttKonflikt({ gammel: sekvens, ny, konflikter })
+  }
+
+  function bekreftFlytt() {
+    if (flyttKonflikt && flyttKonflikt.gammel === sekvens) onChange(flyttKonflikt.ny)
+    setFlyttKonflikt(null)
   }
 
   function settFarge(elId: string, hex: string) {
@@ -305,7 +307,7 @@ export function SekvensPanel({
         </div>
       )}
 
-      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd} onDragStart={() => setDndFeil(null)}>
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
         <SortableContext items={sekvens.map(el => el.id)} strategy={verticalListSortingStrategy}>
           <ul className="divide-y divide-stone-100 bg-white rounded-2xl border border-stone-200 shadow-sm overflow-hidden">
             {sekvens.map((el, idx) => {
@@ -351,11 +353,6 @@ export function SekvensPanel({
             })}
           </ul>
         </SortableContext>
-        {dndFeil && (
-          <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mt-2">
-            {dndFeil}
-          </p>
-        )}
       </DndContext>
 
       {fargePickerEl && fargePickerFunn && (
@@ -386,6 +383,16 @@ export function SekvensPanel({
           antallPauser={antallPauser}
           onBekreft={bekreft}
           onAvbryt={() => setBekreftHandling(null)}
+        />
+      )}
+
+      {flyttKonflikt && (
+        <FlyttKonfliktModal
+          konflikter={flyttKonflikt.konflikter}
+          ny={flyttKonflikt.ny}
+          ctx={ctx}
+          onBekreft={bekreftFlytt}
+          onAvbryt={() => setFlyttKonflikt(null)}
         />
       )}
     </div>
@@ -534,6 +541,56 @@ function BekreftSlettPauserModal({ handling, antallPauser, onBekreft, onAvbryt }
             className="px-3 py-1.5 text-sm text-white bg-stone-800 rounded-lg hover:bg-stone-700 transition-colors"
           >
             {handlingNavn} — fjern {pauseOrd}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// b ligger etter a i ny, så b sys sist og legges over a. Like fargepar blir én linje.
+function FlyttKonfliktModal({ konflikter, ny, ctx, onBekreft, onAvbryt }: {
+  konflikter: Lagkonflikt[]
+  ny: SekvensElement[]
+  ctx: SekvensKontekst
+  onBekreft: () => void
+  onAvbryt: () => void
+}) {
+  const navnFor = (id: string, hex: string) => {
+    const el = ny.find(e => e.id === id)
+    return (el?.type === 'kjoring' ? effektivTradfarge(ctx, el)?.navn : undefined) ?? hex
+  }
+  const linjer = new Map<string, string>()
+  for (const k of konflikter) {
+    const nokkel = `${k.bFarge}>${k.aFarge}`
+    if (linjer.has(nokkel)) continue
+    linjer.set(nokkel, `${navnFor(k.bId, k.bFarge)} legges nå over ${navnFor(k.aId, k.aFarge)} i stedet for under.`)
+  }
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+      onClick={e => { if (e.target === e.currentTarget) onAvbryt() }}
+    >
+      <div className="bg-white rounded-2xl shadow-xl max-w-sm w-full overflow-hidden">
+        <div className="px-5 py-4">
+          <h3 className="font-serif text-lg text-stone-800 mb-2">Dette endrer hva som ligger øverst</h3>
+          <ul className="text-sm text-stone-600 space-y-1">
+            {Array.from(linjer, ([nokkel, tekst]) => <li key={nokkel}>{tekst}</li>)}
+          </ul>
+        </div>
+        <div className="px-5 py-3 border-t border-stone-100 flex justify-end gap-2">
+          <button
+            onClick={onAvbryt}
+            className="px-3 py-1.5 text-sm text-stone-500 hover:text-stone-700 transition-colors"
+          >
+            Avbryt
+          </button>
+          <button
+            onClick={onBekreft}
+            className="px-3 py-1.5 text-sm text-white bg-stone-800 rounded-lg hover:bg-stone-700 transition-colors"
+          >
+            Flytt likevel
           </button>
         </div>
       </div>
