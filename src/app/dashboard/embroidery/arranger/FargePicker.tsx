@@ -1,10 +1,23 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { BROTHER_PALETT } from './broderPalett'
+import {
+  hentPalett, leggIPalett, fjernFraPalett, registrerBrukt,
+  abonnerSistBrukte, sistBrukteSnapshot, sistBrukteServerSnapshot, type PalettFarge,
+} from './fargepalett'
 import type { MinTrad } from './minTraadpalett'
 
 type Fane = 'mine' | 'brother' | 'alle'
+// leggTil: et trykk i «Mine tråder» eller Brother-rutenettet legger fargen TIL paletten i
+// stedet for å velge den — onVelg kalles ikke i det hele tatt. rediger: × på palettrutene.
+type Modus = 'velg' | 'leggTil' | 'rediger'
+
+function ruteCls(valgt: boolean): string {
+  return `w-7 h-7 rounded-lg border-2 transition-all flex-shrink-0 ${
+    valgt ? 'border-stone-800 scale-110' : 'border-stone-200 hover:border-stone-400'
+  }`
+}
 
 function faneCls(aktiv: boolean): string {
   return `px-3 py-1.5 rounded-lg text-xs border transition-colors ${
@@ -30,6 +43,48 @@ export function FargePicker({ nuvarendeHex, harOverstyring, mineTrader = [], onV
   onClose: () => void
 }) {
   const [fane, setFane] = useState<Fane>(mineTrader.length > 0 ? 'mine' : 'brother')
+  const [palett, setPalett] = useState<PalettFarge[]>([])
+  const [modus, setModus] = useState<Modus>('velg')
+  const [palettFeil, setPalettFeil] = useState<string | null>(null)
+  const sistBrukte = useSyncExternalStore(abonnerSistBrukte, sistBrukteSnapshot, sistBrukteServerSnapshot)
+
+  useEffect(() => {
+    let aktiv = true
+    hentPalett().then(p => { if (aktiv) setPalett(p) })
+    return () => { aktiv = false }
+  }, [])
+
+  const iPalett = useMemo(() => new Set(palett.map(f => f.hex.toLowerCase())), [palett])
+  const erValgt = (hex: string) => hex.toLowerCase() === nuvarendeHex.toLowerCase()
+
+  // Eneste vei til onVelg, så «sist brukte» registreres uansett hvor fargen ble valgt fra.
+  function velg(hex: string) {
+    if (modus === 'leggTil') return
+    registrerBrukt(hex)
+    onVelg(hex)
+  }
+
+  async function leggTil(farge: Omit<PalettFarge, 'id'>) {
+    if (iPalett.has(farge.hex.toLowerCase())) return
+    try {
+      const ny = await leggIPalett(farge)
+      setPalett(p => (p.some(f => f.id === ny.id) ? p : [...p, ny]))
+      setPalettFeil(null)
+    } catch (err) {
+      setPalettFeil(err instanceof Error ? err.message : 'Klarte ikke legge til fargen')
+    }
+  }
+
+  async function fjern(id: string) {
+    setPalett(p => p.filter(f => f.id !== id))
+    try {
+      await fjernFraPalett(id)
+      setPalettFeil(null)
+    } catch (err) {
+      setPalettFeil(err instanceof Error ? err.message : 'Klarte ikke fjerne fargen')
+      setPalett(await hentPalett())
+    }
+  }
 
   const grupperPaMerke = useMemo(() => {
     const m = new Map<string, MinTrad[]>()
@@ -52,6 +107,72 @@ export function FargePicker({ nuvarendeHex, harOverstyring, mineTrader = [], onV
             <button onClick={() => setFane('brother')} className={faneCls(fane === 'brother')}>Brother 64 (PEC)</button>
             <button onClick={() => setFane('alle')} className={faneCls(fane === 'alle')}>Alle</button>
           </div>
+
+          {palett.length > 0 && (
+            <div className={`mt-3 ${modus === 'leggTil' ? 'opacity-40' : ''}`}>
+              <div className="flex items-center justify-between mb-1.5">
+                <p className="text-xs font-medium text-stone-400 uppercase tracking-wide">Min palett</p>
+                {modus !== 'leggTil' && (
+                  <button
+                    onClick={() => setModus(modus === 'rediger' ? 'velg' : 'rediger')}
+                    className="text-xs text-stone-500 hover:text-stone-700"
+                  >
+                    {modus === 'rediger' ? 'Ferdig' : 'Rediger'}
+                  </button>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {palett.map(f => (
+                  <div key={f.id} className="relative">
+                    <button
+                      title={f.navn || f.hex}
+                      onClick={() => { if (modus === 'velg') velg(f.hex) }}
+                      className={ruteCls(erValgt(f.hex))}
+                      style={{ backgroundColor: f.hex }}
+                    />
+                    {modus === 'rediger' && (
+                      <button
+                        onClick={() => fjern(f.id)}
+                        aria-label={`Fjern ${f.navn || f.hex} fra paletten`}
+                        className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-stone-800 text-white text-[10px] leading-none flex items-center justify-center"
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {sistBrukte.length > 0 && (
+            <div className={`mt-3 ${modus === 'leggTil' ? 'opacity-40' : ''}`}>
+              <p className="text-xs font-medium text-stone-400 uppercase tracking-wide mb-1.5">Sist brukte</p>
+              <div className="flex flex-wrap gap-1.5">
+                {sistBrukte.map(hex => (
+                  <button
+                    key={hex}
+                    title={hex}
+                    onClick={() => { if (modus !== 'leggTil') velg(hex) }}
+                    className={ruteCls(erValgt(hex))}
+                    style={{ backgroundColor: hex }}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          <button
+            onClick={() => { setModus(modus === 'leggTil' ? 'velg' : 'leggTil'); setPalettFeil(null) }}
+            className={`mt-3 px-3 py-1.5 rounded-lg text-xs border transition-colors ${
+              modus === 'leggTil'
+                ? 'bg-stone-800 text-white border-stone-800'
+                : 'bg-white text-stone-500 border-stone-200 hover:border-stone-400'
+            }`}
+          >
+            {modus === 'leggTil' ? 'Ferdig' : 'Legg til i paletten'}
+          </button>
+          {palettFeil && <p className="text-xs text-amber-700 mt-2">{palettFeil}</p>}
           {fane !== 'brother' && (
             <p className="text-xs text-stone-400 mt-2">
               Uansett hvilken farge du velger her, snapper selve PES-filen den til nærmeste
@@ -82,7 +203,9 @@ export function FargePicker({ nuvarendeHex, harOverstyring, mineTrader = [], onV
                       {trader.map(t => (
                         <button
                           key={t.id}
-                          onClick={() => onVelg(t.hex)}
+                          onClick={() => modus === 'leggTil'
+                            ? leggTil({ hex: t.hex, navn: t.navn, tradkode: t.tradkode, merke: t.merke, kilde: 'lager' })
+                            : velg(t.hex)}
                           className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg border text-left transition-colors ${
                             t.hex.toLowerCase() === nuvarendeHex.toLowerCase()
                               ? 'border-stone-800 bg-stone-50'
@@ -96,6 +219,9 @@ export function FargePicker({ nuvarendeHex, harOverstyring, mineTrader = [], onV
                           </span>
                           {t.forbruksniva === 'oppbrukt' && (
                             <span className="text-[10px] text-red-500 flex-shrink-0">Oppbrukt</span>
+                          )}
+                          {modus === 'leggTil' && iPalett.has(t.hex.toLowerCase()) && (
+                            <span className="text-sm text-stone-700 flex-shrink-0" aria-label="I paletten">✓</span>
                           )}
                         </button>
                       ))}
@@ -116,12 +242,18 @@ export function FargePicker({ nuvarendeHex, harOverstyring, mineTrader = [], onV
                   <button
                     key={f.hex}
                     title={f.navn}
-                    onClick={() => onVelg(f.hex)}
-                    className={`w-full aspect-square rounded-lg border-2 transition-all ${
+                    onClick={() => modus === 'leggTil'
+                      ? leggTil({ hex: f.hex, navn: f.navn, tradkode: '', merke: '', kilde: 'brother' })
+                      : velg(f.hex)}
+                    className={`w-full aspect-square rounded-lg border-2 transition-all flex items-center justify-center ${
                       f.hex === nuvarendeHex ? 'border-stone-800 scale-110' : 'border-stone-200 hover:border-stone-400'
                     }`}
                     style={{ backgroundColor: f.hex }}
-                  />
+                  >
+                    {modus === 'leggTil' && iPalett.has(f.hex.toLowerCase()) && (
+                      <span className="text-sm font-bold text-white [text-shadow:0_0_2px_rgba(0,0,0,0.8)]" aria-label="I paletten">✓</span>
+                    )}
+                  </button>
                 ))}
               </div>
             </div>

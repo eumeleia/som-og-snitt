@@ -1,5 +1,5 @@
 import { supabase } from '@/lib/supabase'
-import { snappTilPalett } from './broderPalett'
+import { HEX_RE, snappTilPalett } from './broderPalett'
 
 // Bro mellom Lageret (inventory-tabellen, egen side under /dashboard/inventory) og
 // broderi-arrangøren: brukerens EGNE broderitråder (kategori Tilbehør, underkategori
@@ -15,8 +15,6 @@ export interface MinTrad {
   tradkode: string
   forbruksniva?: 'ubrukt' | 'lite-brukt' | 'mye-brukt' | 'oppbrukt'
 }
-
-const HEX_RE = /^#[0-9a-fA-F]{6}$/
 
 // Egen, smal spørring (ikke gjenbruk av inventory/page.tsx sin — den siden har ingen
 // delt datahenting å gjenbruke herfra, og feltene vi trenger her er få). Arkiverte

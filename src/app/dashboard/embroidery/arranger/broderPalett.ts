@@ -4,6 +4,10 @@
 // så en fri hex-velger ville vist en annen farge enn det Artspira faktisk syr.
 // Ikke legg til/fjern farger her uten å sjekke mot samme kilde.
 
+// Ligger her og ikke i minTraadpalett.ts fordi denne fila ikke importerer noe — server-
+// ruta /api/broderi-fargepalett bruker den også, og skal ikke dra med seg anon-klienten.
+export const HEX_RE = /^#[0-9a-fA-F]{6}$/
+
 export const BROTHER_PALETT: { hex: string; navn: string }[] = [
   { hex: '#0e1f7c', navn: 'Prussian Blue' },
   { hex: '#0a55a3', navn: 'Blue' },
