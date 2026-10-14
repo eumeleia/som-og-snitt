@@ -16,6 +16,11 @@ def _snap_til_palett(farge_hex):
     hentet fra). Snapper her FØR vi bygger mønsteret, slik at forrige_farge-sammenligningen
     (fargeskift vs. trim) og selvsjekkens fasit begge opererer på den fargen som faktisk
     ender opp i fila — ikke den rå verdien som kom inn.
+
+    Frontend (eksport.ts) sender allerede snappede palettverdier, valgt med CIEDE2000.
+    Denne rødmiddel-snappingen er da identitet — den slår bare inn hvis en annen kaller
+    sender en rå hex, og gir i så fall IKKE samme svar som skjermen (#10140c → Dark Brown
+    her, Black i frontend).
     """
     from pyembroidery.EmbThreadPec import get_thread_set
     from pyembroidery.EmbThread import EmbThread

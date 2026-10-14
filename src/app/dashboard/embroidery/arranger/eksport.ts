@@ -43,14 +43,11 @@ export function byggEksportSegmenter(sekvens: SekvensElement[], ctx: SekvensKont
     }
     if (blokker.length === 0) continue
 
-    // IKKE nødvendigvis den snappede PEC-fargen — med en treffende egen tråd (ctx.pecTilEkte,
-    // se minTraadpalett.ts) er dette brukerens EGEN trådhex, ikke palettverdien. To steg, ikke
-    // ett idempotent: (1) Python snapper uansett DENNE hex-en til nærmeste PEC-farge ved
-    // skriving, (2) det gir riktig svar BARE fordi byggPecTilEkteMap nøkler sin ekte-tråd på
-    // nøyaktig snappTilPalett(trad.hex) — samme snap Python selv ville kommet til. Frontend
-    // viste FØR eksport (og selvsjekkens fasit ETTER) stemmer derfor overens fordi begge
-    // ender opp i samme PEC-bøtte, ikke fordi verdien herfra allerede ER den bøtta.
-    const fargeHex = effektivTradfarge(ctx, el)?.hex
+    // Den ferdig snappede PEC-fargen, ikke brukerens egen trådhex (tradfarge.hex). Python
+    // snapper med pyembroiderys rødmiddel-avstand, som sender en egen trådhex til en annen
+    // PEC-farge enn snappTilPalett (CIEDE2000) gjør — en palettverdi snapper derimot til
+    // seg selv, så fila får akkurat den fargen skjermen viser.
+    const fargeHex = effektivTradfarge(ctx, el)?.pecHex
     if (!fargeHex) return null
 
     segmenter.push({ type: 'kjoring', farge_hex: fargeHex, blokker })
