@@ -309,6 +309,19 @@ export function SekvensPanel({
         </div>
       )}
 
+      {/* Høydeløs og alltid montert: knappen flyter over lista i stedet for å dytte den
+         ned, ellers treffer neste trykk på samme sted naboraden. */}
+      <div className="sticky top-2 z-10 h-0 flex justify-end">
+        {fokusKjoringId !== null && (
+          <button
+            onClick={() => { setFokusKjoringId(null); onHoverEndret(null) }}
+            className="h-fit -translate-y-1/2 px-3 py-1.5 rounded-full text-xs bg-stone-800 text-white shadow-md hover:bg-stone-700 transition-colors"
+          >
+            Vis alle
+          </button>
+        )}
+      </div>
+
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
         <SortableContext items={sekvens.map(el => el.id)} strategy={verticalListSortingStrategy}>
           <ul className="divide-y divide-stone-100 bg-white rounded-2xl border border-stone-200 shadow-sm overflow-hidden">
@@ -333,7 +346,10 @@ export function SekvensPanel({
                     nummer={lopenummer}
                     ctx={ctx}
                     fokusert={fokusKjoringId === el.id}
-                    onClick={() => setFokusKjoringId(fokusKjoringId === el.id ? null : el.id)}
+                    onClick={() => {
+                      if (fokusKjoringId === el.id) { setFokusKjoringId(null); onHoverEndret(null) }
+                      else setFokusKjoringId(el.id)
+                    }}
                     onMouseEnter={() => onHoverEndret(el.id)}
                     onMouseLeave={() => onHoverEndret(null)}
                     onFargeClick={() => setFargePickerForId(el.id)}
@@ -431,8 +447,10 @@ function KjoringRad({
       style={style}
       className={`flex items-start gap-2 px-2 py-1.5 cursor-pointer transition-colors ${fokusert ? 'bg-stone-100' : 'bg-white hover:bg-stone-50'}`}
       onClick={onClick}
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
+      // Bare ekte mus: iOS Safari sender en emulert mouseenter ved trykk, men aldri
+      // mouseleave, og da ble hover-fremhevingen stående etter at raden var slått av.
+      onPointerEnter={e => { if (e.pointerType === 'mouse') onMouseEnter() }}
+      onPointerLeave={e => { if (e.pointerType === 'mouse') onMouseLeave() }}
     >
       <button
         {...attributes}

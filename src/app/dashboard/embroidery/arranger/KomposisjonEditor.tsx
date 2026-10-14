@@ -876,6 +876,11 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
   }
 
   const aktivKjoringId = hoverKjoringId ?? fokusKjoringId
+
+  function visAlleFarger() {
+    setFokusKjoringId(null)
+    setHoverKjoringId(null)
+  }
   const aktivKjoring = useMemo((): SekvensKjoring | null => {
     if (!aktivKjoringId) return null
     const el = sekvens.find(e => e.id === aktivKjoringId)
@@ -1154,14 +1159,22 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
          stingsimulator + eksport til høyre. Én kolonne som før under lg. */}
       <div className="lg:grid lg:grid-cols-[26rem_1fr] lg:gap-6 lg:items-start">
       <div className="lg:sticky lg:top-4 lg:self-start">
-      <div className="bg-white rounded-2xl border border-stone-200 shadow-sm p-4 mb-4">
+      <div className="relative bg-white rounded-2xl border border-stone-200 shadow-sm p-4 mb-4">
+        {aktivKjoringId !== null && (
+          <button
+            onClick={visAlleFarger}
+            className="absolute top-2 right-2 z-10 px-3 py-1.5 rounded-full text-xs bg-stone-800 text-white shadow-md hover:bg-stone-700 transition-colors"
+          >
+            Vis alle
+          </button>
+        )}
         <svg
           ref={svgRef}
           viewBox={viewBox}
           className="w-full aspect-square touch-none"
           onPointerMove={onPointerMoveSvg}
           onPointerUp={onPointerUpSvg}
-          onPointerDown={() => setValgtIds(new Set())}
+          onPointerDown={() => { setValgtIds(new Set()); visAlleFarger() }}
         >
           <rect
             x={-halvRamme} y={-halvRamme} width={RAMME_MM} height={RAMME_MM}
