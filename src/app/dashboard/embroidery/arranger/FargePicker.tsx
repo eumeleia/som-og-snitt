@@ -1,7 +1,9 @@
 'use client'
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
-import { BROTHER_PALETT } from './broderPalett'
+import { BROTHER_PALETT, snappTilPalett } from './broderPalett'
+import { deltaE2000Hex } from './fargeavstand'
+import { visningsnavn, sammenlignFargetone, sokTreffer } from './tradvisning'
 import {
   hentPalett, leggIPalett, fjernFraPalett, registrerBrukt,
   abonnerSistBrukte, sistBrukteSnapshot, sistBrukteServerSnapshot, type PalettFarge,
@@ -25,6 +27,85 @@ function faneCls(aktiv: boolean): string {
   }`
 }
 
+// Over denne ΔE2000-avstanden ser fargen PES-fila syr synlig annerledes ut enn den valgte.
+export const SYNLIG_AVVIK_DE = 5
+
+interface Fargevalg {
+  key: string
+  hex: string
+  tittel: string
+  under: string
+  sokefelter: string[]
+  pec: { hex: string; navn: string }
+  avvik: number
+  trad?: MinTrad
+}
+
+function fraTrad(t: MinTrad): Fargevalg {
+  const pec = snappTilPalett(t.hex)
+  return {
+    key: `t-${t.id}`,
+    hex: t.hex,
+    tittel: visningsnavn(t.navn, t.merke),
+    under: t.merke,
+    sokefelter: [t.navn, t.tradkode, t.merke, t.hex],
+    pec,
+    avvik: pec.hex === t.hex.toLowerCase() ? 0 : deltaE2000Hex(t.hex, pec.hex),
+    trad: t,
+  }
+}
+
+const PEC_VALG: Fargevalg[] = BROTHER_PALETT.map(f => ({
+  key: `p-${f.hex}`, hex: f.hex, tittel: f.navn, under: 'Brother PEC',
+  sokefelter: [f.navn, f.hex, 'pec'], pec: f, avvik: 0,
+}))
+
+// Delt fargeprøve: valgt farge til venstre, fargen PES-fila faktisk syr til høyre. Hel
+// prøve når de er like. Brukes også i sekvenspanelet.
+export function DeltFargeprove({ valgt, syr, className = 'w-7 h-7' }: { valgt: string; syr: string; className?: string }) {
+  const lik = valgt.toLowerCase() === syr.toLowerCase()
+  return (
+    <span
+      className={`${className} rounded-md border border-stone-200 flex-shrink-0 overflow-hidden flex`}
+      title={lik ? valgt : `Valgt ${valgt} · syr ${syr}`}
+    >
+      <span className="flex-1" style={{ backgroundColor: valgt }} />
+      {!lik && <span className="flex-1" style={{ backgroundColor: syr }} />}
+    </span>
+  )
+}
+
+function FargeKort({ v, valgt, iPalett, leggTilModus, onClick }: {
+  v: Fargevalg
+  valgt: boolean
+  iPalett: boolean
+  leggTilModus: boolean
+  onClick: () => void
+}) {
+  const snapperAnnerledes = v.pec.hex !== v.hex.toLowerCase()
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-start gap-2 p-1.5 rounded-lg border text-left transition-colors min-w-0 ${
+        valgt ? 'border-stone-800 bg-stone-50' : 'border-stone-100 hover:border-stone-300'
+      }`}
+    >
+      <DeltFargeprove valgt={v.hex} syr={v.pec.hex} className="w-8 h-8" />
+      <span className="flex-1 min-w-0">
+        <span className="block text-xs text-stone-700 leading-tight line-clamp-2 break-words">{v.tittel}</span>
+        <span className="block text-[10px] text-stone-400 truncate">{v.under}</span>
+        {snapperAnnerledes && (
+          <span className={`block text-[10px] truncate ${v.avvik > SYNLIG_AVVIK_DE ? 'text-amber-700' : 'text-stone-400'}`}>
+            {v.avvik > SYNLIG_AVVIK_DE ? '⚠ ' : ''}syr som {v.pec.navn}
+          </span>
+        )}
+      </span>
+      {v.trad?.forbruksniva === 'oppbrukt' && <span className="text-[10px] text-red-500 flex-shrink-0">Oppbrukt</span>}
+      {leggTilModus && iPalett && <span className="text-sm text-stone-700 flex-shrink-0" aria-label="I paletten">✓</span>}
+    </button>
+  )
+}
+
 export function FargePicker({ nuvarendeHex, harOverstyring, mineTrader = [], onVelg, onNullstill, onClose }: {
   nuvarendeHex: string
   // Om "Nullstill til original" skal vises — styrt av om KJØRINGEN faktisk har en
@@ -46,6 +127,7 @@ export function FargePicker({ nuvarendeHex, harOverstyring, mineTrader = [], onV
   const [palett, setPalett] = useState<PalettFarge[]>([])
   const [modus, setModus] = useState<Modus>('velg')
   const [palettFeil, setPalettFeil] = useState<string | null>(null)
+  const [sok, setSok] = useState('')
   const sistBrukte = useSyncExternalStore(abonnerSistBrukte, sistBrukteSnapshot, sistBrukteServerSnapshot)
 
   useEffect(() => {
@@ -86,22 +168,27 @@ export function FargePicker({ nuvarendeHex, harOverstyring, mineTrader = [], onV
     }
   }
 
-  const grupperPaMerke = useMemo(() => {
-    const m = new Map<string, MinTrad[]>()
-    for (const t of mineTrader) {
-      const arr = m.get(t.merke) ?? []
-      arr.push(t)
-      m.set(t.merke, arr)
-    }
-    return Array.from(m.entries()).sort((a, b) => a[0].localeCompare(b[0], 'nb'))
-  }, [mineTrader])
+  const mineValg = useMemo(() => mineTrader.map(fraTrad), [mineTrader])
 
+  const synlige = useMemo(() => {
+    const kilde = fane === 'mine' ? mineValg : fane === 'brother' ? PEC_VALG : [...mineValg, ...PEC_VALG]
+    return kilde.filter(v => sokTreffer(sok, v.sokefelter)).sort((a, b) => sammenlignFargetone(a.hex, b.hex))
+  }, [fane, mineValg, sok])
+
+  function klikkValg(v: Fargevalg) {
+    if (modus !== 'leggTil') { velg(v.hex); return }
+    if (v.trad) leggTil({ hex: v.trad.hex, navn: v.trad.navn, tradkode: v.trad.tradkode, merke: v.trad.merke, kilde: 'lager' })
+    else leggTil({ hex: v.hex, navn: v.tittel, tradkode: '', merke: '', kilde: 'brother' })
+  }
+
+  // Fast høyde (ikke bare maks), så lista får all plass som er igjen under toppen og
+  // dialogen ikke hopper i høyde mellom fanene eller mens det søkes.
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-2 sm:p-4">
       <div className="fixed inset-0 bg-black/30 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-white rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden flex flex-col" style={{ maxHeight: '80vh' }}>
-        <div className="px-5 py-4 border-b border-stone-100 flex-shrink-0">
-          <h3 className="font-serif text-xl text-stone-800 mb-3">Velg trådfarge</h3>
+      <div className="relative bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col h-[85dvh] sm:h-[80vh]">
+        <div className="px-4 pt-3 pb-2 border-b border-stone-100 flex-shrink-0 space-y-2">
+          <h3 className="font-serif text-lg text-stone-800">Velg trådfarge</h3>
           <div className="flex gap-1.5">
             <button onClick={() => setFane('mine')} className={faneCls(fane === 'mine')}>Mine tråder</button>
             <button onClick={() => setFane('brother')} className={faneCls(fane === 'brother')}>Brother 64 (PEC)</button>
@@ -109,21 +196,11 @@ export function FargePicker({ nuvarendeHex, harOverstyring, mineTrader = [], onV
           </div>
 
           {palett.length > 0 && (
-            <div className={`mt-3 ${modus === 'leggTil' ? 'opacity-40' : ''}`}>
-              <div className="flex items-center justify-between mb-1.5">
-                <p className="text-xs font-medium text-stone-400 uppercase tracking-wide">Min palett</p>
-                {modus !== 'leggTil' && (
-                  <button
-                    onClick={() => setModus(modus === 'rediger' ? 'velg' : 'rediger')}
-                    className="text-xs text-stone-500 hover:text-stone-700"
-                  >
-                    {modus === 'rediger' ? 'Ferdig' : 'Rediger'}
-                  </button>
-                )}
-              </div>
-              <div className="flex flex-wrap gap-1.5">
+            <div className={`flex items-center gap-1.5 ${modus === 'leggTil' ? 'opacity-40' : ''}`}>
+              <span className="text-[10px] font-medium text-stone-400 uppercase tracking-wide w-14 flex-shrink-0">Palett</span>
+              <div className="flex gap-1.5 overflow-x-auto py-1 px-0.5 flex-1 [scrollbar-width:none]">
                 {palett.map(f => (
-                  <div key={f.id} className="relative">
+                  <div key={f.id} className="relative flex-shrink-0">
                     <button
                       title={f.navn || f.hex}
                       onClick={() => { if (modus === 'velg') velg(f.hex) }}
@@ -142,13 +219,21 @@ export function FargePicker({ nuvarendeHex, harOverstyring, mineTrader = [], onV
                   </div>
                 ))}
               </div>
+              {modus !== 'leggTil' && (
+                <button
+                  onClick={() => setModus(modus === 'rediger' ? 'velg' : 'rediger')}
+                  className="text-xs text-stone-500 hover:text-stone-700 flex-shrink-0"
+                >
+                  {modus === 'rediger' ? 'Ferdig' : 'Rediger'}
+                </button>
+              )}
             </div>
           )}
 
           {sistBrukte.length > 0 && (
-            <div className={`mt-3 ${modus === 'leggTil' ? 'opacity-40' : ''}`}>
-              <p className="text-xs font-medium text-stone-400 uppercase tracking-wide mb-1.5">Sist brukte</p>
-              <div className="flex flex-wrap gap-1.5">
+            <div className={`flex items-center gap-1.5 ${modus === 'leggTil' ? 'opacity-40' : ''}`}>
+              <span className="text-[10px] font-medium text-stone-400 uppercase tracking-wide w-14 flex-shrink-0">Sist brukt</span>
+              <div className="flex gap-1.5 overflow-x-auto py-1 px-0.5 flex-1 [scrollbar-width:none]">
                 {sistBrukte.map(hex => (
                   <button
                     key={hex}
@@ -162,105 +247,59 @@ export function FargePicker({ nuvarendeHex, harOverstyring, mineTrader = [], onV
             </div>
           )}
 
-          <button
-            onClick={() => { setModus(modus === 'leggTil' ? 'velg' : 'leggTil'); setPalettFeil(null) }}
-            className={`mt-3 px-3 py-1.5 rounded-lg text-xs border transition-colors ${
-              modus === 'leggTil'
-                ? 'bg-stone-800 text-white border-stone-800'
-                : 'bg-white text-stone-500 border-stone-200 hover:border-stone-400'
-            }`}
-          >
-            {modus === 'leggTil' ? 'Ferdig' : 'Legg til i paletten'}
-          </button>
-          {palettFeil && <p className="text-xs text-amber-700 mt-2">{palettFeil}</p>}
-          {fane !== 'brother' && (
-            <p className="text-xs text-stone-400 mt-2">
-              Uansett hvilken farge du velger her, snapper selve PES-filen den til nærmeste
-              av Brothers 64 PEC-farger når den bygges — se farge du velger er bare hva DU
-              ser på skjermen, ikke en ny eksportfarge.
-            </p>
-          )}
+          <div className="flex gap-1.5">
+            <input
+              type="search"
+              value={sok}
+              onChange={e => setSok(e.target.value)}
+              placeholder="Søk navn eller nummer"
+              aria-label="Søk i trådfarger"
+              className="flex-1 min-w-0 px-3 py-1.5 text-base sm:text-sm rounded-lg border border-stone-200 focus:outline-none focus:border-stone-400"
+            />
+            <button
+              onClick={() => { setModus(modus === 'leggTil' ? 'velg' : 'leggTil'); setPalettFeil(null) }}
+              className={`px-2.5 py-1.5 rounded-lg text-xs border transition-colors flex-shrink-0 ${
+                modus === 'leggTil'
+                  ? 'bg-stone-800 text-white border-stone-800'
+                  : 'bg-white text-stone-500 border-stone-200 hover:border-stone-400'
+              }`}
+            >
+              {modus === 'leggTil' ? 'Ferdig' : '+ Palett'}
+            </button>
+          </div>
+          {palettFeil && <p className="text-xs text-amber-700">{palettFeil}</p>}
         </div>
 
-        <div className="overflow-y-auto flex-1 min-h-0 p-4 space-y-4">
-          {(fane === 'mine' || fane === 'alle') && (
-            mineTrader.length === 0 ? (
-              fane === 'mine' && (
-                <p className="text-sm text-stone-400 text-center py-8">
-                  Ingen tråder i Lageret ennå. Legg inn farge på en broderitråd under Lager
-                  for å se den her.
-                </p>
-              )
-            ) : (
-              <>
-                {fane === 'alle' && (
-                  <p className="text-xs font-semibold text-stone-400 uppercase tracking-wide">Mine tråder</p>
-                )}
-                {grupperPaMerke.map(([merke, trader]) => (
-                  <div key={merke}>
-                    <p className="text-xs font-medium text-stone-400 uppercase tracking-wide mb-1.5">{merke}</p>
-                    <div className="space-y-1">
-                      {trader.map(t => (
-                        <button
-                          key={t.id}
-                          onClick={() => modus === 'leggTil'
-                            ? leggTil({ hex: t.hex, navn: t.navn, tradkode: t.tradkode, merke: t.merke, kilde: 'lager' })
-                            : velg(t.hex)}
-                          className={`w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg border text-left transition-colors ${
-                            t.hex.toLowerCase() === nuvarendeHex.toLowerCase()
-                              ? 'border-stone-800 bg-stone-50'
-                              : 'border-transparent hover:bg-stone-50'
-                          }`}
-                        >
-                          <span className="w-6 h-6 rounded-md border border-stone-200 flex-shrink-0" style={{ backgroundColor: t.hex }} />
-                          <span className="flex-1 min-w-0">
-                            <span className="block text-sm text-stone-700 truncate">{t.navn}</span>
-                            <span className="block text-xs text-stone-400 truncate">{t.tradkode || t.hex}</span>
-                          </span>
-                          {t.forbruksniva === 'oppbrukt' && (
-                            <span className="text-[10px] text-red-500 flex-shrink-0">Oppbrukt</span>
-                          )}
-                          {modus === 'leggTil' && iPalett.has(t.hex.toLowerCase()) && (
-                            <span className="text-sm text-stone-700 flex-shrink-0" aria-label="I paletten">✓</span>
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </>
-            )
-          )}
-
-          {(fane === 'brother' || fane === 'alle') && (
-            <div>
-              {fane === 'alle' && (
-                <p className="text-xs font-semibold text-stone-400 uppercase tracking-wide mb-1.5">Brother 64 (PEC)</p>
-              )}
-              <div className="grid grid-cols-8 gap-2">
-                {BROTHER_PALETT.map(f => (
-                  <button
-                    key={f.hex}
-                    title={f.navn}
-                    onClick={() => modus === 'leggTil'
-                      ? leggTil({ hex: f.hex, navn: f.navn, tradkode: '', merke: '', kilde: 'brother' })
-                      : velg(f.hex)}
-                    className={`w-full aspect-square rounded-lg border-2 transition-all flex items-center justify-center ${
-                      f.hex === nuvarendeHex ? 'border-stone-800 scale-110' : 'border-stone-200 hover:border-stone-400'
-                    }`}
-                    style={{ backgroundColor: f.hex }}
-                  >
-                    {modus === 'leggTil' && iPalett.has(f.hex.toLowerCase()) && (
-                      <span className="text-sm font-bold text-white [text-shadow:0_0_2px_rgba(0,0,0,0.8)]" aria-label="I paletten">✓</span>
-                    )}
-                  </button>
-                ))}
-              </div>
+        <div className="overflow-y-auto flex-1 min-h-0 p-3">
+          {fane === 'mine' && mineTrader.length === 0 ? (
+            <p className="text-sm text-stone-400 text-center py-8">
+              Ingen tråder i Lageret ennå. Legg inn farge på en broderitråd under Lager
+              for å se den her.
+            </p>
+          ) : synlige.length === 0 ? (
+            <p className="text-sm text-stone-400 text-center py-8">Ingen farger passer søket.</p>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+              {synlige.map(v => (
+                <FargeKort
+                  key={v.key}
+                  v={v}
+                  valgt={erValgt(v.hex)}
+                  iPalett={iPalett.has(v.hex.toLowerCase())}
+                  leggTilModus={modus === 'leggTil'}
+                  onClick={() => klikkValg(v)}
+                />
+              ))}
             </div>
           )}
         </div>
 
-        <div className="px-5 py-3 border-t border-stone-100 flex-shrink-0 flex gap-2">
+        {fane !== 'brother' && (
+          <p className="px-4 pt-2 text-[11px] text-stone-400 flex-shrink-0">
+            Fila syr alltid nærmeste Brother PEC-farge — høyre halvdel av fargeprøven.
+          </p>
+        )}
+        <div className="px-4 py-2.5 flex-shrink-0 flex gap-2">
           {harOverstyring && (
             <button
               onClick={onNullstill}
