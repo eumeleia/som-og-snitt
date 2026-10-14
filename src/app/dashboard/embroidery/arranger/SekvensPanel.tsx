@@ -9,7 +9,9 @@ import {
   SortableContext, useSortable, verticalListSortingStrategy, arrayMove,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { FargePicker } from './FargePicker'
+import { FargePicker, DeltFargeprove, SYNLIG_AVVIK_DE } from './FargePicker'
+import { deltaE2000Hex } from './fargeavstand'
+import { visningsnavn } from './tradvisning'
 import {
   finnFargekjoring, effektivFargeRaa, effektivTradfarge, tellOmtredninger, flyttElementEtter,
   finnSammenslaingsforslag, sjekkFasesortering, fasesorter, nyPause,
@@ -417,13 +419,17 @@ function KjoringRad({
   const funn = finnFargekjoring(ctx, el)
   const raaFarge = effektivFargeRaa(ctx, el)
   const tradfarge = effektivTradfarge(ctx, el)
-  const farge = tradfarge?.hex ?? raaFarge
+  const syr = tradfarge?.pecHex ?? raaFarge
+  const avvik = raaFarge && tradfarge ? deltaE2000Hex(raaFarge, tradfarge.pecHex) : 0
 
+  // Kompakt rad: alt som trengs for å lese rekkefølgen står på to linjer. Detaljene om
+  // kildefil og snapping vises bare når raden er utvidet — utvidet = fokusert, så samme
+  // trykk utvider raden og fremhever fargen på lerretet.
   return (
     <li
       ref={setNodeRef}
       style={style}
-      className={`flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors ${fokusert ? 'bg-stone-100' : 'bg-white hover:bg-stone-50'}`}
+      className={`flex items-start gap-2 px-2 py-1.5 cursor-pointer transition-colors ${fokusert ? 'bg-stone-100' : 'bg-white hover:bg-stone-50'}`}
       onClick={onClick}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
@@ -431,43 +437,59 @@ function KjoringRad({
       <button
         {...attributes}
         {...listeners}
-        className="text-stone-300 hover:text-stone-500 cursor-grab flex-shrink-0 touch-none"
+        className="text-stone-300 hover:text-stone-500 cursor-grab flex-shrink-0 touch-none self-stretch flex items-center px-0.5"
         onClick={e => e.stopPropagation()}
+        aria-label="Dra for å flytte"
       >
         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 6h8M8 12h8M8 18h8" />
         </svg>
       </button>
-      <span className="text-xs text-stone-400 w-5 text-right flex-shrink-0">{nummer}</span>
+      <span className="text-xs text-stone-400 w-5 text-right flex-shrink-0 leading-7">{nummer}</span>
       {!funn ? (
-        <span className="flex-1 text-xs text-stone-400 italic">Tolker…</span>
+        <span className="flex-1 text-xs text-stone-400 italic leading-7">Tolker…</span>
       ) : (
         <>
           <button
             onClick={e => { e.stopPropagation(); onFargeClick() }}
-            className="w-6 h-6 rounded-md border border-stone-200 flex-shrink-0"
-            style={{ backgroundColor: farge }}
+            className="flex-shrink-0"
             title="Endre trådfarge"
-          />
+          >
+            <DeltFargeprove valgt={raaFarge ?? syr ?? '#ffffff'} syr={syr ?? '#ffffff'} />
+          </button>
           <div className="flex-1 min-w-0">
-            <p className="text-sm text-stone-700 truncate">{funn.pm.navn}</p>
-            <p className="text-xs text-stone-400">
-              {farge}{tradfarge ? ` · ${tradfarge.navn}` : ''}{el.fargeOverrideHex ? ' (endret)' : ''} · {funn.kjoring.antall_blokker} del{funn.kjoring.antall_blokker === 1 ? '' : 'er'}
+            <p className="text-sm text-stone-700 truncate leading-tight">{funn.pm.navn}</p>
+            <p className="text-xs text-stone-400 flex gap-1 min-w-0">
+              <span className="truncate">
+                {tradfarge ? visningsnavn(tradfarge.navn, '') : raaFarge}
+              </span>
+              <span className="flex-shrink-0">· {funn.kjoring.antall_sting} sting</span>
             </p>
-            {raaFarge !== undefined && tradfarge && raaFarge !== tradfarge.pecHex && (
-              <p className="text-[11px] text-stone-400">Kildefila har {raaFarge} — maskinen syr {tradfarge.pecHex}.</p>
-            )}
-            {tradfarge?.ekte && tradfarge.hex !== tradfarge.pecHex && (
-              <p className="text-[11px] text-stone-400">Syr som {tradfarge.pecNavn} {tradfarge.pecHex} i fila.</p>
+            {fokusert && (
+              <div className="text-[11px] text-stone-500 mt-1 space-y-0.5">
+                <p>Kildefila har {funn.kjoring.farge_hex}{el.fargeOverrideHex ? `, du valgte ${el.fargeOverrideHex}` : ''}.</p>
+                {tradfarge && (
+                  <p>Syr som {tradfarge.pecNavn} {tradfarge.pecHex} i fila{avvik > 0 ? ` (ΔE ${avvik.toFixed(1)})` : ''}.</p>
+                )}
+                <p>{funn.kjoring.antall_blokker} del{funn.kjoring.antall_blokker === 1 ? '' : 'er'}</p>
+              </div>
             )}
           </div>
-          <span className="text-xs text-stone-500 flex-shrink-0">{funn.kjoring.antall_sting} sting</span>
+          {avvik > SYNLIG_AVVIK_DE && (
+            <span
+              className="text-amber-600 text-xs flex-shrink-0 leading-7"
+              title={`Maskinen syr ${tradfarge?.pecNavn} — synlig forskjellig fra valgt farge`}
+              aria-label="Synlig fargeavvik"
+            >
+              ⚠
+            </span>
+          )}
         </>
       )}
       <button
         onClick={e => { e.stopPropagation(); onPauseEtter() }}
         title="Legg inn pause etter denne"
-        className="text-stone-300 hover:text-stone-600 flex-shrink-0 text-xs px-1.5"
+        className="text-stone-300 hover:text-stone-600 flex-shrink-0 text-xs px-1 leading-7 whitespace-nowrap"
       >
         + pause
       </button>
