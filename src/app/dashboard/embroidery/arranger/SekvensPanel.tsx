@@ -9,7 +9,7 @@ import {
   SortableContext, useSortable, verticalListSortingStrategy, arrayMove,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { FargePicker, DeltFargeprove, SYNLIG_AVVIK_DE } from './FargePicker'
+import { FargePicker, SYNLIG_AVVIK_DE } from './FargePicker'
 import { deltaE2000Hex } from './fargeavstand'
 import { visningsnavn } from './tradvisning'
 import {
@@ -435,7 +435,6 @@ function KjoringRad({
   const funn = finnFargekjoring(ctx, el)
   const raaFarge = effektivFargeRaa(ctx, el)
   const tradfarge = effektivTradfarge(ctx, el)
-  const syr = tradfarge?.pecHex ?? raaFarge
   const avvik = raaFarge && tradfarge ? deltaE2000Hex(raaFarge, tradfarge.pecHex) : 0
 
   // Kompakt rad: alt som trengs for å lese rekkefølgen står på to linjer. Detaljene om
@@ -470,11 +469,10 @@ function KjoringRad({
         <>
           <button
             onClick={e => { e.stopPropagation(); onFargeClick() }}
-            className="flex-shrink-0"
+            className="w-7 h-7 rounded-md border border-stone-200 flex-shrink-0"
+            style={{ backgroundColor: tradfarge?.hex ?? raaFarge }}
             title="Endre trådfarge"
-          >
-            <DeltFargeprove valgt={raaFarge ?? syr ?? '#ffffff'} syr={syr ?? '#ffffff'} />
-          </button>
+          />
           <div className="flex-1 min-w-0">
             <p className="text-sm text-stone-700 truncate leading-tight">{funn.pm.navn}</p>
             <p className="text-xs text-stone-400 flex gap-1 min-w-0">

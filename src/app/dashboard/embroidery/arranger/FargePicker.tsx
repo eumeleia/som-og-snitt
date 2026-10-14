@@ -60,21 +60,6 @@ const PEC_VALG: Fargevalg[] = BROTHER_PALETT.map(f => ({
   sokefelter: [f.navn, f.hex, 'pec'], pec: f, avvik: 0,
 }))
 
-// Delt fargeprøve: valgt farge til venstre, fargen PES-fila faktisk syr til høyre. Hel
-// prøve når de er like. Brukes også i sekvenspanelet.
-export function DeltFargeprove({ valgt, syr, className = 'w-7 h-7' }: { valgt: string; syr: string; className?: string }) {
-  const lik = valgt.toLowerCase() === syr.toLowerCase()
-  return (
-    <span
-      className={`${className} rounded-md border border-stone-200 flex-shrink-0 overflow-hidden flex`}
-      title={lik ? valgt : `Valgt ${valgt} · syr ${syr}`}
-    >
-      <span className="flex-1" style={{ backgroundColor: valgt }} />
-      {!lik && <span className="flex-1" style={{ backgroundColor: syr }} />}
-    </span>
-  )
-}
-
 function FargeKort({ v, valgt, iPalett, leggTilModus, onClick }: {
   v: Fargevalg
   valgt: boolean
@@ -90,7 +75,7 @@ function FargeKort({ v, valgt, iPalett, leggTilModus, onClick }: {
         valgt ? 'border-stone-800 bg-stone-50' : 'border-stone-100 hover:border-stone-300'
       }`}
     >
-      <DeltFargeprove valgt={v.hex} syr={v.pec.hex} className="w-8 h-8" />
+      <span className="w-8 h-8 rounded-md border border-stone-200 flex-shrink-0" style={{ backgroundColor: v.hex }} />
       <span className="flex-1 min-w-0">
         <span className="block text-xs text-stone-700 leading-tight line-clamp-2 break-words">{v.tittel}</span>
         <span className="block text-[10px] text-stone-400 truncate">{v.under}</span>
@@ -294,11 +279,6 @@ export function FargePicker({ nuvarendeHex, harOverstyring, mineTrader = [], onV
           )}
         </div>
 
-        {fane !== 'brother' && (
-          <p className="px-4 pt-2 text-[11px] text-stone-400 flex-shrink-0">
-            Fila syr alltid nærmeste Brother PEC-farge — høyre halvdel av fargeprøven.
-          </p>
-        )}
         <div className="px-4 py-2.5 flex-shrink-0 flex gap-2">
           {harOverstyring && (
             <button
