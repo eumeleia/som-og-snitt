@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { BROTHER_PALETT, snappTilPalett } from './broderPalett'
-import { deltaE2000Hex } from './fargeavstand'
 import { visningsnavn, sammenlignFargetone, sokTreffer } from './tradvisning'
 import {
   hentPalett, leggIPalett, fjernFraPalett, registrerBrukt,
@@ -27,9 +26,6 @@ function faneCls(aktiv: boolean): string {
   }`
 }
 
-// Over denne ΔE2000-avstanden ser fargen PES-fila syr synlig annerledes ut enn den valgte.
-export const SYNLIG_AVVIK_DE = 5
-
 interface Fargevalg {
   key: string
   hex: string
@@ -37,7 +33,6 @@ interface Fargevalg {
   under: string
   sokefelter: string[]
   pec: { hex: string; navn: string }
-  avvik: number
   trad?: MinTrad
 }
 
@@ -50,14 +45,13 @@ function fraTrad(t: MinTrad): Fargevalg {
     under: t.merke,
     sokefelter: [t.navn, t.tradkode, t.merke, t.hex],
     pec,
-    avvik: pec.hex === t.hex.toLowerCase() ? 0 : deltaE2000Hex(t.hex, pec.hex),
     trad: t,
   }
 }
 
 const PEC_VALG: Fargevalg[] = BROTHER_PALETT.map(f => ({
   key: `p-${f.hex}`, hex: f.hex, tittel: f.navn, under: 'Brother PEC',
-  sokefelter: [f.navn, f.hex, 'pec'], pec: f, avvik: 0,
+  sokefelter: [f.navn, f.hex, 'pec'], pec: f,
 }))
 
 function FargeKort({ v, valgt, iPalett, leggTilModus, onClick }: {
@@ -80,8 +74,8 @@ function FargeKort({ v, valgt, iPalett, leggTilModus, onClick }: {
         <span className="block text-xs text-stone-700 leading-tight line-clamp-2 break-words">{v.tittel}</span>
         <span className="block text-[10px] text-stone-400 truncate">{v.under}</span>
         {snapperAnnerledes && (
-          <span className={`block text-[10px] truncate ${v.avvik > SYNLIG_AVVIK_DE ? 'text-amber-700' : 'text-stone-400'}`}>
-            {v.avvik > SYNLIG_AVVIK_DE ? '⚠ ' : ''}syr som {v.pec.navn}
+          <span className="block text-[10px] truncate text-stone-400">
+            syr som {v.pec.navn}
           </span>
         )}
       </span>

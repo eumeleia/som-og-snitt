@@ -9,7 +9,7 @@ import {
   SortableContext, useSortable, verticalListSortingStrategy, arrayMove,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { FargePicker, SYNLIG_AVVIK_DE } from './FargePicker'
+import { FargePicker } from './FargePicker'
 import { deltaE2000Hex } from './fargeavstand'
 import { visningsnavn } from './tradvisning'
 import {
@@ -491,15 +491,6 @@ function KjoringRad({
               </div>
             )}
           </div>
-          {avvik > SYNLIG_AVVIK_DE && (
-            <span
-              className="text-amber-600 text-xs flex-shrink-0 leading-7"
-              title={`Maskinen syr ${tradfarge?.pecNavn} — synlig forskjellig fra valgt farge`}
-              aria-label="Synlig fargeavvik"
-            >
-              ⚠
-            </span>
-          )}
         </>
       )}
       <button
