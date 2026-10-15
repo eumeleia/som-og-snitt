@@ -10,7 +10,8 @@ import { synkroniserSekvens, byggFargePerBlokk, tellSting, tellOmtredninger, typ
 import { ryddOppEnkeltmedlemsgrupper, utvidTilGrupper, nyttUtvalgVedKlikk } from './grupper'
 import { byggMiniatyrSvg } from './miniatyr'
 import { erEndret, serialiserSnapshot, type KomposisjonSnapshot } from './lagreSnapshot'
-import { hentMineTrader, byggPecTilEkteMap, type MinTrad } from './minTraadpalett'
+import { hentMineTrader, type MinTrad } from './minTraadpalett'
+import { byggTradoppslag, byggSekvensKontekst } from './kontekst'
 import { SekvensPanel } from './SekvensPanel'
 import { EksportPanel } from './EksportPanel'
 import { StingSimulator } from './StingSimulator'
@@ -198,16 +199,16 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
   // begrensning som resten av appens engangs-lastinger).
   const [mineTrader, setMineTrader] = useState<MinTrad[]>([])
   useEffect(() => { hentMineTrader().then(setMineTrader) }, [])
-  const pecTilEkte = useMemo(() => byggPecTilEkteMap(mineTrader), [mineTrader])
+  const tradoppslag = useMemo(() => byggTradoppslag(mineTrader), [mineTrader])
 
   // ── Utgangslagring (tilbakeknapp, browser-navigasjon, fanelukking) ────────────────
   // latestRef holder de ferskeste verdiene av alt lagre() trenger, oppdatert etter HVER
   // rendring (ingen dependency-liste) — se lagre()-kommentaren under for hvorfor: en
   // avmonteringseffekt sin cleanup kan kalles fra en closure satt opp ved MOUNT, og en
   // lukket variabel derfra ville vært det aller første øyeblikksbildet, ikke det siste.
-  const latestRef = useRef({ id, navn, motiver, sekvens, resolved, pecTilEkte, startMotiv })
+  const latestRef = useRef({ id, navn, motiver, sekvens, resolved, tradoppslag, startMotiv })
   useEffect(() => {
-    latestRef.current = { id, navn, motiver, sekvens, resolved, pecTilEkte, startMotiv }
+    latestRef.current = { id, navn, motiver, sekvens, resolved, tradoppslag, startMotiv }
   })
 
   // Siste vellykkede lagring — DEN ENE sannheten om "endret", se lagreSnapshot.ts.
@@ -769,7 +770,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
       // lagring, en manglende miniatyr nå er ikke tapt informasjon).
       const komplett = snap.motiver.every(pm => !!snap.resolved[motivKey(pm.embroideryId, pm.sizeId)])
       const miniatyrSvg = komplett
-        ? byggMiniatyrSvg(snap.motiver, snap.resolved, snap.sekvens, snap.pecTilEkte)
+        ? byggMiniatyrSvg(snap.motiver, snap.resolved, snap.sekvens, snap.tradoppslag)
         : sisteKomplettMiniatyrRef.current
       const body = { data: { navn: snap.navn, motiver: snap.motiver, sekvens: snap.sekvens, miniatyrSvg } }
       const res = snap.id
@@ -891,7 +892,10 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
   // lerretet under og miniatyren (byggMiniatyrSvg, ved lagring) leser fra, så alle flater er
   // enige om fargen på en kjøring. Rein utledning fra (sekvens, ctx); rører ikke roterteBlokker
   // sin egen useMemo i PlassertMotivGruppe, som fortsatt bare regner geometri.
-  const ctx: SekvensKontekst = useMemo(() => ({ motiver, resolved, pecTilEkte }), [motiver, resolved, pecTilEkte])
+  const ctx: SekvensKontekst = useMemo(
+    () => byggSekvensKontekst(motiver, resolved, tradoppslag, sekvens),
+    [motiver, resolved, tradoppslag, sekvens],
+  )
   const fargePerBlokk = useMemo(() => byggFargePerBlokk(sekvens, ctx), [sekvens, ctx])
 
   // Stingteller og fargetall mot Skitch PP1 sine faste grenser (30 000 sting, 63 farger
@@ -1568,9 +1572,7 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
           <SekvensPanel
             sekvens={sekvens}
             onChange={handleSekvensChange}
-            motiver={motiver}
-            resolved={resolved}
-            pecTilEkte={pecTilEkte}
+            ctx={ctx}
             mineTrader={mineTrader}
             fokusKjoringId={fokusKjoringId}
             setFokusKjoringId={setFokusKjoringId}
@@ -1586,13 +1588,13 @@ export function KomposisjonEditor({ komposisjon, biblioteket, onBack, startMotiv
 
       {sekvens.length > 0 && (
         <div className="bg-white rounded-2xl border border-stone-200 shadow-sm p-4 mb-4 mt-4">
-          <StingSimulator sekvens={sekvens} motiver={motiver} resolved={resolved} halv={halv} pecTilEkte={pecTilEkte} />
+          <StingSimulator sekvens={sekvens} ctx={ctx} halv={halv} />
         </div>
       )}
 
       {sekvens.length > 0 && (
         <div className="mt-6">
-          <EksportPanel sekvens={sekvens} motiver={motiver} resolved={resolved} navn={navn} />
+          <EksportPanel sekvens={sekvens} ctx={ctx} navn={navn} />
         </div>
       )}
       </div>

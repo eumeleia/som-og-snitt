@@ -18,6 +18,11 @@ export interface SekvensKontekst {
   // den (eller når ingen av brukerens tråder treffer akkurat den PEC-fargen) faller
   // effektivTradfarge tilbake til Brothers PEC-fasit, akkurat som før dette feltet fantes.
   pecTilEkte?: Map<string, MinTrad>
+  // Egen tråd på eksakt rå hex — se byggHexTilEkteMap. Vinner over pecTilEkte.
+  hexTilEkte?: Map<string, MinTrad>
+  // Rå hex (små bokstaver) → PEC-fargen fila faktisk skal bruke, etter at ulike tråder som
+  // snappet til samme PEC-farge er fordelt på hver sin (se pecFordeling.ts).
+  pecTildeling?: Map<string, { hex: string; navn: string }>
 }
 
 function uid() {
@@ -54,15 +59,19 @@ export function effektivFargeRaa(ctx: SekvensKontekst, el: SekvensKjoring): stri
 
 export interface Tradfarge { hex: string; navn: string; ekte: boolean; pecHex: string; pecNavn: string }
 
-// Snapper en rå hex til Brothers PEC-fasit, og erstatter den med brukerens EGEN tråd
-// (ctx.pecTilEkte, se minTraadpalett.ts) når en finnes for akkurat den PEC-fargen.
-// pecHex/pecNavn beholder alltid PEC-fasiten ved siden av, uansett — det er DEN fargen
-// PesWriter faktisk bruker, og UI-en trenger den for å kunne vise «syr som X i fila» når
-// den ekte visningsfargen avviker. Uten en treffende egen tråd er hex/navn og
-// pecHex/pecNavn identiske.
+// Finner PEC-fargen fila bruker for en rå hex, og hvilken tråd som skal VISES for den.
+// PEC: pecTildeling hvis tråden er omfordelt (pecFordeling.ts), ellers nærmeste palettfarge.
+// Visning: brukerens egen tråd med nøyaktig denne hexen, ellers egen tråd for PEC-fargen
+// (ctx.pecTilEkte), ellers PEC-fargen selv. pecHex/pecNavn er alltid fargen PesWriter bruker.
+//
+// FELLE: egen tråd for PEC-fargen brukes ikke hvis den tråden selv står i komposisjonen og
+// er flyttet til en annen PEC-farge — da ville to rader vist samme trådnavn med ulik farge.
 function ekteEllerPec(ctx: SekvensKontekst, raaHex: string): Tradfarge {
-  const pec = snappTilPalett(raaHex)
-  const ekteTrad = ctx.pecTilEkte?.get(pec.hex)
+  const raa = raaHex.toLowerCase()
+  const pec = ctx.pecTildeling?.get(raa) ?? snappTilPalett(raa)
+  const forPec = ctx.pecTilEkte?.get(pec.hex)
+  const forPecLedig = forPec && (ctx.pecTildeling?.get(forPec.hex.toLowerCase())?.hex ?? pec.hex) === pec.hex
+  const ekteTrad = ctx.hexTilEkte?.get(raa) ?? (forPecLedig ? forPec : undefined)
   if (ekteTrad) {
     return { hex: ekteTrad.hex, navn: ekteTrad.navn, ekte: true, pecHex: pec.hex, pecNavn: pec.navn }
   }
@@ -203,7 +212,7 @@ export function tellOmtredninger(sekvens: SekvensElement[], ctx: SekvensKontekst
   let forrige: string | null = null
   for (const el of sekvens) {
     if (el.type === 'pause') { forrige = null; continue }
-    const farge = effektivTradfarge(ctx, el)?.hex
+    const farge = effektivTradfarge(ctx, el)?.pecHex
     if (farge === undefined) continue
     if (farge !== forrige) count++
     forrige = farge
@@ -286,9 +295,12 @@ export function finnLagkonflikter(
       if (Math.sign(gA - gB) === Math.sign(nA - nB)) continue
 
       // Samme tråd over samme tråd ser likt ut uansett rekkefølge.
-      const aFarge = effektivTradfarge(ctx, a)?.hex
-      const bFarge = effektivTradfarge(ctx, b)?.hex
-      if (!aFarge || !bFarge || aFarge === bFarge) continue
+      // Samme tråd = samme PEC-farge i fila, ikke samme visningsfarge.
+      const aTrad = effektivTradfarge(ctx, a)
+      const bTrad = effektivTradfarge(ctx, b)
+      if (!aTrad || !bTrad || aTrad.pecHex === bTrad.pecHex) continue
+      const aFarge = aTrad.hex
+      const bFarge = bTrad.hex
 
       const aBbox = plassertFargekjoringBbox(ctx, a)
       const bBbox = plassertFargekjoringBbox(ctx, b)
@@ -342,9 +354,11 @@ export function finnSammenslaingsforslag(
     for (let b = a + 1; b < kjoringer.length; b++) {
       const iEl = kjoringer[a]
       const jEl = kjoringer[b]
-      const fargeI = effektivTradfarge(ctx, iEl.el)?.hex
-      const fargeJ = effektivTradfarge(ctx, jEl.el)?.hex
-      if (!fargeI || !fargeJ || fargeI !== fargeJ) continue
+      // Sammenlignes på PEC-fargen fila bruker; fargeI er bare visningsfargen i forslaget.
+      const tradI = effektivTradfarge(ctx, iEl.el)
+      const tradJ = effektivTradfarge(ctx, jEl.el)
+      if (!tradI || !tradJ || tradI.pecHex !== tradJ.pecHex) continue
+      const fargeI = tradI.hex
 
       const mellomIndekser: number[] = []
       for (let k = iEl.idx + 1; k < jEl.idx; k++) mellomIndekser.push(k)
@@ -353,7 +367,7 @@ export function finnSammenslaingsforslag(
       const mellomElementer = mellomIndekser.map(k => sekvens[k])
       // Alt mellom dem er allerede samme farge og ingen pause → allerede én omtredning i praksis.
       const alleSammeFargeUtenPause = mellomElementer.every(
-        el => el.type === 'kjoring' && effektivTradfarge(ctx, el)?.hex === fargeI,
+        el => el.type === 'kjoring' && effektivTradfarge(ctx, el)?.pecHex === tradI.pecHex,
       )
       if (alleSammeFargeUtenPause) continue
 
@@ -378,8 +392,9 @@ export function finnSammenslaingsforslag(
       const overlappendeFarger: string[] = []
       if (jBbox) {
         for (const mEl of mellomKjoringer) {
-          const mFarge = effektivTradfarge(ctx, mEl)?.hex
-          if (!mFarge || mFarge === fargeI) continue
+          const mTrad = effektivTradfarge(ctx, mEl)
+          if (!mTrad || mTrad.pecHex === tradI.pecHex) continue
+          const mFarge = mTrad.hex
           const mBbox = plassertFargekjoringBbox(ctx, mEl)
           // Bbox-krysset er en billig FORHÅNDSSJEKK, ikke selve avgjørelsen — to bokser kan
           // krysse hverandre uten at et enkelt sting fra de to formene faktisk møtes. Bare når

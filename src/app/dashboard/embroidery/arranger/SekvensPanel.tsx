@@ -19,18 +19,17 @@ import {
 } from './sekvens'
 import { plassertPunkter } from './geometri'
 import type { MinTrad } from './minTraadpalett'
-import type { BroderiMotivData, PlassertMotiv, SekvensElement, SekvensKjoring } from './types'
+import type { SekvensElement, SekvensKjoring } from './types'
 
 export function SekvensPanel({
-  sekvens, onChange, motiver, resolved, pecTilEkte, mineTrader,
+  sekvens, onChange, ctx, mineTrader,
   fokusKjoringId, setFokusKjoringId, onHoverEndret,
   kanAngre, kanGjørOm, onAngre, onGjørOm, onTilbakestill,
 }: {
   sekvens: SekvensElement[]
   onChange: (ny: SekvensElement[]) => void
-  motiver: PlassertMotiv[]
-  resolved: Record<string, BroderiMotivData>
-  pecTilEkte?: Map<string, MinTrad>
+  // Ferdig bygget med byggSekvensKontekst (kontekst.ts) — aldri bygget her.
+  ctx: SekvensKontekst
   mineTrader?: MinTrad[]
   fokusKjoringId: string | null
   setFokusKjoringId: (id: string | null) => void
@@ -56,11 +55,10 @@ export function SekvensPanel({
   // ingenting ekstra og knappen virker som før.
   const [bekreftHandling, setBekreftHandling] = useState<'fasesorter' | 'tilbakestill' | null>(null)
 
-  const ctx: SekvensKontekst = useMemo(() => ({ motiver, resolved, pecTilEkte }), [motiver, resolved, pecTilEkte])
   const antallPauser = useMemo(() => sekvens.filter(el => el.type === 'pause').length, [sekvens])
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const rasterCache = useMemo(() => new Map<string, Set<string> | null>(), [motiver, resolved])
+  const rasterCache = useMemo(() => new Map<string, Set<string> | null>(), [ctx.motiver, ctx.resolved])
 
   const omtredninger = useMemo(() => tellOmtredninger(sekvens, ctx), [sekvens, ctx])
   const { forslag, flereEnnVist } = useMemo(

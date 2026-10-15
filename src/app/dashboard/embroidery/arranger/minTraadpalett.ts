@@ -73,3 +73,18 @@ export function byggPecTilEkteMap(mineTrader: MinTrad[]): Map<string, MinTrad> {
   }
   return ut
 }
+
+// Egen tråd → oppslag på EKSAKT hex (små bokstaver). Brukes før PEC-oppslaget over, så en
+// tråd valgt fra «Mine tråder» vises som seg selv, ikke som den første tråden som tilfeldigvis
+// snapper til samme PEC-farge. Samme kollisjonsregel som byggPecTilEkteMap.
+export function byggHexTilEkteMap(mineTrader: MinTrad[]): Map<string, MinTrad> {
+  const ut = new Map<string, MinTrad>()
+  for (const trad of mineTrader) {
+    const hex = trad.hex.toLowerCase()
+    const eksisterende = ut.get(hex)
+    if (!eksisterende || (eksisterende.forbruksniva === 'oppbrukt' && trad.forbruksniva !== 'oppbrukt')) {
+      ut.set(hex, trad)
+    }
+  }
+  return ut
+}

@@ -5,7 +5,7 @@ import { describeError, type ErrorDetails } from '@/lib/error-details'
 import { ErrorDetailsView } from '@/components/ErrorDetailsView'
 import { byggEksportSegmenter, type EksportSegment } from './eksport'
 import { tellOmtredninger, type SekvensKontekst } from './sekvens'
-import type { BroderiMotivData, PlassertMotiv, SekvensElement } from './types'
+import type { SekvensElement } from './types'
 
 interface SelvsjekkFarge {
   farge_hex: string
@@ -28,10 +28,11 @@ function sanitizerFilnavn(navn: string): string {
   return trimmet || 'komposisjon'
 }
 
-export function EksportPanel({ sekvens, motiver, resolved, navn }: {
+export function EksportPanel({ sekvens, ctx, navn }: {
   sekvens: SekvensElement[]
-  motiver: PlassertMotiv[]
-  resolved: Record<string, BroderiMotivData>
+  // Ferdig bygget med byggSekvensKontekst (kontekst.ts) — aldri bygget her, ellers mangler
+  // fila PEC-tildelingen skjermen viser.
+  ctx: SekvensKontekst
   navn: string
 }) {
   // Utviklerflagg for PES-versjon — bevisst IKKE i det vanlige grensesnittet, bare synlig
@@ -55,7 +56,6 @@ export function EksportPanel({ sekvens, motiver, resolved, navn }: {
   const [byggetFra, setByggetFra] = useState<EksportSegment[] | null>(null)
   const [byggetVersjon, setByggetVersjon] = useState<number | null>(null)
 
-  const ctx: SekvensKontekst = useMemo(() => ({ motiver, resolved }), [motiver, resolved])
   const omtredninger = useMemo(() => tellOmtredninger(sekvens, ctx), [sekvens, ctx])
   const segmenter = useMemo(() => byggEksportSegmenter(sekvens, ctx), [sekvens, ctx])
   const klar = segmenter !== null && sekvens.length > 0
