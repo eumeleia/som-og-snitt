@@ -1,4 +1,4 @@
-import type { Op } from './ops'
+import type { Counter, Op } from './ops'
 
 // Every op goes through this queue, not only the failed ones: it is written to
 // localStorage before the request is sent, so a stroke survives Safari being closed
@@ -7,6 +7,10 @@ import type { Op } from './ops'
 
 const STORAGE_KEY = 'strikk-prototype-queue'
 const RETRY_MS = 10_000
+// A 409 means another device won the race for the row; trying again right away, with
+// jitter so the two do not collide in step, is what resolves it.
+const CONFLICT_RETRY_MS = [300, 800] as const
+const CONFLICTS_BEFORE_UNSAVED = 3
 
 interface QueuedOp {
   docId: string
@@ -21,8 +25,10 @@ export interface QueueStatus {
 let queue: QueuedOp[] = read()
 let inFlight = false
 let failed = false
+let conflicts = 0
 let retryTimer: ReturnType<typeof setTimeout> | null = null
 const listeners = new Set<(s: QueueStatus) => void>()
+const counterListeners = new Set<(docId: string, counters: Counter[]) => void>()
 
 function read(): QueuedOp[] {
   try {
@@ -56,6 +62,11 @@ export function subscribe(listener: (s: QueueStatus) => void): () => void {
   return () => { listeners.delete(listener) }
 }
 
+export function subscribeServerCounters(listener: (docId: string, counters: Counter[]) => void): () => void {
+  counterListeners.add(listener)
+  return () => { counterListeners.delete(listener) }
+}
+
 export function pendingOps(docId: string): Op[] {
   return queue.filter(q => q.docId === docId).map(q => q.op)
 }
@@ -67,12 +78,12 @@ export function enqueue(docId: string, op: Op) {
   void flush()
 }
 
-function scheduleRetry() {
+function scheduleRetry(ms = RETRY_MS) {
   if (retryTimer) return
   retryTimer = setTimeout(() => {
     retryTimer = null
     void flush()
-  }, RETRY_MS)
+  }, ms)
 }
 
 export async function flush() {
@@ -99,6 +110,15 @@ export async function flush() {
         return
       }
 
+      if (res.status === 409) {
+        conflicts++
+        if (conflicts >= CONFLICTS_BEFORE_UNSAVED) failed = true
+        notify()
+        const [min, max] = CONFLICT_RETRY_MS
+        scheduleRetry(min + Math.random() * (max - min))
+        return
+      }
+
       // 400/404 will never succeed on retry (bad op or deleted row) and would block
       // everything behind it, so those ops are dropped.
       if (!res.ok && res.status !== 400 && res.status !== 404) {
@@ -108,12 +128,15 @@ export async function flush() {
         return
       }
       if (!res.ok) console.error('[strikk-prototype] dropped ops', res.status, await res.text())
+      const body = res.ok ? await res.json().catch(() => null) as { counters?: Counter[] } | null : null
 
       // New ops may have been appended while the request ran; they sit after the batch.
       queue = queue.slice(n)
       failed = false
+      conflicts = 0
       persist()
       notify()
+      if (body?.counters) for (const l of counterListeners) l(docId, body.counters)
     }
   } finally {
     inFlight = false

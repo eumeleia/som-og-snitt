@@ -20,7 +20,13 @@ export interface Counter {
   name: string
   total: number | null
   value: number
+  // Recent counter_step op ids, so a retried step is counted once.
+  applied?: string[]
 }
+
+// How many step ids each counter remembers. A retry only arrives after a lost response,
+// long before this many newer steps could have landed on the same counter.
+const APPLIED_LIMIT = 200
 
 export type Op =
   | { type: 'stroke_add'; stroke: Stroke }
@@ -30,6 +36,9 @@ export type Op =
   | { type: 'stroke_split'; id: string; parts: Stroke[] }
   | { type: 'counter_add'; counter: Counter }
   | { type: 'counter_set'; id: string; value: number }
+  // +1/−1 from a tap. Steps from two devices add up, unlike counter_set where the last
+  // write wins.
+  | { type: 'counter_step'; id: string; delta: number; opId: string }
   | { type: 'counter_delete'; id: string }
 
 export interface DocState {
@@ -62,6 +71,16 @@ export function applyOps(state: DocState, ops: Op[]): DocState {
         break
       case 'counter_set':
         counters = counters.map(c => (c.id === op.id ? { ...c, value: op.value } : c))
+        break
+      case 'counter_step':
+        counters = counters.map(c => {
+          if (c.id !== op.id || c.applied?.includes(op.opId)) return c
+          return {
+            ...c,
+            value: Math.max(0, c.value + op.delta),
+            applied: [...(c.applied ?? []), op.opId].slice(-APPLIED_LIMIT),
+          }
+        })
         break
       case 'counter_delete':
         counters = counters.filter(c => c.id !== op.id)

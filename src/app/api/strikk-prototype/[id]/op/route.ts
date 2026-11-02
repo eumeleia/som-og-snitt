@@ -20,6 +20,9 @@ export async function POST(req: NextRequest, ctx: RouteContext<'/api/strikk-prot
     // Les–flett–skriv med versjonen som lås: oppdateringen treffer bare hvis ingen andre
     // har skrevet i mellomtiden, ellers leses raden på nytt.
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      // Tilfeldig pause før nytt forsøk, så to skrivere som kolliderte ikke treffer
+      // hverandre igjen i samme takt.
+      if (attempt > 0) await new Promise(r => setTimeout(r, 20 + Math.random() * 60))
       const { data: row, error: readErr } = await supabaseAdmin
         .from('strikk_prototype')
         .select('strokes, counters, version')
@@ -50,7 +53,9 @@ export async function POST(req: NextRequest, ctx: RouteContext<'/api/strikk-prot
         return NextResponse.json({ error: `Klarte ikke lagre: ${writeErr.message}` }, { status: 500 })
       }
       if (updated && updated.length > 0) {
-        return NextResponse.json({ ok: true, version: updated[0].version })
+        // Tellerne sendes tilbake så klienten ser den andre enhetens trykk. Ikke strekene:
+        // de kan bli store, og de vises riktig ved neste innlasting.
+        return NextResponse.json({ ok: true, version: updated[0].version, counters: next.counters })
       }
     }
     return NextResponse.json({ error: 'For mange samtidige skrivinger' }, { status: 409 })

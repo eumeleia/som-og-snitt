@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import { supabase } from '@/lib/supabase'
 import { applyOps, type Counter, type DocState, type Op, type Stroke, type Tool } from './ops'
-import { enqueue, pendingOps, subscribe, type QueueStatus } from './saveQueue'
+import { enqueue, pendingOps, subscribe, subscribeServerCounters, type QueueStatus } from './saveQueue'
 import { downloadPdf, uploadPdf, DriveAuthExpiredError } from './drive'
 import PdfPages, { MARKER_OPACITY, type PageSize } from './PdfPages'
 import Counters from './Counters'
@@ -167,6 +167,13 @@ export default function KnitPrototype() {
   const wakeLock = useWakeLock()
 
   useEffect(() => subscribe(setQueue), [])
+
+  // After each save the server sends back its merged counters, which include the other
+  // device's taps. Own ops not yet sent are applied on top, so nothing jumps back.
+  useEffect(() => subscribeServerCounters((docId, counters) => {
+    if (docId !== row?.id) return
+    setState(s => ({ ...s, counters: applyOps({ strokes: [], counters }, pendingOps(docId)).counters }))
+  }), [row?.id])
 
   useEffect(() => { writeLocal('strikk-prototype-settings', settings) }, [settings])
   useEffect(() => { writeLocal(UI_KEY, { countersVisible, jsTwoFinger }) }, [countersVisible, jsTwoFinger])
@@ -396,6 +403,7 @@ export default function KnitPrototype() {
               counter: { id: crypto.randomUUID(), name, total, value: 0 },
             })}
             onSet={(id, value) => commit({ type: 'counter_set', id, value })}
+            onStep={(id, delta) => commit({ type: 'counter_step', id, delta, opId: crypto.randomUUID() })}
             onDelete={id => commit({ type: 'counter_delete', id })}
           />
         )}

@@ -7,11 +7,12 @@ interface Props {
   counters: Counter[]
   onAdd: (name: string, total: number | null) => void
   onSet: (id: string, value: number) => void
+  onStep: (id: string, delta: number) => void
   onDelete: (id: string) => void
   onHeight: (px: number) => void
 }
 
-export default function Counters({ counters, onAdd, onSet, onDelete, onHeight }: Props) {
+export default function Counters({ counters, onAdd, onSet, onStep, onDelete, onHeight }: Props) {
   const barRef = useRef<HTMLDivElement>(null)
   const [adding, setAdding] = useState(false)
 
@@ -36,7 +37,7 @@ export default function Counters({ counters, onAdd, onSet, onDelete, onHeight }:
         <div className="flex gap-2 overflow-x-auto snap-x snap-mandatory px-3 pt-2 pb-1"
           style={{ scrollPaddingInline: 12 }}>
           {counters.map(c => (
-            <CounterCard key={c.id} counter={c} onSet={onSet} onDelete={onDelete} />
+            <CounterCard key={c.id} counter={c} onSet={onSet} onStep={onStep} onDelete={onDelete} />
           ))}
           <button
             onClick={() => setAdding(true)}
@@ -56,9 +57,10 @@ export default function Counters({ counters, onAdd, onSet, onDelete, onHeight }:
   )
 }
 
-function CounterCard({ counter, onSet, onDelete }: {
+function CounterCard({ counter, onSet, onStep, onDelete }: {
   counter: Counter
   onSet: (id: string, value: number) => void
+  onStep: (id: string, delta: number) => void
   onDelete: (id: string) => void
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
@@ -93,14 +95,14 @@ function CounterCard({ counter, onSet, onDelete }: {
       <div className="flex gap-2">
         <button
           aria-label="Minus"
-          onClick={() => onSet(counter.id, Math.max(0, counter.value - 1))}
+          onClick={() => onStep(counter.id, -1)}
           className="flex-1 h-12 rounded-xl bg-stone-100 active:bg-stone-200 text-2xl text-stone-800"
         >
           −
         </button>
         <button
           aria-label="Pluss"
-          onClick={() => onSet(counter.id, counter.value + 1)}
+          onClick={() => onStep(counter.id, 1)}
           className="flex-1 h-12 rounded-xl bg-[#2E5339] active:bg-[#244230] text-2xl text-white"
         >
           +
