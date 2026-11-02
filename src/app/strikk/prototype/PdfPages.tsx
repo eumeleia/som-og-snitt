@@ -1,0 +1,456 @@
+'use client'
+
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist'
+import type { Stroke, Tool } from './ops'
+
+const DPR_CAP = 2
+// iOS Safari refuses canvases above 16 777 216 pixels; stay well under, since two
+// zoomed pages can be on screen at once.
+const MAX_CANVAS_PIXELS = 12_000_000
+// Pages are rendered once they come within one screen height, and released once they
+// are more than three away. The gap stops pages from flickering in and out at the edge.
+const NEAR_MARGIN = '100% 0px'
+const FAR_MARGIN = '300% 0px'
+const SETTLE_MS = 200
+const ERASER_RADIUS = 0.015
+const MIN_POINT_DIST = 0.0015
+const VB = 1000
+
+export interface PageSize {
+  width: number
+  height: number
+}
+
+export const MARKER_OPACITY = 0.55
+
+interface Props {
+  doc: PDFDocumentProxy
+  sizes: PageSize[]
+  strokes: Stroke[]
+  tool: Tool | null
+  color: string
+  width: number
+  jsTwoFingerScroll: boolean
+  bottomPadding: number
+  onStrokeAdd: (stroke: Stroke) => void
+  onStrokeDelete: (id: string) => void
+  onDrawStart: () => void
+}
+
+function pathFor(points: number[], aspect: number): string {
+  const n = points.length / 2
+  if (n === 0) return ''
+  const x = (i: number) => points[2 * i] * VB
+  const y = (i: number) => points[2 * i + 1] * VB * aspect
+  const f = (v: number) => v.toFixed(1)
+  // A zero-length segment with a round cap draws the dot for a single tap.
+  if (n === 1) return `M${f(x(0))} ${f(y(0))}l0.01 0`
+  let d = `M${f(x(0))} ${f(y(0))}`
+  for (let i = 1; i < n - 1; i++) {
+    d += `Q${f(x(i))} ${f(y(i))} ${f((x(i) + x(i + 1)) / 2)} ${f((y(i) + y(i + 1)) / 2)}`
+  }
+  return d + `L${f(x(n - 1))} ${f(y(n - 1))}`
+}
+
+function distToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number) {
+  const dx = bx - ax
+  const dy = by - ay
+  const len2 = dx * dx + dy * dy
+  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2))
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+}
+
+// Distances are measured in page-width units on both axes, so y is stretched by the aspect.
+function strokeHit(s: Stroke, x: number, y: number, aspect: number): boolean {
+  const limit = s.width / 2 + ERASER_RADIUS
+  const p = s.points
+  const py = y * aspect
+  if (p.length === 2) return Math.hypot(x - p[0], py - p[1] * aspect) < limit
+  for (let i = 0; i + 3 < p.length; i += 2) {
+    if (distToSegment(x, py, p[i], p[i + 1] * aspect, p[i + 2], p[i + 3] * aspect) < limit) return true
+  }
+  return false
+}
+
+function isInVisualViewport(el: Element): boolean {
+  const r = el.getBoundingClientRect()
+  const vv = window.visualViewport
+  const top = vv?.offsetTop ?? 0
+  const left = vv?.offsetLeft ?? 0
+  const h = vv?.height ?? window.innerHeight
+  const w = vv?.width ?? window.innerWidth
+  return r.bottom > top && r.top < top + h && r.right > left && r.left < left + w
+}
+
+// Strokes are regrouped on every change, so compare element-wise: a stroke on one page
+// must not re-render every other page.
+function samePageProps(a: PageProps, b: PageProps) {
+  return a.num === b.num && a.size === b.size && a.register === b.register &&
+    a.strokes.length === b.strokes.length && a.strokes.every((s, i) => s === b.strokes[i])
+}
+
+interface PageProps {
+  num: number
+  size: PageSize
+  strokes: Stroke[]
+  register: (num: number, el: HTMLDivElement | null) => void
+}
+
+const Page = memo(function Page({
+  num, size, strokes, register,
+}: PageProps) {
+  const aspect = size.height / size.width
+  const viewBox = `0 0 ${VB} ${VB * aspect}`
+  const markers = strokes.filter(s => s.tool === 'marker')
+  const pens = strokes.filter(s => s.tool === 'pen')
+  return (
+    <div
+      ref={el => register(num, el)}
+      data-page={num}
+      className="relative w-full bg-white"
+      style={{ aspectRatio: `${size.width} / ${size.height}` }}
+    >
+      <div data-canvas-slot className="absolute inset-0" />
+      <svg viewBox={viewBox} className="absolute inset-0 w-full h-full pointer-events-none"
+        style={{ mixBlendMode: 'multiply' }}>
+        {markers.map(s => (
+          <path key={s.id} d={pathFor(s.points, aspect)} fill="none" stroke={s.color}
+            strokeWidth={s.width * VB} strokeOpacity={MARKER_OPACITY}
+            strokeLinecap="round" strokeLinejoin="round" />
+        ))}
+      </svg>
+      <svg viewBox={viewBox} className="absolute inset-0 w-full h-full pointer-events-none">
+        {pens.map(s => (
+          <path key={s.id} d={pathFor(s.points, aspect)} fill="none" stroke={s.color}
+            strokeWidth={s.width * VB} strokeLinecap="round" strokeLinejoin="round" />
+        ))}
+      </svg>
+      <svg data-live-svg viewBox={viewBox} className="absolute inset-0 w-full h-full pointer-events-none">
+        <path data-live-path fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </div>
+  )
+}, samePageProps)
+
+interface Drawing {
+  pointerId: number
+  page: number
+  el: HTMLElement
+  points: number[]
+  erased: Set<string>
+}
+
+export default function PdfPages({
+  doc, sizes, strokes, tool, color, width, jsTwoFingerScroll, bottomPadding,
+  onStrokeAdd, onStrokeDelete, onDrawStart,
+}: Props) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const pageEls = useRef(new Map<number, HTMLDivElement>())
+  const pointers = useRef(new Map<number, { x: number; y: number }>())
+  const drawing = useRef<Drawing | null>(null)
+  const byPage = useMemo(() => groupByPage(strokes), [strokes])
+
+  // Pointer handlers read the latest props through this ref instead of re-binding.
+  const latest = useRef({ strokes, tool, color, width, jsTwoFingerScroll, onStrokeAdd, onStrokeDelete, onDrawStart })
+  useLayoutEffect(() => {
+    latest.current = { strokes, tool, color, width, jsTwoFingerScroll, onStrokeAdd, onStrokeDelete, onDrawStart }
+  })
+
+  const register = useCallback((num: number, el: HTMLDivElement | null) => {
+    if (el) pageEls.current.set(num, el)
+    else pageEls.current.delete(num)
+  }, [])
+
+  // ---- Rendering: lazy, one page at a time, sharp re-render after zoom settles ----
+  useEffect(() => {
+    const els = pageEls.current
+    const rendered = new Map<number, { canvas: HTMLCanvasElement; scale: number }>()
+    const near = new Set<number>()
+    let queue: number[] = []
+    let running = false
+    let disposed = false
+    let task: RenderTask | null = null
+
+    function freeCanvas(c: HTMLCanvasElement) {
+      // Zeroing the size is what makes Safari give the backing memory back.
+      c.width = 0
+      c.height = 0
+      c.remove()
+    }
+
+    function targetScale(num: number, el: HTMLElement) {
+      const size = sizes[num - 1]
+      let s = (el.clientWidth / size.width) * Math.min(window.devicePixelRatio || 1, DPR_CAP)
+      if (isInVisualViewport(el)) s *= window.visualViewport?.scale ?? 1
+      return Math.min(s, Math.sqrt(MAX_CANVAS_PIXELS / (size.width * size.height)))
+    }
+
+    async function pump() {
+      if (running) return
+      running = true
+      while (!disposed && queue.length > 0) {
+        const num = queue.shift()!
+        const el = els.get(num)
+        if (!near.has(num) || !el || el.clientWidth === 0) continue
+        const scale = targetScale(num, el)
+        const prev = rendered.get(num)
+        if (prev && Math.abs(prev.scale / scale - 1) < 0.1) continue
+        try {
+          const page = await doc.getPage(num)
+          const viewport = page.getViewport({ scale })
+          const canvas = document.createElement('canvas')
+          canvas.width = Math.floor(viewport.width)
+          canvas.height = Math.floor(viewport.height)
+          canvas.className = 'absolute inset-0 w-full h-full block'
+          task = page.render({ canvas, canvasContext: canvas.getContext('2d')!, viewport })
+          await task.promise
+          task = null
+          if (disposed || !near.has(num)) {
+            freeCanvas(canvas)
+            continue
+          }
+          // Swap only when the new canvas is finished, so the page never goes blank.
+          el.querySelector('[data-canvas-slot]')!.replaceChildren(canvas)
+          if (prev) freeCanvas(prev.canvas)
+          rendered.set(num, { canvas, scale })
+        } catch (err) {
+          task = null
+          if ((err as { name?: string })?.name !== 'RenderingCancelledException') {
+            console.error('[strikk-prototype] render', num, err)
+          }
+        }
+      }
+      running = false
+    }
+
+    function enqueue(nums: number[]) {
+      const visible = nums.filter(n => { const el = els.get(n); return el && isInVisualViewport(el) })
+      const rest = nums.filter(n => !visible.includes(n))
+      queue = [...new Set([...visible, ...queue, ...rest])]
+      void pump()
+    }
+
+    const nearObserver = new IntersectionObserver(entries => {
+      const added: number[] = []
+      for (const e of entries) {
+        if (!e.isIntersecting) continue
+        const num = Number((e.target as HTMLElement).dataset.page)
+        near.add(num)
+        added.push(num)
+      }
+      if (added.length) enqueue(added)
+    }, { rootMargin: NEAR_MARGIN })
+
+    const farObserver = new IntersectionObserver(entries => {
+      for (const e of entries) {
+        if (e.isIntersecting) continue
+        const num = Number((e.target as HTMLElement).dataset.page)
+        near.delete(num)
+        const r = rendered.get(num)
+        if (r) {
+          freeCanvas(r.canvas)
+          rendered.delete(num)
+        }
+      }
+    }, { rootMargin: FAR_MARGIN })
+
+    for (const el of els.values()) {
+      nearObserver.observe(el)
+      farObserver.observe(el)
+    }
+
+    // Pinch-zoom end, scroll end and rotation all land here: visible pages get the zoomed
+    // resolution, pages that scrolled away drop back to base resolution.
+    let settleTimer: ReturnType<typeof setTimeout> | null = null
+    function settle() {
+      if (settleTimer) clearTimeout(settleTimer)
+      settleTimer = setTimeout(() => enqueue([...near]), SETTLE_MS)
+    }
+    const vv = window.visualViewport
+    vv?.addEventListener('resize', settle)
+    vv?.addEventListener('scroll', settle)
+    window.addEventListener('scroll', settle, { passive: true })
+    const ro = new ResizeObserver(settle)
+    if (containerRef.current) ro.observe(containerRef.current)
+
+    return () => {
+      disposed = true
+      task?.cancel()
+      nearObserver.disconnect()
+      farObserver.disconnect()
+      ro.disconnect()
+      vv?.removeEventListener('resize', settle)
+      vv?.removeEventListener('scroll', settle)
+      window.removeEventListener('scroll', settle)
+      if (settleTimer) clearTimeout(settleTimer)
+      for (const r of rendered.values()) freeCanvas(r.canvas)
+    }
+  }, [doc, sizes])
+
+  // ---- Drawing ----
+  function livePath(d: Drawing) {
+    return d.el.querySelector('[data-live-path]') as SVGPathElement | null
+  }
+
+  function clearLive(d: Drawing) {
+    const path = livePath(d)
+    if (path) path.setAttribute('d', '')
+  }
+
+  function abortStroke() {
+    const d = drawing.current
+    if (d) clearLive(d)
+    drawing.current = null
+  }
+
+  function addPoint(d: Drawing, clientX: number, clientY: number) {
+    const r = d.el.getBoundingClientRect()
+    const x = (clientX - r.left) / r.width
+    const y = (clientY - r.top) / r.height
+    const n = d.points.length
+    const aspect = r.height / r.width
+    if (n >= 2 && Math.hypot(x - d.points[n - 2], (y - d.points[n - 1]) * aspect) < MIN_POINT_DIST) return
+    d.points.push(Math.round(x * 1e5) / 1e5, Math.round(y * 1e5) / 1e5)
+
+    const { tool: t, strokes: all, onStrokeDelete: del } = latest.current
+    if (t === 'eraser') {
+      for (const s of all) {
+        if (s.page !== d.page || d.erased.has(s.id)) continue
+        if (strokeHit(s, x, y, aspect)) {
+          d.erased.add(s.id)
+          del(s.id)
+        }
+      }
+    }
+  }
+
+  function drawLive(d: Drawing) {
+    const { tool: t, color: c, width: w } = latest.current
+    if (t === 'eraser') return
+    const path = livePath(d)
+    if (!path) return
+    const size = sizes[d.page - 1]
+    const svg = path.ownerSVGElement!
+    svg.style.mixBlendMode = t === 'marker' ? 'multiply' : 'normal'
+    path.setAttribute('stroke', c)
+    path.setAttribute('stroke-width', String(w * VB))
+    path.setAttribute('stroke-opacity', t === 'marker' ? String(MARKER_OPACITY) : '1')
+    path.setAttribute('d', pathFor(d.points, size.height / size.width))
+  }
+
+  function centroid() {
+    let x = 0, y = 0
+    for (const p of pointers.current.values()) { x += p.x; y += p.y }
+    const n = pointers.current.size
+    return { x: x / n, y: y / n }
+  }
+
+  function onPointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    if (!latest.current.tool) return
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    // A second finger means scroll/zoom: throw away whatever the first finger began.
+    if (pointers.current.size > 1) {
+      abortStroke()
+      return
+    }
+    const pageEl = (e.target as Element).closest('[data-page]') as HTMLElement | null
+    if (!pageEl) return
+    latest.current.onDrawStart()
+    // Capture keeps moves coming when the finger leaves the page; drawing works without it.
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* pointer already gone */ }
+    const d: Drawing = {
+      pointerId: e.pointerId,
+      page: Number(pageEl.dataset.page),
+      el: pageEl,
+      points: [],
+      erased: new Set(),
+    }
+    drawing.current = d
+    addPoint(d, e.clientX, e.clientY)
+    drawLive(d)
+  }
+
+  function onPointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    const prev = pointers.current.get(e.pointerId)
+    if (!prev) return
+    if (pointers.current.size >= 2) {
+      // Reached only if Safari did not take the gesture itself (it would have sent
+      // pointercancel). In JS mode the two-finger pan is then done here.
+      const before = centroid()
+      pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      if (latest.current.jsTwoFingerScroll) {
+        const after = centroid()
+        window.scrollBy(before.x - after.x, before.y - after.y)
+      }
+      return
+    }
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    const d = drawing.current
+    if (!d || d.pointerId !== e.pointerId) return
+    const events = e.nativeEvent.getCoalescedEvents?.() ?? []
+    if (events.length > 0) for (const ev of events) addPoint(d, ev.clientX, ev.clientY)
+    else addPoint(d, e.clientX, e.clientY)
+    drawLive(d)
+  }
+
+  function onPointerUp(e: React.PointerEvent<HTMLDivElement>) {
+    pointers.current.delete(e.pointerId)
+    const d = drawing.current
+    if (!d || d.pointerId !== e.pointerId) return
+    drawing.current = null
+    const { tool: t, color: c, width: w, onStrokeAdd: add } = latest.current
+    if (t === 'marker' || t === 'pen') {
+      add({ id: crypto.randomUUID(), page: d.page, tool: t, color: c, width: w, points: d.points })
+    }
+    // Clear after React has painted the committed stroke, so it does not blink.
+    requestAnimationFrame(() => clearLive(d))
+  }
+
+  function onPointerCancel(e: React.PointerEvent<HTMLDivElement>) {
+    pointers.current.delete(e.pointerId)
+    if (drawing.current?.pointerId === e.pointerId) abortStroke()
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      className="flex flex-col gap-1.5"
+      style={{
+        paddingTop: 'env(safe-area-inset-top)',
+        paddingBottom: bottomPadding,
+        touchAction: tool ? 'pinch-zoom' : 'auto',
+        userSelect: 'none',
+        WebkitUserSelect: 'none',
+        WebkitTouchCallout: 'none',
+        cursor: tool ? 'crosshair' : 'auto',
+      }}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
+      onContextMenu={e => { if (tool) e.preventDefault() }}
+    >
+      {sizes.map((size, i) => (
+        <Page
+          key={i + 1}
+          num={i + 1}
+          size={size}
+          strokes={byPage.get(i + 1) ?? EMPTY}
+          register={register}
+        />
+      ))}
+    </div>
+  )
+}
+
+function groupByPage(all: Stroke[]): Map<number, Stroke[]> {
+  const byPage = new Map<number, Stroke[]>()
+  for (const s of all) {
+    const list = byPage.get(s.page)
+    if (list) list.push(s)
+    else byPage.set(s.page, [s])
+  }
+  return byPage
+}
+const EMPTY: Stroke[] = []
