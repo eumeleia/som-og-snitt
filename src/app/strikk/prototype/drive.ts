@@ -16,7 +16,7 @@ export async function getAccessToken(): Promise<string> {
   return body.accessToken
 }
 
-export async function downloadPdf(fileId: string): Promise<Uint8Array> {
+export async function downloadPdf(fileId: string, fileName: string): Promise<Uint8Array> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const token = await getAccessToken()
     const res = await fetch(
@@ -24,6 +24,9 @@ export async function downloadPdf(fileId: string): Promise<Uint8Array> {
       { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' },
     )
     if (res.status === 401 && attempt === 0) continue
+    if (res.status === 404) {
+      throw new Error(`Fant ikke «${fileName}» på Disk (404). Filen kan være slettet eller ligge i papirkurven.`)
+    }
     if (!res.ok) throw new Error(`Henting fra Disk feilet (${res.status})`)
     return new Uint8Array(await res.arrayBuffer())
   }

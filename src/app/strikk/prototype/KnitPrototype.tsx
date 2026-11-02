@@ -147,6 +147,9 @@ export default function KnitPrototype() {
   const [row, setRow] = useState<Row | null>(null)
   const [state, setState] = useState<DocState>({ strokes: [], counters: [] })
   const [pdf, setPdf] = useState<{ doc: PDFDocumentProxy; sizes: PageSize[] } | null>(null)
+  // Bumped by «Prøv igjen» to re-run the load: the most recent row is fetched again too,
+  // since the failure may have come from which row was newest.
+  const [loadAttempt, setLoadAttempt] = useState(0)
 
   const [tool, setTool] = useState<Tool | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -206,7 +209,7 @@ export default function KnitPrototype() {
         // Ops still waiting in the queue are not on the server yet; apply them on top.
         setState(applyOps({ strokes: r.strokes, counters: r.counters }, pendingOps(r.id)))
         setStatus({ kind: 'loading', text: 'Henter PDF fra Disk …' })
-        const bytes = await downloadPdf(r.drive_file_id)
+        const bytes = await downloadPdf(r.drive_file_id, r.file_name)
         if (cancelled) return
         await showPdf(bytes)
       } catch (err) {
@@ -214,7 +217,7 @@ export default function KnitPrototype() {
       }
     })()
     return () => { cancelled = true }
-  }, [authed, showPdf, handleError])
+  }, [authed, showPdf, handleError, loadAttempt])
 
   async function onFileChosen(file: File | undefined) {
     if (!file) return
@@ -294,6 +297,17 @@ export default function KnitPrototype() {
                   Koble til Disk på nytt
                 </a>
               </>
+            )}
+            {status.kind === 'error' && (
+              <button
+                onClick={() => {
+                  setStatus({ kind: 'loading', text: 'Prøver igjen …' })
+                  setLoadAttempt(n => n + 1)
+                }}
+                className="h-11 rounded-xl border border-stone-300 bg-white text-stone-800"
+              >
+                Prøv igjen
+              </button>
             )}
             {(status.kind === 'empty' || status.kind === 'error') && (
               <button onClick={() => fileInput.current?.click()}

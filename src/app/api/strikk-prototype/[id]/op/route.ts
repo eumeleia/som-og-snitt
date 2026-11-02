@@ -25,8 +25,13 @@ export async function POST(req: NextRequest, ctx: RouteContext<'/api/strikk-prot
         .select('strokes, counters, version')
         .eq('id', id)
         .single()
+      // 404 bare når raden faktisk mangler (PGRST116 = ingen rader). Køen kaster ops som får
+      // 404, så en forbigående lesefeil må gi 500 og bli prøvd på nytt.
+      if (readErr?.code === 'PGRST116' || (!readErr && !row)) {
+        return NextResponse.json({ error: `Fant ikke raden: ${id}` }, { status: 404 })
+      }
       if (readErr || !row) {
-        return NextResponse.json({ error: `Fant ikke raden: ${readErr?.message ?? id}` }, { status: 404 })
+        return NextResponse.json({ error: `Klarte ikke lese raden: ${readErr?.message}` }, { status: 500 })
       }
 
       const next = applyOps({ strokes: row.strokes, counters: row.counters } as DocState, ops)
