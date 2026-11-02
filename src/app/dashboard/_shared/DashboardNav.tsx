@@ -4,6 +4,7 @@ import { Suspense, useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useSearchParams } from 'next/navigation'
 import { NavIcon, type IconName } from './DashboardIcons'
+import { STRIKK_SECTIONS } from '@/app/strikk/sections'
 
 interface NavLeaf {
   label: string
@@ -46,6 +47,8 @@ const MENU: NavSection[] = [
       { label: 'Bilde til broderi',   href: '/dashboard/embroidery/bilde-til-broderi',   icon: 'photo' },
     ],
   },
+  // Strikk er helt adskilt fra syfunksjonene og har egne ruter under /strikk.
+  { label: 'Strikk', icon: 'yarn', href: '/strikk', children: STRIKK_SECTIONS },
   { label: 'Teknikker', icon: 'scissors', href: '/dashboard/techniques' },
   {
     label: 'Lager', icon: 'box', href: '/dashboard/inventory',
