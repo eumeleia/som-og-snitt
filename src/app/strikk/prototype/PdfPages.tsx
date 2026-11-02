@@ -1,8 +1,9 @@
 'use client'
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist'
 import type { Stroke, Tool } from './ops'
+import { eraseCircle } from './erase'
 
 const DPR_CAP = 2
 // iOS Safari refuses canvases above 16 777 216 pixels; stay well under, since two
@@ -13,7 +14,9 @@ const MAX_CANVAS_PIXELS = 12_000_000
 const NEAR_MARGIN = '100% 0px'
 const FAR_MARGIN = '300% 0px'
 const SETTLE_MS = 200
-const ERASER_RADIUS = 0.015
+// Eraser radius on screen, in CSS px at 100 % zoom; converted to page units per event so
+// the eraser is the same size on screen at any zoom or page width.
+const ERASER_PX = 20
 const MIN_POINT_DIST = 0.0015
 const VB = 1000
 
@@ -34,7 +37,7 @@ interface Props {
   jsTwoFingerScroll: boolean
   bottomPadding: number
   onStrokeAdd: (stroke: Stroke) => void
-  onStrokeDelete: (id: string) => void
+  onStrokeSplit: (id: string, parts: Stroke[]) => void
   onDrawStart: () => void
 }
 
@@ -51,26 +54,6 @@ function pathFor(points: number[], aspect: number): string {
     d += `Q${f(x(i))} ${f(y(i))} ${f((x(i) + x(i + 1)) / 2)} ${f((y(i) + y(i + 1)) / 2)}`
   }
   return d + `L${f(x(n - 1))} ${f(y(n - 1))}`
-}
-
-function distToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number) {
-  const dx = bx - ax
-  const dy = by - ay
-  const len2 = dx * dx + dy * dy
-  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2))
-  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy))
-}
-
-// Distances are measured in page-width units on both axes, so y is stretched by the aspect.
-function strokeHit(s: Stroke, x: number, y: number, aspect: number): boolean {
-  const limit = s.width / 2 + ERASER_RADIUS
-  const p = s.points
-  const py = y * aspect
-  if (p.length === 2) return Math.hypot(x - p[0], py - p[1] * aspect) < limit
-  for (let i = 0; i + 3 < p.length; i += 2) {
-    if (distToSegment(x, py, p[i], p[i + 1] * aspect, p[i + 2], p[i + 3] * aspect) < limit) return true
-  }
-  return false
 }
 
 function isInVisualViewport(el: Element): boolean {
@@ -138,23 +121,33 @@ interface Drawing {
   page: number
   el: HTMLElement
   points: number[]
-  erased: Set<string>
+  // Eraser only: original stroke id -> what is left of it so far in this drag, and which
+  // original each new part came from. Committed as one stroke_split per original on release.
+  work: Map<string, Stroke[]>
+  origin: Map<string, string>
+  last: { x: number; y: number } | null
 }
 
 export default function PdfPages({
   doc, sizes, strokes, tool, color, width, jsTwoFingerScroll, bottomPadding,
-  onStrokeAdd, onStrokeDelete, onDrawStart,
+  onStrokeAdd, onStrokeSplit, onDrawStart,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const pageEls = useRef(new Map<number, HTMLDivElement>())
   const pointers = useRef(new Map<number, { x: number; y: number }>())
   const drawing = useRef<Drawing | null>(null)
-  const byPage = useMemo(() => groupByPage(strokes), [strokes])
+  // What the eraser has removed during the current drag, shown before it is committed.
+  const [erasePreview, setErasePreview] = useState<Map<string, Stroke[]> | null>(null)
+  const shown = useMemo(
+    () => (erasePreview ? strokes.flatMap(s => erasePreview.get(s.id) ?? [s]) : strokes),
+    [strokes, erasePreview],
+  )
+  const byPage = useMemo(() => groupByPage(shown), [shown])
 
   // Pointer handlers read the latest props through this ref instead of re-binding.
-  const latest = useRef({ strokes, tool, color, width, jsTwoFingerScroll, onStrokeAdd, onStrokeDelete, onDrawStart })
+  const latest = useRef({ strokes, tool, color, width, jsTwoFingerScroll, onStrokeAdd, onStrokeSplit, onDrawStart })
   useLayoutEffect(() => {
-    latest.current = { strokes, tool, color, width, jsTwoFingerScroll, onStrokeAdd, onStrokeDelete, onDrawStart }
+    latest.current = { strokes, tool, color, width, jsTwoFingerScroll, onStrokeAdd, onStrokeSplit, onDrawStart }
   })
 
   const register = useCallback((num: number, el: HTMLDivElement | null) => {
@@ -302,27 +295,49 @@ export default function PdfPages({
     const d = drawing.current
     if (d) clearLive(d)
     drawing.current = null
+    setErasePreview(null)
   }
 
   function addPoint(d: Drawing, clientX: number, clientY: number) {
     const r = d.el.getBoundingClientRect()
     const x = (clientX - r.left) / r.width
     const y = (clientY - r.top) / r.height
+    if (latest.current.tool === 'eraser') {
+      const size = sizes[d.page - 1]
+      const scale = window.visualViewport?.scale ?? 1
+      erase(d, x, y * (size.height / size.width), ERASER_PX / (r.width * scale), size.height / size.width)
+      return
+    }
     const n = d.points.length
     const aspect = r.height / r.width
     if (n >= 2 && Math.hypot(x - d.points[n - 2], (y - d.points[n - 1]) * aspect) < MIN_POINT_DIST) return
     d.points.push(Math.round(x * 1e5) / 1e5, Math.round(y * 1e5) / 1e5)
+  }
 
-    const { tool: t, strokes: all, onStrokeDelete: del } = latest.current
-    if (t === 'eraser') {
-      for (const s of all) {
-        if (s.page !== d.page || d.erased.has(s.id)) continue
-        if (strokeHit(s, x, y, aspect)) {
-          d.erased.add(s.id)
-          del(s.id)
-        }
+  // x/y in page-width units. A fast drag is stepped at half the radius so the eraser
+  // sweeps a continuous band instead of punching separate holes.
+  function erase(d: Drawing, x: number, y: number, radius: number, aspect: number) {
+    const from = d.last ?? { x, y }
+    const steps = Math.max(1, Math.ceil(Math.hypot(x - from.x, y - from.y) / (radius / 2)))
+    d.last = { x, y }
+    let changed = false
+    for (let k = 1; k <= steps; k++) {
+      const cx = from.x + ((x - from.x) * k) / steps
+      const cy = from.y + ((y - from.y) * k) / steps
+      const current = latest.current.strokes
+        .flatMap(s => d.work.get(s.id) ?? [s])
+        .filter(s => s.page === d.page)
+      for (const s of current) {
+        const parts = eraseCircle(s, cx, cy, radius, aspect)
+        if (!parts) continue
+        const orig = d.origin.get(s.id) ?? s.id
+        const list = d.work.get(orig) ?? [s]
+        d.work.set(orig, list.flatMap(p => (p.id === s.id ? parts : [p])))
+        for (const p of parts) d.origin.set(p.id, orig)
+        changed = true
       }
     }
+    if (changed) setErasePreview(new Map(d.work))
   }
 
   function drawLive(d: Drawing) {
@@ -364,7 +379,9 @@ export default function PdfPages({
       page: Number(pageEl.dataset.page),
       el: pageEl,
       points: [],
-      erased: new Set(),
+      work: new Map(),
+      origin: new Map(),
+      last: null,
     }
     drawing.current = d
     addPoint(d, e.clientX, e.clientY)
@@ -399,9 +416,14 @@ export default function PdfPages({
     const d = drawing.current
     if (!d || d.pointerId !== e.pointerId) return
     drawing.current = null
-    const { tool: t, color: c, width: w, onStrokeAdd: add } = latest.current
+    const { tool: t, color: c, width: w, onStrokeAdd: add, onStrokeSplit: split } = latest.current
     if (t === 'marker' || t === 'pen') {
       add({ id: crypto.randomUUID(), page: d.page, tool: t, color: c, width: w, points: d.points })
+    }
+    if (t === 'eraser') {
+      for (const [id, parts] of d.work) split(id, parts)
+      // Same event, so React renders the committed strokes and the cleared preview together.
+      setErasePreview(null)
     }
     // Clear after React has painted the committed stroke, so it does not blink.
     requestAnimationFrame(() => clearLive(d))

@@ -24,7 +24,10 @@ export interface Counter {
 
 export type Op =
   | { type: 'stroke_add'; stroke: Stroke }
+  // Kept so ops still queued on a device from before the partial eraser can be applied.
   | { type: 'stroke_delete'; id: string }
+  // Replaces a stroke with what the eraser left of it (empty = fully erased).
+  | { type: 'stroke_split'; id: string; parts: Stroke[] }
   | { type: 'counter_add'; counter: Counter }
   | { type: 'counter_set'; id: string; value: number }
   | { type: 'counter_delete'; id: string }
@@ -45,6 +48,15 @@ export function applyOps(state: DocState, ops: Op[]): DocState {
       case 'stroke_delete':
         strokes = strokes.filter(s => s.id !== op.id)
         break
+      case 'stroke_split': {
+        // Only while the stroke is still there: a retry after a lost response finds the
+        // parts already in place, and a split from another device cannot bring erased
+        // ink back.
+        const i = strokes.findIndex(s => s.id === op.id)
+        if (i === -1) break
+        strokes = [...strokes.slice(0, i), ...op.parts, ...strokes.slice(i + 1)]
+        break
+      }
       case 'counter_add':
         if (!counters.some(c => c.id === op.counter.id)) counters = [...counters, op.counter]
         break

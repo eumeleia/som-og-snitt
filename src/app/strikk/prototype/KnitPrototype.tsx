@@ -276,7 +276,7 @@ export default function KnitPrototype() {
           jsTwoFingerScroll={jsTwoFinger}
           bottomPadding={countersVisible ? counterHeight : 0}
           onStrokeAdd={s => commit({ type: 'stroke_add', stroke: s })}
-          onStrokeDelete={id => commit({ type: 'stroke_delete', id })}
+          onStrokeSplit={(id, parts) => commit({ type: 'stroke_split', id, parts })}
           onDrawStart={() => { setSheetOpen(false); setMenuOpen(false) }}
         />
       )}
@@ -342,7 +342,7 @@ export default function KnitPrototype() {
               </RoundButton>
             </div>
             {menuOpen && (
-              <div className="self-end flex flex-col gap-2 items-center">
+              <div className="self-end flex flex-col gap-2 items-end">
                 <RoundButton label="Markeringstusj" on={tool === 'marker'} onClick={() => toggleTool('marker')}>
                   <ToolIcon tool="marker" />
                 </RoundButton>
@@ -352,14 +352,19 @@ export default function KnitPrototype() {
                 <RoundButton label="Viskelær" on={tool === 'eraser'} onClick={() => toggleTool('eraser')}>
                   <ToolIcon tool="eraser" />
                 </RoundButton>
-                <div className="h-px w-8 bg-stone-400 my-1" />
-                <RoundButton
-                  label={jsTwoFinger ? 'To fingre: Safari og JS' : 'To fingre: bare Safari'}
-                  on={jsTwoFinger}
+                <div className="h-px w-8 bg-stone-400 my-1 mr-1.5" />
+                <button
+                  aria-pressed={jsTwoFinger}
                   onClick={() => setJsTwoFinger(v => !v)}
+                  className="pointer-events-auto w-52 rounded-2xl px-3 py-2 text-left shadow-md border bg-white/95 border-stone-300"
                 >
-                  <span className="text-[11px] font-semibold leading-none">{jsTwoFinger ? 'JS' : 'S'}</span>
-                </RoundButton>
+                  <span className="block text-sm font-medium text-stone-800">
+                    {jsTwoFinger ? 'To fingre: app' : 'To fingre: Safari'}
+                  </span>
+                  <span className="block text-[11px] leading-snug text-stone-500">
+                    Gjelder bare blaing med to fingre på mobil mens et verktøy er på.
+                  </span>
+                </button>
                 <RoundButton label="Ny PDF" on={false} onClick={() => { setMenuOpen(false); fileInput.current?.click() }}>
                   <IconUpload />
                 </RoundButton>
