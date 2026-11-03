@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { google } from 'googleapis'
 import { getOAuth2Client } from '@/lib/drive-helpers'
+import { logDriveError } from '@/lib/drive-log'
 
 export async function POST(req: NextRequest) {
   try {
@@ -52,7 +53,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ uploadUrl, sessionStartetVed })
   } catch (err) {
-    console.error('[upload] session-feil:', err)
+    logDriveError('upload session-feil', err)
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Ukjent feil' },
       { status: 500 },

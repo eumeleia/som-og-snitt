@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { google } from 'googleapis'
 import { createClient } from '@supabase/supabase-js'
+import { logDriveError } from '@/lib/drive-log'
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -41,7 +42,7 @@ export async function GET(req: NextRequest) {
     settingsUrl.searchParams.set('drive', 'connected')
     return NextResponse.redirect(settingsUrl)
   } catch (err) {
-    console.error('[Drive callback] full error:', err)
+    logDriveError('Drive callback', err)
     settingsUrl.searchParams.set('drive', 'error')
     return NextResponse.redirect(settingsUrl)
   }

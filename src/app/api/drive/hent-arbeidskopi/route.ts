@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { google } from 'googleapis'
 import { createClient } from '@supabase/supabase-js'
 import { getOAuth2Client } from '@/lib/drive-helpers'
+import { logDriveError } from '@/lib/drive-log'
 
 // Henter en PDF fra Drive og legger den som ARBEIDSKOPI i Supabase Storage.
 //
@@ -99,7 +100,7 @@ export async function POST(req: NextRequest) {
     })
   } catch (err) {
     const msg = err instanceof Error ? `${err.name}: ${err.message}` : 'Ukjent feil'
-    console.error('[drive/hent-arbeidskopi]', err)
+    logDriveError('drive/hent-arbeidskopi', err)
     return NextResponse.json({ error: `Import fra Drive feilet: ${msg}` }, { status: 500 })
   }
 }

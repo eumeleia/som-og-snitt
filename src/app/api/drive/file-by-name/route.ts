@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { google } from 'googleapis'
 import { getOAuth2Client } from '@/lib/drive-helpers'
+import { logDriveError } from '@/lib/drive-log'
 
 // Googles klokke (som setter createdTime) er ikke garantert synkron med serverens som
 // kaller herfra — uten en margin kunne filteret i sjeldne tilfeller avvise nøyaktig den
@@ -86,7 +87,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ fileId, webViewLink, downloadLink, forsok })
   } catch (err) {
-    console.error('[file-by-name]', err)
+    logDriveError('file-by-name', err)
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Ukjent feil' },
       { status: 500 },

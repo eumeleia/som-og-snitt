@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { google } from 'googleapis'
 import { createClient } from '@supabase/supabase-js'
 import { getOAuth2Client } from '@/lib/drive-helpers'
+import { logDriveError } from '@/lib/drive-log'
 
 // Opprydding i project-images. To uavhengige jobber:
 //
@@ -143,7 +144,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Ukjent handling: ${handling}` }, { status: 400 })
   } catch (err) {
     const msg = err instanceof Error ? `${err.name}: ${err.message}` : 'Ukjent feil'
-    console.error('[opprydding]', err)
+    logDriveError('opprydding', err)
     return NextResponse.json({ error: msg }, { status: 500 })
   }
 }

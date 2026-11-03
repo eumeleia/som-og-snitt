@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { google } from 'googleapis'
 import { getOAuth2Client, getOrCreateRootFolder, getOrCreateSubfolder } from '@/lib/drive-helpers'
+import { logDriveError } from '@/lib/drive-log'
 
 export async function POST(req: NextRequest) {
   try {
@@ -15,7 +16,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ folderId })
   } catch (err) {
-    console.error('[ensure-folder]', err)
+    logDriveError('ensure-folder', err)
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Ukjent feil' },
       { status: 500 },

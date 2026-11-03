@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { google } from 'googleapis'
 import { createClient } from '@supabase/supabase-js'
 import { getOAuth2Client } from '@/lib/drive-helpers'
+import { logDriveError } from '@/lib/drive-log'
 
 // Sletter arbeidskopien i Supabase Storage. Drive-originalen røres ikke.
 //
@@ -84,7 +85,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ slettet: navn, originalIDrive: meta.data.name })
   } catch (err) {
     const msg = err instanceof Error ? `${err.name}: ${err.message}` : 'Ukjent feil'
-    console.error('[drive/slett-arbeidskopi]', err)
+    logDriveError('drive/slett-arbeidskopi', err)
     return NextResponse.json({ error: `Sletting feilet: ${msg}` }, { status: 500 })
   }
 }

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { google } from 'googleapis'
 import { Readable } from 'stream'
 import { getOAuth2Client, getOrCreateRootFolder, getOrCreateSubfolder } from '@/lib/drive-helpers'
+import { logDriveError } from '@/lib/drive-log'
 
 export async function POST(req: NextRequest) {
   try {
@@ -36,7 +37,7 @@ export async function POST(req: NextRequest) {
       webViewLink: uploaded.data.webViewLink,
     })
   } catch (err) {
-    console.error('[Drive upload]', err)
+    logDriveError('Drive upload', err)
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Ukjent feil' },
       { status: 500 },

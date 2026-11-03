@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { logDriveError } from '@/lib/drive-log'
 
 // Et tilbakekalt eller utløpt refresh-token gir invalid_grant fra Googles token-endepunkt.
 // Det kommer enten som response.data.error eller i selve meldingen (google-auth-library
@@ -20,6 +21,6 @@ export function driveErrorResponse(err: unknown, label: string) {
   if (message === 'Drive ikke tilkoblet') {
     return NextResponse.json({ error: message, code: 'DRIVE_AUTH_EXPIRED' }, { status: 401 })
   }
-  console.error(`[${label}]`, err)
+  logDriveError(label, err)
   return NextResponse.json({ error: message }, { status: 500 })
 }
