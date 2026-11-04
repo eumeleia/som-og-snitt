@@ -6,7 +6,7 @@ import type { PDFDocumentProxy } from 'pdfjs-dist'
 import { supabase } from '@/lib/supabase'
 import { applyOps, type Counter, type DocState, type Op, type Stroke, type Tool } from './ops'
 import { enqueue, pendingOps, subscribe, subscribeServerCounters, type QueueStatus } from './saveQueue'
-import { downloadPdf, uploadPdf, DriveAuthExpiredError } from './drive'
+import { downloadPdf, uploadPdf, DriveAuthExpiredError, DriveFileMissingError } from './drive'
 import PdfPages, { MARKER_OPACITY, type PageSize } from './PdfPages'
 import Counters from './Counters'
 
@@ -51,6 +51,7 @@ type Status =
   | { kind: 'ready' }
   | { kind: 'error'; text: string }
   | { kind: 'auth-expired' }
+  | { kind: 'missing'; text: string }
 
 function readLocal<T>(key: string, fallback: T): T {
   try {
@@ -194,6 +195,7 @@ export default function KnitPrototype() {
 
   const handleError = useCallback((err: unknown) => {
     if (err instanceof DriveAuthExpiredError) setStatus({ kind: 'auth-expired' })
+    else if (err instanceof DriveFileMissingError) setStatus({ kind: 'missing', text: err.message })
     else setStatus({ kind: 'error', text: err instanceof Error ? err.message : String(err) })
   }, [])
 
@@ -249,6 +251,18 @@ export default function KnitPrototype() {
     }
   }
 
+  // Removes the row only; the file in the private Drive is left alone. The next most
+  // recently opened row loads after.
+  async function removeRow() {
+    if (!row) return
+    setStatus({ kind: 'loading', text: 'Fjerner …' })
+    const res = await fetch(`/api/strikk-prototype/${row.id}`, { method: 'DELETE' })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) { setStatus({ kind: 'error', text: body.error ?? `Fjerning feilet (${res.status})` }); return }
+    setRow(null)
+    setLoadAttempt(n => n + 1)
+  }
+
   function commit(op: Op) {
     if (!row) return
     setState(s => applyOps(s, [op]))
@@ -299,10 +313,19 @@ export default function KnitPrototype() {
             {status.kind === 'error' && <p className="text-red-700 text-sm break-words">{status.text}</p>}
             {status.kind === 'auth-expired' && (
               <>
-                <p className="text-stone-700">Disk-tilgangen har utløpt.</p>
-                <a href="/api/drive/auth" className="h-11 rounded-xl bg-[#2E5339] text-white flex items-center justify-center">
-                  Koble til Disk på nytt
+                <p className="text-stone-700">Strikk er ikke koblet til Disk, eller tilgangen har utløpt.</p>
+                <a href="/api/strikk/drive/auth" className="h-11 rounded-xl bg-[#2E5339] text-white flex items-center justify-center">
+                  Koble til Disk for Strikk
                 </a>
+              </>
+            )}
+            {status.kind === 'missing' && (
+              <>
+                <p className="text-stone-700 text-sm break-words">{status.text}</p>
+                <button onClick={() => void removeRow()}
+                  className="h-11 rounded-xl border border-stone-300 bg-white text-stone-800">
+                  Fjern fra appen
+                </button>
               </>
             )}
             {status.kind === 'error' && (
@@ -316,7 +339,7 @@ export default function KnitPrototype() {
                 Prøv igjen
               </button>
             )}
-            {(status.kind === 'empty' || status.kind === 'error') && (
+            {(status.kind === 'empty' || status.kind === 'error' || status.kind === 'missing') && (
               <button onClick={() => fileInput.current?.click()}
                 className="h-11 rounded-xl bg-[#2E5339] text-white">
                 Last opp PDF

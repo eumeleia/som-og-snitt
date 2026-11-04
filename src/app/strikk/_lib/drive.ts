@@ -1,14 +1,24 @@
-// Browser-side Drive access for Strikk, copied from the prototype so that can be deleted
-// on its own. Bytes never pass through a Vercel function
-// in either direction: upload PUTs straight to a resumable session URL, download fetches
-// files/{id}?alt=media with a short-lived token from /api/strikk/token.
-
-import { KNIT_FOLDER_NAME } from '@/lib/knit-folder'
+// Browser-side Drive access for Strikk, on Strikk's own Drive connection. Bytes never
+// pass through a Vercel function in either direction: upload PUTs straight to a
+// resumable session URL, download fetches files/{id}?alt=media with a short-lived token
+// from /api/strikk/token.
 
 export class DriveAuthExpiredError extends Error {
   constructor() {
-    super('Disk-tilgangen har utløpt')
+    super('Strikk er ikke koblet til Disk, eller tilgangen har utløpt')
   }
+}
+
+// The Strikk account cannot see the file: it is in the private Drive, deleted or binned.
+export class DriveFileMissingError extends Error {
+  constructor(fileName: string) {
+    super(`Fant ikke «${fileName}» i Disken til Strikk. Filen kan ligge i den private Disken, være slettet eller ligge i papirkurven.`)
+  }
+}
+
+export interface StrikkDriveFile {
+  id: string
+  sha256: string | null
 }
 
 export async function getAccessToken(): Promise<string> {
@@ -27,52 +37,46 @@ export async function downloadPdf(fileId: string, fileName: string): Promise<Uin
       { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' },
     )
     if (res.status === 401 && attempt === 0) continue
-    if (res.status === 404) {
-      throw new Error(`Fant ikke «${fileName}» på Disk (404). Filen kan være slettet eller ligge i papirkurven.`)
-    }
+    if (res.status === 404) throw new DriveFileMissingError(fileName)
     if (!res.ok) throw new Error(`Henting fra Disk feilet (${res.status})`)
     return new Uint8Array(await res.arrayBuffer())
   }
   throw new Error('Henting fra Disk feilet (401)')
 }
 
-let migration: Promise<void> | null = null
+export async function listDriveFiles(): Promise<StrikkDriveFile[]> {
+  const res = await fetch('/api/strikk/drive/files', { cache: 'no-store' })
+  const body = await res.json().catch(() => ({})) as { files?: StrikkDriveFile[]; error?: string; code?: string }
+  if (body.code === 'DRIVE_AUTH_EXPIRED') throw new DriveAuthExpiredError()
+  if (!res.ok || !body.files) throw new Error(body.error ?? `Henting av fil-listen feilet (${res.status})`)
+  return body.files
+}
 
-// Moves PDFs from the old «Søm og Snitt/Strikk» folder, once per page load. Failures are
-// ignored: the next visit tries again, and opening a recipe works wherever the file is.
-export function migrateLegacyFolder(): Promise<void> {
-  migration ??= fetch('/api/strikk/migrate-folder', { method: 'POST', cache: 'no-store' })
-    .then(() => undefined, () => undefined)
-  return migration
+export async function sha256Hex(file: Blob): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
+  return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('')
+}
+
+async function postJson<T>(url: string, payload: unknown): Promise<{ res: Response; body: T & { error?: string; code?: string } }> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  const body = await res.json().catch(() => ({})) as T & { error?: string; code?: string }
+  if (body.code === 'DRIVE_AUTH_EXPIRED') throw new DriveAuthExpiredError()
+  return { res, body }
 }
 
 // Same flow as the recipe upload in dashboard/recipes/page.tsx: the PUT response may be
 // unreadable (CORS), so file-by-name is the backstop.
 export async function uploadPdf(file: File): Promise<string> {
-  // Fails fast with DriveAuthExpiredError before anything is created in Drive.
-  await getAccessToken()
-  // Otherwise an upload right after opening the page could create the new folder at the
-  // same moment as the migration does.
-  await migrateLegacyFolder()
-
-  const ensureRes = await fetch('/api/drive/ensure-folder', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ folderName: KNIT_FOLDER_NAME, topLevel: true }),
-  })
-  if (!ensureRes.ok) throw new Error(`Fant ikke strikkemappen på Disk (${ensureRes.status})`)
-  const { folderId } = await ensureRes.json() as { folderId: string }
-
-  const sessionRes = await fetch('/api/drive/upload-session', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fileName: file.name, mimeType: 'application/pdf', folderId }),
-  })
-  if (!sessionRes.ok) throw new Error(`Kunne ikke starte opplasting (${sessionRes.status})`)
-  const { uploadUrl, sessionStartetVed } = await sessionRes.json() as {
-    uploadUrl: string
-    sessionStartetVed: number
-  }
+  const session = await postJson<{ uploadUrl: string; folderId: string; sessionStartetVed: number }>(
+    '/api/strikk/drive/upload-session',
+    { fileName: file.name },
+  )
+  if (!session.res.ok) throw new Error(session.body.error ?? `Kunne ikke starte opplasting (${session.res.status})`)
+  const { uploadUrl, folderId, sessionStartetVed } = session.body
 
   try {
     const putRes = await fetch(uploadUrl, {
@@ -88,13 +92,10 @@ export async function uploadPdf(file: File): Promise<string> {
     // Opaque TypeError: CORS or network, indistinguishable here. Fall through to the lookup.
   }
 
-  const lookupRes = await fetch('/api/drive/file-by-name', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fileName: file.name, folderId, sessionStartetVed }),
-  })
-  if (!lookupRes.ok) throw new Error('Fant ikke den opplastede filen på Disk')
-  const { fileId } = await lookupRes.json() as { fileId?: string }
-  if (!fileId) throw new Error('Fant ikke den opplastede filen på Disk')
-  return fileId
+  const lookup = await postJson<{ fileId?: string }>(
+    '/api/strikk/drive/file-by-name',
+    { fileName: file.name, folderId, sessionStartetVed },
+  )
+  if (!lookup.res.ok || !lookup.body.fileId) throw new Error('Fant ikke den opplastede filen på Disk')
+  return lookup.body.fileId
 }
