@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 import { RECIPE_SELECT, type KnitRecipe } from '../_lib/recipes'
-import { DriveAuthExpiredError, getAccessToken, uploadPdf } from '../_lib/drive'
+import { DriveAuthExpiredError, getAccessToken, migrateLegacyFolder, uploadPdf } from '../_lib/drive'
 import DriveExpired from './DriveExpired'
 
 type ListState =
@@ -20,6 +20,8 @@ export default function RecipeList() {
   const [editing, setEditing] = useState<KnitRecipe | null>(null)
   const [loadAttempt, setLoadAttempt] = useState(0)
   const fileInput = useRef<HTMLInputElement>(null)
+
+  useEffect(() => { void migrateLegacyFolder() }, [])
 
   useEffect(() => {
     let cancelled = false

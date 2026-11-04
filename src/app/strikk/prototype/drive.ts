@@ -2,6 +2,8 @@
 // in either direction: upload PUTs straight to a resumable session URL, download fetches
 // files/{id}?alt=media with a short-lived token from /api/strikk-prototype/token.
 
+import { KNIT_FOLDER_NAME } from '@/lib/knit-folder'
+
 export class DriveAuthExpiredError extends Error {
   constructor() {
     super('Disk-tilgangen har utløpt')
@@ -42,9 +44,9 @@ export async function uploadPdf(file: File): Promise<string> {
   const ensureRes = await fetch('/api/drive/ensure-folder', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ folderName: 'Strikk' }),
+    body: JSON.stringify({ folderName: KNIT_FOLDER_NAME, topLevel: true }),
   })
-  if (!ensureRes.ok) throw new Error(`Fant ikke Strikk-mappen (${ensureRes.status})`)
+  if (!ensureRes.ok) throw new Error(`Fant ikke strikkemappen på Disk (${ensureRes.status})`)
   const { folderId } = await ensureRes.json() as { folderId: string }
 
   const sessionRes = await fetch('/api/drive/upload-session', {
