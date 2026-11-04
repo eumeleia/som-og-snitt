@@ -1,20 +1,25 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   EXTRACTION_SCHEMA,
+  EXTRACTION_PROMPT,
+  amountForCalc,
+  buildExtractionPrompt,
   chooseAmountYarn,
   clearUncertain,
+  corrections,
   driveFileName,
+  formatAmount,
   hasReadableText,
   heldTogether,
   normalizeExtraction,
+  parseAmountInput,
   planPages,
   removeSize,
   removeYarnLine,
   storedToExtraction,
-  type StoredRecipe,
 } from './extraction'
 import { nextBatch, runExtractionBatch, type ExtractionStatus } from './extract-client'
-import { SIMULATED_ANSWER } from './extraction.fixture'
+import { CATALOGUE_ANSWER, SIMULATED_ANSWER, storedFrom } from './extraction.fixture'
 
 describe('normalizeExtraction', () => {
   it('keeps every field for a pattern with several sizes and colours', () => {
@@ -182,32 +187,9 @@ describe('runExtractionBatch', () => {
 })
 
 describe('storedToExtraction', () => {
-  // Stores the data the way strikk_save_extraction does (ids, positions, size and line
-  // ids instead of indexes), shuffled, then reads it back.
   it('reads stored rows back into the same data, with an app suggestion left out', () => {
     const d = normalizeExtraction(SIMULATED_ANSWER)
-    const sizeIds = d.sizes.map((_, i) => `s${i}`)
-    const lineIds = d.yarn_lines.map((_, i) => `l${i}`)
-    const stored: StoredRecipe = {
-      id: 'r1', title: d.title!, designer: d.designer, file_name: 'x.pdf', drive_file_id: 'f', created_at: '',
-      extraction_status: 'extracted', extraction_error: null, extracted_at: null, approved_at: null,
-      extracted_title: d.title, extracted_designer: d.designer, audience: d.audience, garment_type: d.garment_type,
-      gauge_stitches_10cm: d.gauge_stitches_10cm, gauge_rows_10cm: d.gauge_rows_10cm, gauge_note: d.gauge_note,
-      needles: d.needles, variants: d.variants, is_collection: d.is_collection, collection_titles: d.collection_titles,
-      uncertain_fields: d.uncertain_fields,
-      strikk_size: d.sizes.map((s, i) => ({ id: sizeIds[i], position: i, ...s })).reverse(),
-      strikk_yarn_line: d.yarn_lines.map((l, i) => ({ id: lineIds[i], position: i, ...l })).reverse(),
-      strikk_yarn_amount: d.amounts.map(a => ({
-        size_id: sizeIds[a.size], color_group: a.color_group, yarn_line_id: a.yarn_line === null ? null : lineIds[a.yarn_line],
-        amount: a.amount, unit: a.unit, candidates: a.candidates, needs_choice: a.needs_choice, uncertain: a.uncertain,
-      })).reverse(),
-      strikk_yarn_alternative: [
-        ...d.alternatives.map(a => ({ ...a, yarn_line_id: a.yarn_line === null ? null : lineIds[a.yarn_line], source: 'pattern' as const })),
-        { yarn_line_id: null, color_group: 0, yarn_name: 'App-forslag', brand: null, meterage_m: null, skein_weight_g: null, fiber: null, source: 'app' as const, uncertain: false },
-      ],
-      strikk_accessory: d.accessories.map(a => ({ ...a, size_id: a.size === null ? null : sizeIds[a.size] })),
-    }
-    const back = storedToExtraction(stored)
+    const back = storedToExtraction(storedFrom(d))
     const strip = <T extends object>(xs: T[]) => xs.map(x => Object.fromEntries(Object.entries(x).filter(([k]) => !['yarn_line_id', 'size_id', 'source'].includes(k))))
     const byPlace = [...d.amounts].sort((a, b) => a.size - b.size || a.color_group - b.color_group || (a.yarn_line ?? -1) - (b.yarn_line ?? -1))
     expect(back).toEqual({ ...d, amounts: byPlace, alternatives: strip(d.alternatives), accessories: strip(d.accessories) })
@@ -291,43 +273,129 @@ function validate(schema: Record<string, unknown>, v: unknown, path = '$'): stri
   return []
 }
 
-// The answer in the new shape: what was null is "" for text, 0 for a measure, -1 for an index.
-const INDEX_KEYS = new Set(['yarn_line', 'size', 'color_group'])
-const MEASURE_KEYS = new Set(['meterage_m', 'skein_weight_g', 'amount', 'quantity', 'gauge_stitches_10cm', 'gauge_rows_10cm'])
-function toEmptyValues(v: unknown, key = ''): unknown {
-  if (v === null) return INDEX_KEYS.has(key) ? -1 : MEASURE_KEYS.has(key) ? 0 : ''
-  if (Array.isArray(v)) return v.map(x => toEmptyValues(x))
-  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, toEmptyValues(x, k)]))
-  return v
-}
+describe('answers in the schema shape', () => {
+  it('the simulated answers are ones the API could return', () => {
+    expect(validate(EXTRACTION_SCHEMA as Record<string, unknown>, SIMULATED_ANSWER)).toEqual([])
+    expect(validate(EXTRACTION_SCHEMA as Record<string, unknown>, CATALOGUE_ANSWER)).toEqual([])
+  })
 
-const SPARSE_ANSWER = {
-  title: 'Lue', designer: null, audience: null, garment_type: 'lue', is_collection: false, collection_titles: [], variants: [],
-  sizes: [{ label: 'One size', uncertain: false }],
-  yarn_lines: [{ color_group: 0, color_label: null, yarn_name: 'Restegarn', brand: null, meterage_m: null, skein_weight_g: null, fiber: null, strands: 1, uncertain_fields: [] }],
-  amounts: [{ size: 0, color_group: 0, yarn_line: null, amount: null, unit: 'g', candidates: [], needs_choice: false, uncertain: true }],
-  alternatives: [{ color_group: null, yarn_line: null, yarn_name: 'Drops Air', brand: null, meterage_m: null, skein_weight_g: null, fiber: null, uncertain: false }],
-  gauge_stitches_10cm: null, gauge_rows_10cm: null, gauge_note: null, needles: [],
-  accessories: [{ size: null, kind: 'other', description: 'Dusk', quantity: null, dimension: null, uncertain: false }],
-  uncertain_fields: [],
-}
+  it('reads "", 0 and -1 as missing', () => {
+    const d = normalizeExtraction(CATALOGUE_ANSWER)
+    expect(d.yarn_lines[0]).toMatchObject({ color_label: null, meterage_m: null, fiber: null })
+    expect(d).toMatchObject({ gauge_stitches_10cm: null, gauge_note: null })
+    expect(normalizeExtraction(SIMULATED_ANSWER).accessories[0].size).toBeNull()
+  })
 
-describe('answers in the new schema shape', () => {
-  for (const [name, old] of [['full', SIMULATED_ANSWER], ['sparse', SPARSE_ANSWER]] as const) {
-    it(`${name}: is valid against the schema and fills the same fields as the old shape`, () => {
-      const fresh = toEmptyValues(old)
-      expect(validate(EXTRACTION_SCHEMA as Record<string, unknown>, fresh)).toEqual([])
-      expect(normalizeExtraction(fresh)).toEqual(normalizeExtraction(old))
+  it('still reads an answer in the older shape (null, plain field names)', () => {
+    const d = normalizeExtraction({
+      title: 'Lue', designer: null, audience: null, sizes: [{ label: 'One size', uncertain: false }],
+      yarn_lines: [{ color_group: 0, yarn_name: 'Restegarn', meterage_m: null, strands: 1, uncertain_fields: ['meterage_m'] }],
+      amounts: [{ size: 0, color_group: 0, yarn_line: null, amount: 100, unit: 'g' }],
+      uncertain_fields: ['gauge_note'],
     })
-  }
+    expect(d).toMatchObject({ designer: null, audience: null, uncertain_fields: ['gauge_note'], uncertain_reasons: {} })
+    expect(d.yarn_lines[0]).toMatchObject({ uncertain_fields: ['meterage_m'], uncertain_reasons: {} })
+    expect(d.amounts[0]).toMatchObject({ amount: 100, amount_max: null, yarn_line: null })
+  })
+})
 
-  it('reads the empty values as missing', () => {
-    const d = normalizeExtraction(toEmptyValues(SPARSE_ANSWER))
-    expect(d).toMatchObject({ designer: null, audience: null, gauge_stitches_10cm: null, gauge_note: null })
-    expect(d.yarn_lines[0]).toMatchObject({ brand: null, meterage_m: null, skein_weight_g: null, fiber: null })
-    expect(d.amounts[0]).toMatchObject({ yarn_line: null, amount: null })
-    expect(d.alternatives[0]).toMatchObject({ yarn_line: null, color_group: null })
-    expect(d.accessories[0]).toMatchObject({ size: null, quantity: null, dimension: null, uncertain: false })
-    expect(d.uncertain_fields).toEqual([])
+describe('catalogues', () => {
+  it('keep the collection name and get no sizes or amounts, and missing amounts are not uncertain', () => {
+    const d = normalizeExtraction(CATALOGUE_ANSWER)
+    expect(d).toMatchObject({ title: 'Alpaca Silk', is_collection: true, sizes: [], amounts: [], amounts_page: null })
+    expect(d.collection_titles).toEqual(['Genser og bukse 1111-4', 'One piece 1111-8'])
+    expect(d.uncertain_fields).toEqual(['audience'])
+    expect(Object.keys(d.uncertain_reasons)).toEqual(['audience'])
+    expect(d.accessories[0].size).toBeNull()
+  })
+  it('a pattern turned into a catalogue in the review loses its sizes and amounts on approve', () => {
+    const d = normalizeExtraction({ ...SIMULATED_ANSWER, is_collection: true })
+    expect([d.sizes.length, d.amounts.length]).toEqual([0, 0])
+  })
+})
+
+describe('amount ranges', () => {
+  it('stores both ends, shows 400–450, and the top is what the app calculates with', () => {
+    const a = normalizeExtraction(SIMULATED_ANSWER).amounts.find(x => x.size === 3 && x.yarn_line === 0)!
+    expect([a.amount, a.amount_max]).toEqual([400, 450])
+    expect(formatAmount(a)).toBe('400–450')
+    expect(amountForCalc(a)).toBe(450)
+    expect(amountForCalc({ amount: 300, amount_max: null })).toBe(300)
+  })
+  it('turns a reversed range round and an equal one into one amount', () => {
+    const d = normalizeExtraction({ ...SIMULATED_ANSWER, amounts: [
+      { ...SIMULATED_ANSWER.amounts[0], amount: 250, amount_max: 200 },
+      { ...SIMULATED_ANSWER.amounts[1], amount: 3, amount_max: 3 },
+    ] })
+    expect(d.amounts.map(a => [a.amount, a.amount_max])).toEqual([[200, 250], [3, null]])
+  })
+  it('reads what can be typed in the review', () => {
+    expect(parseAmountInput('200-250')).toEqual({ amount: 200, amount_max: 250 })
+    expect(parseAmountInput(' 200 – 250 ')).toEqual({ amount: 200, amount_max: 250 })
+    expect(parseAmountInput('200—250')).toEqual({ amount: 200, amount_max: 250 })
+    expect(parseAmountInput('250-200')).toEqual({ amount: 200, amount_max: 250 })
+    expect(parseAmountInput('250')).toEqual({ amount: 250, amount_max: null })
+    expect(parseAmountInput('2,5')).toEqual({ amount: 2.5, amount_max: null })
+    expect(parseAmountInput('')).toEqual({ amount: null, amount_max: null })
+    expect(parseAmountInput('200-')).toBeNull()
+    expect(parseAmountInput('ca 200')).toBeNull()
+    expect(formatAmount(parseAmountInput('200-250')!)).toBe('200–250')
+  })
+})
+
+describe('uncertainty reasons', () => {
+  it('keeps the reason Claude gave for each uncertain field', () => {
+    const d = normalizeExtraction(SIMULATED_ANSWER)
+    expect(d.uncertain_reasons).toEqual({ gauge_rows_10cm: 'Omregnet fra 15 omg = 5 cm' })
+    expect(d.sizes[3].uncertain_reason).toBe('Står bare i måltabellen')
+    expect(d.yarn_lines[1].uncertain_reasons).toEqual({ meterage_m: 'Utydelig trykk' })
+    expect(d.amounts.find(a => a.uncertain)!.uncertain_reason).toBe('Tallet er delvis skjult')
+    expect(d.sizes[0].uncertain_reason).toBeNull()
+  })
+  it('gives its own reason when it has to mark something', () => {
+    const d = normalizeExtraction({ ...SIMULATED_ANSWER, amounts: [{ ...SIMULATED_ANSWER.amounts[0], yarn_line: 9 }], audience: 'baby' })
+    expect(d.amounts[0]).toMatchObject({ uncertain: true, uncertain_reason: 'Garnet mengden viste til, finnes ikke' })
+    expect(d.uncertain_reasons.audience).toBe('Ukjent målgruppe «baby»')
+  })
+})
+
+describe('corrections', () => {
+  it('lists what was changed from the extraction, in words, without title and designer', () => {
+    const before = normalizeExtraction(SIMULATED_ANSWER)
+    const after = {
+      ...before,
+      title: 'Annen tittel',
+      audience: 'unisex' as const,
+      amounts: before.amounts.map(a => (a.size === 3 && a.yarn_line === 0 ? { ...a, amount: 450, amount_max: 500 } : a)),
+      needles: ['rundpinne 4 mm 80 cm'],
+    }
+    expect(corrections(before, after)).toEqual([
+      { field: 'Målgruppe', extracted: 'kvinne', corrected: 'unisex' },
+      { field: 'Garnmengde XL / Sunday', extracted: '400–450 g', corrected: '450–500 g' },
+      { field: 'Pinner', extracted: 'rundpinne 3,5 mm 80 cm; rundpinne 4 mm 80 cm', corrected: 'rundpinne 4 mm 80 cm' },
+    ])
+  })
+  it('records an amount filled in where the extraction had none', () => {
+    const before = normalizeExtraction({ ...SIMULATED_ANSWER, amounts: [{ ...SIMULATED_ANSWER.amounts[0], size: 2, amount: 0 }] })
+    const after = { ...before, amounts: [{ ...before.amounts[0], amount: 200, amount_max: 250 }] }
+    expect(corrections(before, after)).toEqual([{ field: 'Garnmengde L / Sunday', extracted: '—', corrected: '200–250 g' }])
+  })
+  it('finds nothing when nothing changed', () => {
+    const d = normalizeExtraction(SIMULATED_ANSWER)
+    expect(corrections(d, clearUncertain(d))).toEqual([])
+  })
+})
+
+describe('buildExtractionPrompt', () => {
+  const ex = (i: number) => ({ recipe_title: `Oppskrift ${i}`, field: 'Målgruppe', extracted: 'kvinne', corrected: 'unisex' })
+  it('is the plain instructions without corrections', () => {
+    expect(buildExtractionPrompt([])).toBe(EXTRACTION_PROMPT)
+  })
+  it('appends the corrections as examples, at most 20', () => {
+    const p = buildExtractionPrompt(Array.from({ length: 25 }, (_, i) => ex(i)))
+    expect(p.startsWith(EXTRACTION_PROMPT)).toBe(true)
+    expect(p).toContain('- «Oppskrift 0», Målgruppe: extracted «kvinne», corrected to «unisex»')
+    expect(p).toContain('«Oppskrift 19»')
+    expect(p).not.toContain('«Oppskrift 20»')
   })
 })

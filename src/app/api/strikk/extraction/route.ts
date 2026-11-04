@@ -5,13 +5,15 @@ import { google } from 'googleapis'
 import { getStrikkOAuth2Client } from '@/lib/strikk-drive'
 import { logDriveError } from '@/lib/drive-log'
 import {
-  EXTRACTION_PROMPT,
   EXTRACTION_SCHEMA,
+  MAX_CORRECTION_EXAMPLES,
+  buildExtractionPrompt,
   MAX_IMAGE_PAGES,
   MAX_TEXT_CHARS,
   MAX_TEXT_PAGES,
   driveFileName,
   normalizeExtraction,
+  type CorrectionExample,
 } from '@/app/strikk/_lib/extraction'
 
 // One Claude call per recipe; Opus with thinking on can take a minute or two on a
@@ -50,6 +52,21 @@ function userContent(body: Body): Anthropic.ContentBlockParam[] {
   return content
 }
 
+// The newest corrections from approvals, as examples for Claude. Missing examples never
+// stop an extraction.
+async function correctionExamples(): Promise<CorrectionExample[]> {
+  const { data, error } = await supabaseAdmin
+    .from('strikk_extraction_correction')
+    .select('recipe_title, field, extracted, corrected')
+    .order('created_at', { ascending: false })
+    .limit(MAX_CORRECTION_EXAMPLES)
+  if (error) {
+    console.error(`[strikk/extraction] corrections: ${error.message}`)
+    return []
+  }
+  return (data ?? []) as CorrectionExample[]
+}
+
 async function markFailed(id: string, message: string) {
   await supabaseAdmin
     .from('strikk_oppskrift')
@@ -86,7 +103,7 @@ export async function POST(req: NextRequest) {
     const msg = await anthropic.messages.create({
       model: MODEL,
       max_tokens: 16000,
-      system: EXTRACTION_PROMPT,
+      system: buildExtractionPrompt(await correctionExamples()),
       output_config: { effort: 'medium', format: { type: 'json_schema', schema: EXTRACTION_SCHEMA } },
       messages: [{ role: 'user', content }],
     })

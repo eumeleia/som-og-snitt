@@ -11,6 +11,7 @@ const sim = vi.hoisted(() => ({
   rpcResult: 'saved' as string,
   updates: [] as { values: Record<string, unknown>; filters: string[] }[],
   driveUpdates: [] as Record<string, unknown>[],
+  corrections: [] as Record<string, string>[],
 }))
 
 vi.mock('@anthropic-ai/sdk', () => ({
@@ -27,6 +28,8 @@ vi.mock('@supabase/supabase-js', () => ({
       const q = {
         select: () => q,
         eq: () => q,
+        order: () => q,
+        limit: async () => ({ data: sim.corrections, error: null }),
         maybeSingle: async () => ({ data: sim.row, error: null }),
         update: (values: Record<string, unknown>) => {
           const filters: string[] = []
@@ -63,6 +66,7 @@ beforeEach(() => {
   sim.rpcResult = 'saved'
   sim.updates = []
   sim.driveUpdates = []
+  sim.corrections = []
 })
 
 const pages = [{ page: 1, text: 'Rein genser' }, { page: 2, text: 'Garn Sunday 50 g = 235 m' }]
@@ -94,6 +98,19 @@ describe('POST /api/strikk/extraction', () => {
     expect(saved.yarn_lines.filter(l => l.color_group === 0).map(l => l.yarn_name)).toEqual(['Sunday', 'Tynn Silk Mohair'])
     expect(saved.raw).toEqual(SIMULATED_ANSWER)
     expect(sim.driveUpdates).toEqual([])
+  })
+
+  it('puts the newest corrections into the instructions as examples', async () => {
+    sim.corrections = [{ recipe_title: 'Ankers bluse', field: 'Garnmengde 6-7 år / Sunday', extracted: '—', corrected: '200–250 g' }]
+    await post({ recipeId: 'r1', pages })
+    expect(sim.claudeCalls[0].system).toContain('- «Ankers bluse», Garnmengde 6-7 år / Sunday: extracted «—», corrected to «200–250 g»')
+  })
+
+  it('stores a range and the amounts page', async () => {
+    await post({ recipeId: 'r1', pages })
+    const saved = sim.rpcCalls[0].args.p_data as { amounts: { amount: number; amount_max: number | null }[]; amounts_page: number }
+    expect(saved.amounts_page).toBe(2)
+    expect(saved.amounts.filter(a => a.amount_max !== null).map(a => [a.amount, a.amount_max])).toEqual([[400, 450]])
   })
 
   it('sends page images for a scanned PDF', async () => {

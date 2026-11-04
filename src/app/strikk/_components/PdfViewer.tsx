@@ -65,9 +65,16 @@ const Page = memo(function Page({ num, size, register }: {
   )
 })
 
-export default function PdfViewer({ doc, sizes }: { doc: PDFDocumentProxy; sizes: PageSize[] }) {
+export default function PdfViewer({ doc, sizes, initialPage }: { doc: PDFDocumentProxy; sizes: PageSize[]; initialPage?: number }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const pageEls = useRef(new Map<number, HTMLDivElement>())
+
+  // Scrolls the nearest scroll container, so it works full screen and inside a panel.
+  useEffect(() => {
+    if (!initialPage || initialPage < 2) return
+    const raf = requestAnimationFrame(() => pageEls.current.get(initialPage)?.scrollIntoView({ block: 'start' }))
+    return () => cancelAnimationFrame(raf)
+  }, [doc, initialPage])
 
   const register = useCallback((num: number, el: HTMLDivElement | null) => {
     if (el) pageEls.current.set(num, el)
