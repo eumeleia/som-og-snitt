@@ -51,3 +51,7 @@ docs/kvitteringer-test/
 # Referansemateriale — hører hjemme i Drive, ikke i git
 design/
 Floral Font.zip
+
+# Lokale strikkeoppskrifter (PDF-er) — skal aldri i git
+strikk/Strikkeoppskrifter/
+strikk/Strikkeoppskrifter ryddet/
