@@ -72,10 +72,14 @@ export interface ExtractionData {
 }
 
 // ── Output schema ───────────────────────────────────────────────────────────────────
-// Structured-output subset: every object closed, every key required, null via anyOf.
+// Structured-output subset: every object closed, every key required, and no unions
+// (anyOf / type lists), which the API caps at 16 per request. A missing value is an
+// empty value instead: "" for text, 0 for a measure, -1 for "no index". The normaliser
+// turns those back into null.
 
 const str = { type: 'string' }
-const nullable = (s: object) => ({ anyOf: [s, { type: 'null' }] })
+const measureSchema = { type: 'number', description: '0 when the pattern does not say' }
+const indexSchema = { type: 'integer', description: '-1 for none' }
 const strArr = { type: 'array', items: str }
 const obj = (properties: Record<string, unknown>) => ({
   type: 'object',
@@ -85,10 +89,10 @@ const obj = (properties: Record<string, unknown>) => ({
 })
 
 export const EXTRACTION_SCHEMA = obj({
-  title: nullable(str),
-  designer: nullable(str),
-  audience: nullable({ type: 'string', enum: [...AUDIENCES] }),
-  garment_type: nullable(str),
+  title: str,
+  designer: str,
+  audience: { type: 'string', enum: [...AUDIENCES, ''] },
+  garment_type: str,
   is_collection: { type: 'boolean' },
   collection_titles: strArr,
   variants: strArr,
@@ -97,12 +101,12 @@ export const EXTRACTION_SCHEMA = obj({
     type: 'array',
     items: obj({
       color_group: { type: 'integer' },
-      color_label: nullable(str),
+      color_label: str,
       yarn_name: str,
-      brand: nullable(str),
-      meterage_m: nullable({ type: 'number' }),
-      skein_weight_g: nullable({ type: 'number' }),
-      fiber: nullable(str),
+      brand: str,
+      meterage_m: measureSchema,
+      skein_weight_g: measureSchema,
+      fiber: str,
       strands: { type: 'integer' },
       uncertain_fields: strArr,
     }),
@@ -112,8 +116,8 @@ export const EXTRACTION_SCHEMA = obj({
     items: obj({
       size: { type: 'integer' },
       color_group: { type: 'integer' },
-      yarn_line: nullable({ type: 'integer' }),
-      amount: nullable({ type: 'number' }),
+      yarn_line: indexSchema,
+      amount: measureSchema,
       unit: { type: 'string', enum: [...UNITS] },
       candidates: strArr,
       needs_choice: { type: 'boolean' },
@@ -123,35 +127,35 @@ export const EXTRACTION_SCHEMA = obj({
   alternatives: {
     type: 'array',
     items: obj({
-      color_group: nullable({ type: 'integer' }),
-      yarn_line: nullable({ type: 'integer' }),
+      color_group: indexSchema,
+      yarn_line: indexSchema,
       yarn_name: str,
-      brand: nullable(str),
-      meterage_m: nullable({ type: 'number' }),
-      skein_weight_g: nullable({ type: 'number' }),
-      fiber: nullable(str),
+      brand: str,
+      meterage_m: measureSchema,
+      skein_weight_g: measureSchema,
+      fiber: str,
       uncertain: { type: 'boolean' },
     }),
   },
-  gauge_stitches_10cm: nullable({ type: 'number' }),
-  gauge_rows_10cm: nullable({ type: 'number' }),
-  gauge_note: nullable(str),
+  gauge_stitches_10cm: measureSchema,
+  gauge_rows_10cm: measureSchema,
+  gauge_note: str,
   needles: strArr,
   accessories: {
     type: 'array',
     items: obj({
-      size: nullable({ type: 'integer' }),
+      size: indexSchema,
       kind: { type: 'string', enum: [...ACCESSORY_KINDS] },
-      description: nullable(str),
-      quantity: nullable({ type: 'number' }),
-      dimension: nullable(str),
+      description: str,
+      quantity: measureSchema,
+      dimension: str,
       uncertain: { type: 'boolean' },
     }),
   },
   uncertain_fields: strArr,
 })
 
-export const EXTRACTION_PROMPT = `You read knitting patterns (usually Norwegian, sometimes English or Danish) and extract the material and size data into the JSON schema. Read only what the pattern states. Never fill a field from general knitting knowledge; use null or an empty list when the pattern does not say.
+export const EXTRACTION_PROMPT = `You read knitting patterns (usually Norwegian, sometimes English or Danish) and extract the material and size data into the JSON schema. Read only what the pattern states. Never fill a field from general knitting knowledge. When the pattern does not say, leave the field empty: "" for text (audience too), 0 for a number, -1 for an index (yarn_line, size, color_group), [] for a list.
 
 Fields:
 - title, designer: as written in the pattern, without model codes, article numbers or dates.
@@ -161,11 +165,11 @@ Fields:
 - is_collection: true when the PDF holds several separate patterns (a booklet, e-book or catalogue); collection_titles lists them. Then fill the other fields for the first pattern only and add "is_collection" to uncertain_fields.
 - sizes: in the order the pattern lists them, labels as written ("2 år", "S", "86 cm").
 - yarn_lines: one entry per yarn. color_group numbers each colour role from 0 (Farge 1 / hovedfarge / A = 0, the next = 1, ...). Different yarns knitted together in the same colour role share one color_group, e.g. Sunday held together with a strand of Tynn Silk Mohair Kid-Silk = two yarn_lines with the same color_group. Several strands of the same yarn are one yarn_line with strands = the number of strands. color_label is the pattern's name for the colour or role. meterage_m is metres per skein, skein_weight_g grams per skein, fiber the fibre content as written.
-- amounts: for each size and colour role, the amount exactly as given, in g or skeins (nøster = skeins). Give one entry per yarn_line when the pattern gives an amount per yarn; then yarn_line is that line's index. When the pattern gives one amount for the colour role, yarn_line is null. When one amount is given for several yarns with different meterage (e.g. "300 g Sunday eller Peer Gynt"), set yarn_line null, needs_choice true and candidates to those yarn names. size is the index into sizes.
-- alternatives: only the substitute yarns the pattern itself suggests, linked to the yarn_line or color_group they replace.
+- amounts: for each size and colour role, the amount exactly as given, in g or skeins (nøster = skeins). Give one entry per yarn_line when the pattern gives an amount per yarn; then yarn_line is that line's index. When the pattern gives one amount for the colour role, yarn_line is -1. When one amount is given for several yarns with different meterage (e.g. "300 g Sunday eller Peer Gynt"), set yarn_line -1, needs_choice true and candidates to those yarn names. size is the index into sizes.
+- alternatives: only the substitute yarns the pattern itself suggests, linked to the yarn_line or color_group they replace (-1 when not tied to one).
 - gauge_stitches_10cm, gauge_rows_10cm: stitches and rows/rounds per 10 cm. Convert only exact ratios (e.g. 11 sts = 5 cm -> 22) and then add the field to uncertain_fields. gauge_note: the stitch pattern and needle the gauge is given for.
 - needles: every needle size and type as written (e.g. "rundpinne 3,5 mm 80 cm").
-- accessories: buttons, zippers, elastic and similar; quantity and dimension as written; size is the size index when it differs per size, null when it is the same for all.
+- accessories: buttons, zippers, elastic and similar; quantity and dimension as written; size is the size index when it differs per size, -1 when it is the same for all.
 
 Uncertainty: when a value is hard to read, inferred, conflicting, or you are not sure which size or colour it belongs to, still give your best reading and mark it: put the field name in uncertain_fields (top level, or on the yarn line) or set uncertain true on the size, amount, alternative or accessory.`
 
@@ -247,6 +251,16 @@ const int = (v: unknown): number | null => {
   const n = num(v)
   return n !== null && Number.isInteger(n) ? n : null
 }
+// The schema sends 0 for a measure the pattern does not give, and -1 for no index.
+// null is still read the same way, so answers in the older shape normalise alike.
+const measure = (v: unknown): number | null => {
+  const n = num(v)
+  return n !== null && n > 0 ? n : null
+}
+const optIndex = (v: unknown): number | null => {
+  const i = int(v)
+  return i !== null && i >= 0 ? i : null
+}
 const bool = (v: unknown) => v === true
 const texts = (v: unknown) => [...new Set(asArr(v).map(text).filter((t): t is string => !!t))]
 const pick = <T extends string>(v: unknown, allowed: readonly T[]): T | null =>
@@ -290,15 +304,15 @@ export function normalizeExtraction(input: unknown): ExtractionData {
       color_label: text(o.color_label),
       yarn_name,
       brand: text(o.brand),
-      meterage_m: num(o.meterage_m),
-      skein_weight_g: num(o.skein_weight_g),
+      meterage_m: measure(o.meterage_m),
+      skein_weight_g: measure(o.skein_weight_g),
       fiber: text(o.fiber),
       strands: strands !== null && strands >= 1 ? strands : 1,
       uncertain_fields: [...fields],
     })
   })
   const line = (v: unknown): number | null | undefined => {
-    if (v === null || v === undefined) return null
+    if (v === null || v === undefined || (int(v) ?? 0) < 0) return null
     const i = int(v)
     return i !== null && lineIndex.has(i) ? lineIndex.get(i)! : undefined
   }
@@ -312,13 +326,13 @@ export function normalizeExtraction(input: unknown): ExtractionData {
     let yarn_line = line(o.yarn_line)
     let uncertainAmount = bool(o.uncertain)
     if (yarn_line === undefined) { yarn_line = null; uncertainAmount = true }
-    const group = yarn_line !== null ? yarn_lines[yarn_line].color_group : int(o.color_group) ?? 0
+    const group = yarn_line !== null ? yarn_lines[yarn_line].color_group : optIndex(o.color_group) ?? 0
     const candidates = texts(o.candidates)
     amounts.push({
       size,
       color_group: group,
       yarn_line,
-      amount: num(o.amount),
+      amount: measure(o.amount),
       unit,
       candidates,
       needs_choice: bool(o.needs_choice) || (yarn_line === null && candidates.length > 1),
@@ -335,12 +349,12 @@ export function normalizeExtraction(input: unknown): ExtractionData {
     let uncertainAlt = bool(o.uncertain)
     if (yarn_line === undefined) { yarn_line = null; uncertainAlt = true }
     alternatives.push({
-      color_group: yarn_line !== null ? yarn_lines[yarn_line].color_group : int(o.color_group),
+      color_group: yarn_line !== null ? yarn_lines[yarn_line].color_group : optIndex(o.color_group),
       yarn_line,
       yarn_name,
       brand: text(o.brand),
-      meterage_m: num(o.meterage_m),
-      skein_weight_g: num(o.skein_weight_g),
+      meterage_m: measure(o.meterage_m),
+      skein_weight_g: measure(o.skein_weight_g),
       fiber: text(o.fiber),
       uncertain: uncertainAlt,
     })
@@ -350,21 +364,21 @@ export function normalizeExtraction(input: unknown): ExtractionData {
   for (const a of asArr(r.accessories)) {
     const o = asObj(a)
     const kind = pick(o.kind, ACCESSORY_KINDS) ?? 'other'
-    let size = o.size === null || o.size === undefined ? null : int(o.size)
+    let size = optIndex(o.size)
     let uncertainAcc = bool(o.uncertain) || kind !== o.kind
-    if (size !== null && (size < 0 || size >= sizes.length)) { size = null; uncertainAcc = true }
+    if (size !== null && size >= sizes.length) { size = null; uncertainAcc = true }
     accessories.push({
       size,
       kind,
       description: text(o.description),
-      quantity: num(o.quantity),
+      quantity: measure(o.quantity),
       dimension: text(o.dimension),
       uncertain: uncertainAcc,
     })
   }
 
   const audience = pick(r.audience, AUDIENCES)
-  if (r.audience != null && !audience) flag('audience')
+  if (text(r.audience) && !audience) flag('audience')
 
   return {
     title: text(r.title),
@@ -378,8 +392,8 @@ export function normalizeExtraction(input: unknown): ExtractionData {
     yarn_lines,
     amounts,
     alternatives,
-    gauge_stitches_10cm: num(r.gauge_stitches_10cm),
-    gauge_rows_10cm: num(r.gauge_rows_10cm),
+    gauge_stitches_10cm: measure(r.gauge_stitches_10cm),
+    gauge_rows_10cm: measure(r.gauge_rows_10cm),
     gauge_note: text(r.gauge_note),
     needles: texts(r.needles),
     accessories,

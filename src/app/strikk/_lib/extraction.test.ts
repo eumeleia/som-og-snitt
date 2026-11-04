@@ -130,11 +130,21 @@ describe('nextBatch', () => {
   it('reads ten first when nothing has been read yet', () => {
     expect(nextBatch(rows(Array(170).fill('pending')))).toHaveLength(10)
   })
+  it('retries the ten that failed, and nothing else, when none has been read in yet', () => {
+    const r = rows([...Array(10).fill('failed'), ...Array(160).fill('pending')])
+    const b = nextBatch(r)
+    expect(b.map(x => x.id)).toEqual(r.slice(0, 10).map(x => x.id))
+  })
+  it('puts failed ones first, whenever they were uploaded', () => {
+    const r = rows([...Array(5).fill('pending'), 'failed', 'extracted'])
+    expect(nextBatch(r).map(x => x.id)).toEqual(['r5', 'r0', 'r1', 'r2', 'r3', 'r4'])
+  })
   it('reads the rest, failed ones included, on the next press', () => {
     const r = rows([...Array(8).fill('extracted'), 'approved', 'failed', ...Array(160).fill('pending')])
     const b = nextBatch(r)
     expect(b).toHaveLength(161)
     expect(b[0].id).toBe('r9')
+    expect(b[1].id).toBe('r10')
     expect(b.some(x => x.extraction_status === 'approved' || x.extraction_status === 'extracted')).toBe(false)
   })
 })
@@ -221,5 +231,103 @@ describe('review edits', () => {
   it('choosing the yarn for a shared amount links it to the line, or keeps a substitute by name', () => {
     expect(chooseAmountYarn(d(), 8, 'Peer Gynt').amounts[8]).toMatchObject({ yarn_line: 2, needs_choice: false, candidates: [] })
     expect(chooseAmountYarn(d(), 8, 'Smart').amounts[8]).toMatchObject({ yarn_line: null, needs_choice: false, candidates: ['Smart'] })
+  })
+})
+
+describe('EXTRACTION_SCHEMA limits', () => {
+  // The API refuses more than 16 parameters with anyOf or type lists, and more than 24
+  // optional parameters, per request (structured outputs, schema complexity limits).
+  const props = (): { schema: Record<string, unknown>; optional: boolean }[] => {
+    const out: { schema: Record<string, unknown>; optional: boolean }[] = []
+    const walk = (s: unknown) => {
+      if (!s || typeof s !== 'object') return
+      const o = s as Record<string, unknown>
+      if (o.type === 'object' && o.properties) {
+        const req = new Set(o.required as string[])
+        for (const [k, v] of Object.entries(o.properties as Record<string, Record<string, unknown>>)) {
+          out.push({ schema: v, optional: !req.has(k) })
+        }
+      }
+      Object.values(o).forEach(walk)
+    }
+    walk(EXTRACTION_SCHEMA)
+    return out
+  }
+
+  it('has fewer than 16 parameters with union types', () => {
+    const unions = props().filter(p => 'anyOf' in p.schema || Array.isArray(p.schema.type)).length
+    expect(unions).toBeLessThan(16)
+    expect(unions).toBe(0)
+  })
+
+  it('has fewer than 24 optional parameters', () => {
+    expect(props().filter(p => p.optional).length).toBe(0)
+  })
+})
+
+// Minimal validator for the schema subset used here, so the simulated answer is known
+// to be one the API could return.
+function validate(schema: Record<string, unknown>, v: unknown, path = '$'): string[] {
+  const t = schema.type
+  if (schema.enum && !(schema.enum as unknown[]).includes(v)) return [`${path}: ${JSON.stringify(v)} not in enum`]
+  if (t === 'string' && typeof v !== 'string') return [`${path}: not a string`]
+  if (t === 'number' && typeof v !== 'number') return [`${path}: not a number`]
+  if (t === 'integer' && !Number.isInteger(v)) return [`${path}: not an integer`]
+  if (t === 'boolean' && typeof v !== 'boolean') return [`${path}: not a boolean`]
+  if (t === 'array') {
+    if (!Array.isArray(v)) return [`${path}: not an array`]
+    return v.flatMap((x, i) => validate(schema.items as Record<string, unknown>, x, `${path}[${i}]`))
+  }
+  if (t === 'object') {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return [`${path}: not an object`]
+    const o = v as Record<string, unknown>
+    const properties = schema.properties as Record<string, Record<string, unknown>>
+    return [
+      ...(schema.required as string[]).filter(k => !(k in o)).map(k => `${path}.${k}: missing`),
+      ...Object.keys(o).filter(k => !(k in properties)).map(k => `${path}.${k}: not allowed`),
+      ...Object.entries(o).filter(([k]) => k in properties).flatMap(([k, x]) => validate(properties[k], x, `${path}.${k}`)),
+    ]
+  }
+  return []
+}
+
+// The answer in the new shape: what was null is "" for text, 0 for a measure, -1 for an index.
+const INDEX_KEYS = new Set(['yarn_line', 'size', 'color_group'])
+const MEASURE_KEYS = new Set(['meterage_m', 'skein_weight_g', 'amount', 'quantity', 'gauge_stitches_10cm', 'gauge_rows_10cm'])
+function toEmptyValues(v: unknown, key = ''): unknown {
+  if (v === null) return INDEX_KEYS.has(key) ? -1 : MEASURE_KEYS.has(key) ? 0 : ''
+  if (Array.isArray(v)) return v.map(x => toEmptyValues(x))
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, toEmptyValues(x, k)]))
+  return v
+}
+
+const SPARSE_ANSWER = {
+  title: 'Lue', designer: null, audience: null, garment_type: 'lue', is_collection: false, collection_titles: [], variants: [],
+  sizes: [{ label: 'One size', uncertain: false }],
+  yarn_lines: [{ color_group: 0, color_label: null, yarn_name: 'Restegarn', brand: null, meterage_m: null, skein_weight_g: null, fiber: null, strands: 1, uncertain_fields: [] }],
+  amounts: [{ size: 0, color_group: 0, yarn_line: null, amount: null, unit: 'g', candidates: [], needs_choice: false, uncertain: true }],
+  alternatives: [{ color_group: null, yarn_line: null, yarn_name: 'Drops Air', brand: null, meterage_m: null, skein_weight_g: null, fiber: null, uncertain: false }],
+  gauge_stitches_10cm: null, gauge_rows_10cm: null, gauge_note: null, needles: [],
+  accessories: [{ size: null, kind: 'other', description: 'Dusk', quantity: null, dimension: null, uncertain: false }],
+  uncertain_fields: [],
+}
+
+describe('answers in the new schema shape', () => {
+  for (const [name, old] of [['full', SIMULATED_ANSWER], ['sparse', SPARSE_ANSWER]] as const) {
+    it(`${name}: is valid against the schema and fills the same fields as the old shape`, () => {
+      const fresh = toEmptyValues(old)
+      expect(validate(EXTRACTION_SCHEMA as Record<string, unknown>, fresh)).toEqual([])
+      expect(normalizeExtraction(fresh)).toEqual(normalizeExtraction(old))
+    })
+  }
+
+  it('reads the empty values as missing', () => {
+    const d = normalizeExtraction(toEmptyValues(SPARSE_ANSWER))
+    expect(d).toMatchObject({ designer: null, audience: null, gauge_stitches_10cm: null, gauge_note: null })
+    expect(d.yarn_lines[0]).toMatchObject({ brand: null, meterage_m: null, skein_weight_g: null, fiber: null })
+    expect(d.amounts[0]).toMatchObject({ yarn_line: null, amount: null })
+    expect(d.alternatives[0]).toMatchObject({ yarn_line: null, color_group: null })
+    expect(d.accessories[0]).toMatchObject({ size: null, quantity: null, dimension: null, uncertain: false })
+    expect(d.uncertain_fields).toEqual([])
   })
 })

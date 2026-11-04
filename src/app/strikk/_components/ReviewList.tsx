@@ -104,7 +104,7 @@ export default function ReviewList() {
 
   const count = (s: StoredRecipe['extraction_status']) => rows.filter(r => r.extraction_status === s).length
   const upcoming = nextBatch(rows).length
-  const firstRun = !rows.some(r => r.extraction_status !== 'pending')
+  const firstRun = !rows.some(r => r.extraction_status === 'extracted' || r.extraction_status === 'approved')
   const shown = rows.filter(r => r.extraction_status === filter)
 
   return (

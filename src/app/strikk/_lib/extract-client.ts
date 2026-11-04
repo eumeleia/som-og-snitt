@@ -49,13 +49,16 @@ export type ExtractionStatus = 'pending' | 'extracted' | 'failed' | 'approved'
 
 export const FIRST_BATCH = 10
 
-// The first press reads ten, so they can be checked before the rest is paid for. After
-// that, everything not read yet or failed, in upload order.
+// Ten until at least one recipe has been read in, so they can be checked before the
+// rest is paid for; after that, everything not read yet or failed. Failed ones go first,
+// so a run where every call failed is retried with the same ten.
 export function nextBatch<T extends { extraction_status: ExtractionStatus; created_at: string }>(rows: T[]): T[] {
   const todo = rows
     .filter(r => r.extraction_status === 'pending' || r.extraction_status === 'failed')
-    .sort((a, b) => a.created_at.localeCompare(b.created_at))
-  const started = rows.some(r => r.extraction_status !== 'pending')
+    .sort((a, b) =>
+      Number(b.extraction_status === 'failed') - Number(a.extraction_status === 'failed') ||
+      a.created_at.localeCompare(b.created_at))
+  const started = rows.some(r => r.extraction_status === 'extracted' || r.extraction_status === 'approved')
   return started ? todo : todo.slice(0, FIRST_BATCH)
 }
 
