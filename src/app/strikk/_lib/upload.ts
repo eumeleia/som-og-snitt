@@ -8,6 +8,8 @@ export interface UploadResult<R> {
   status: UploadStatus
   row?: R
   error?: string
+  // The upload worked but afterRow did not (e.g. the extraction failed).
+  note?: string
 }
 
 // What is already stored, updated in place as the batch runs so a retry or a second
@@ -23,6 +25,9 @@ export interface UploadDeps<R> {
   hash(file: File): Promise<string>
   upload(file: File): Promise<string>
   createRow(driveFileId: string, fileName: string): Promise<R>
+  // Runs once the row exists; its failure is a note, not a failed upload. May return
+  // the row as it is after (renamed).
+  afterRow?(row: R, file: File): Promise<R | void>
   // An error that will hit every remaining file too (Drive disconnected): stop there.
   isFatal?(err: unknown): boolean
 }
@@ -58,9 +63,17 @@ export async function runUploadBatch<R>(
       // Already in Drive without a row: an earlier run stopped between upload and row.
       const driveFileId = existing ?? await deps.upload(file)
       known.byHash.set(hash, driveFileId)
-      const row = await deps.createRow(driveFileId, file.name)
+      let row = await deps.createRow(driveFileId, file.name)
       known.withRow.add(driveFileId)
-      finish({ file, status: existing ? 'linked' : 'uploaded', row })
+      let note: string | undefined
+      if (deps.afterRow) {
+        try {
+          row = (await deps.afterRow(row, file)) ?? row
+        } catch (err) {
+          note = err instanceof Error ? err.message : String(err)
+        }
+      }
+      finish({ file, status: existing ? 'linked' : 'uploaded', row, ...(note ? { note } : {}) })
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err)
       finish({ file, status: 'failed', error })

@@ -147,4 +147,20 @@ describe('runUploadBatch', () => {
     expect(results.map(r => r.status)).toEqual(['failed', 'failed', 'failed'])
     expect(deps.upload).toHaveBeenCalledTimes(1)
   })
+
+  it('reads in each new row after it is created, and an extraction failure does not fail the upload', async () => {
+    const { deps, rows } = fakeBackend()
+    const read: string[] = []
+    deps.afterRow = async (row, file) => {
+      read.push(file.name)
+      if (file.name === 'b.pdf') throw new Error('Uttrekket feilet (500)')
+      return { ...row, title: 'Fra PDF-en' }
+    }
+    const results = await runUploadBatch([pdf('a.pdf'), pdf('b.pdf'), pdf('a2.pdf', 'a.pdf')], empty(), deps)
+    expect(read).toEqual(['a.pdf', 'b.pdf'])
+    expect(results.map(r => r.status)).toEqual(['uploaded', 'uploaded', 'skipped'])
+    expect(results[0].row).toMatchObject({ title: 'Fra PDF-en' })
+    expect(results[1]).toMatchObject({ status: 'uploaded', note: 'Uttrekket feilet (500)' })
+    expect(rows).toHaveLength(2)
+  })
 })

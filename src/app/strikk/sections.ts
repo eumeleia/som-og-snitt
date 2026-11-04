@@ -3,4 +3,5 @@
 // here as one line each when they exist.
 export const STRIKK_SECTIONS: { label: string; href: string }[] = [
   { label: 'Oppskrifter', href: '/strikk/oppskrifter' },
+  { label: 'Gjennomgang', href: '/strikk/gjennomgang' },
 ]
