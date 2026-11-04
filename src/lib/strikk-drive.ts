@@ -1,5 +1,6 @@
 import { google } from 'googleapis'
 import { createClient } from '@supabase/supabase-js'
+import { driveFileName } from '@/app/strikk/_lib/extraction'
 
 // Strikk's own Drive connection, on a separate Google account from sewing's
 // som_og_snitt_google_drive_token. Same OAuth client, its own redirect URI and token row.
@@ -65,4 +66,23 @@ export async function saveStrikkToken(refreshToken: string, email: string) {
     { onConflict: 'key' },
   )
   if (error) throw error
+}
+
+export async function renameStrikkFile(fileId: string, name: string) {
+  const drive = google.drive({ version: 'v3', auth: await getStrikkOAuth2Client() })
+  await drive.files.update({ fileId, requestBody: { name }, fields: 'id' })
+}
+
+// Gives the recipe's Drive file the name «Oppskrift - Designer.pdf» from its current
+// title and designer, and stores that name on the row. Returns the name.
+export async function syncRecipeDriveName(row: {
+  id: string; title: string; designer: string | null; file_name: string; drive_file_id: string
+}): Promise<string> {
+  const name = driveFileName(row.title, row.designer, row.file_name)
+  await renameStrikkFile(row.drive_file_id, name)
+  if (name !== row.file_name) {
+    const { error } = await supabaseAdmin.from('strikk_oppskrift').update({ file_name: name }).eq('id', row.id)
+    if (error) throw error
+  }
+  return name
 }

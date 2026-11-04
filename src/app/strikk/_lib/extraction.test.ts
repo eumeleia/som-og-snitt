@@ -19,7 +19,8 @@ import {
   storedToExtraction,
 } from './extraction'
 import { nextBatch, runExtractionBatch, type ExtractionStatus } from './extract-client'
-import { CATALOGUE_ANSWER, SIMULATED_ANSWER, storedFrom } from './extraction.fixture'
+import { parseRecipeFileName } from './recipes'
+import { CATALOGUE_ANSWER, PREVIOUS_ANSWER, PREVIOUS_CATALOGUE, SIMULATED_ANSWER, storedFrom } from './extraction.fixture'
 
 describe('normalizeExtraction', () => {
   it('keeps every field for a pattern with several sizes and colours', () => {
@@ -124,7 +125,12 @@ describe('driveFileName', () => {
   })
   it('falls back to the uploaded name without a title, and cleans characters that break names', () => {
     expect(driveFileName(null, 'A/S Garn', 'IMG_1.pdf')).toBe('IMG_1 - A S Garn.pdf')
-    expect(driveFileName('Puf - Pandababy', 'PifPaf', 'x.pdf')).toBe('Puf Pandababy - PifPaf.pdf')
+    expect(driveFileName('Puf - Pandababy', 'PifPaf', 'x.pdf')).toBe('Puf - Pandababy - PifPaf.pdf')
+  })
+  it('keeps the dashes in a title, and the designer still reads back from the name', () => {
+    const name = driveFileName('Ellinor - Flere plagg - Katalog', 'Viking Garn', 'Alpaca Silk katalog - Viking Garn.pdf')
+    expect(name).toBe('Ellinor - Flere plagg - Katalog - Viking Garn.pdf')
+    expect(parseRecipeFileName(name)).toEqual({ title: 'Ellinor - Flere plagg - Katalog', designer: 'Viking Garn' })
   })
 })
 
@@ -277,6 +283,16 @@ describe('answers in the schema shape', () => {
   it('the simulated answers are ones the API could return', () => {
     expect(validate(EXTRACTION_SCHEMA as Record<string, unknown>, SIMULATED_ANSWER)).toEqual([])
     expect(validate(EXTRACTION_SCHEMA as Record<string, unknown>, CATALOGUE_ANSWER)).toEqual([])
+  })
+
+  it('give the same data as the previous shape, catalogue, range, page and reasons included', () => {
+    expect(normalizeExtraction(SIMULATED_ANSWER)).toEqual(normalizeExtraction(PREVIOUS_ANSWER))
+    expect(normalizeExtraction(CATALOGUE_ANSWER)).toEqual(normalizeExtraction(PREVIOUS_CATALOGUE))
+  })
+
+  it('reads the data the review sends back unchanged', () => {
+    const d = normalizeExtraction(SIMULATED_ANSWER)
+    expect(normalizeExtraction(d)).toEqual(d)
   })
 
   it('reads "", 0 and -1 as missing', () => {

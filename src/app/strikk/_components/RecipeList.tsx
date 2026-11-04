@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 import { RECIPE_SELECT, type KnitRecipe } from '../_lib/recipes'
-import { DriveAuthExpiredError, getAccessToken, listDriveFiles, sha256Hex, uploadPdf } from '../_lib/drive'
+import { DriveAuthExpiredError, getAccessToken, listDriveFiles, sha256Hex, syncDriveNames, uploadPdf } from '../_lib/drive'
 import { runUploadBatch, type UploadProgress, type UploadResult } from '../_lib/upload'
 import { FIRST_BATCH, extractRecipe } from '../_lib/extract-client'
 import DriveExpired from './DriveExpired'
@@ -84,6 +84,11 @@ export default function RecipeList() {
         // A refresh token Google has revoked still reads as connected; this catches it.
         getAccessToken().catch(err => {
           if (!cancelled && err instanceof DriveAuthExpiredError) setConnection({ kind: 'disconnected' })
+        })
+        syncDriveNames().then(renamed => {
+          if (cancelled || renamed.length === 0) return
+          const byId = new Map(renamed.map(r => [r.id, r.file_name]))
+          setList(l => (l.kind === 'ready' ? { kind: 'ready', recipes: l.recipes.map(r => (byId.has(r.id) ? { ...r, file_name: byId.get(r.id)! } : r)) } : l))
         })
         // Any other failure leaves rows unmarked rather than wrongly marked.
         listDriveFiles()

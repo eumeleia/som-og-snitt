@@ -52,6 +52,17 @@ export async function listDriveFiles(): Promise<StrikkDriveFile[]> {
   return body.files
 }
 
+let nameSync: Promise<{ id: string; file_name: string }[]> | null = null
+
+// Renames Drive files whose name does not match their recipe, once per page load.
+// Failures are left for the next visit.
+export function syncDriveNames(): Promise<{ id: string; file_name: string }[]> {
+  nameSync ??= fetch('/api/strikk/drive/sync-names', { method: 'POST', cache: 'no-store' })
+    .then(r => (r.ok ? r.json() : { renamed: [] }))
+    .then((b: { renamed?: { id: string; file_name: string }[] }) => b.renamed ?? [], () => [])
+  return nameSync
+}
+
 export async function sha256Hex(file: Blob): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
   return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('')

@@ -81,94 +81,77 @@ export interface ExtractionData {
 }
 
 // ── Output schema ───────────────────────────────────────────────────────────────────
-// Structured-output subset: every object closed, every key required, and no unions
-// (anyOf / type lists), which the API caps at 16 per request. A missing value is an
-// empty value instead: "" for text, 0 for a measure, -1 for "no index". The normaliser
-// turns those back into null.
+// Structured-output subset: every object closed, every key required, no unions (the API
+// caps them at 16). A missing value is an empty value instead: "" for text, 0 for a
+// measure, -1 for "no index", and the normaliser turns those back into null.
+//
+// Kept small because the API compiles it into a grammar with a size cap: sizes are plain
+// strings, and all uncertainty is one list of {field, reason} with a path into the answer
+// ("amounts[7]", "yarn_lines[1].meterage_m"), instead of flags on every item. The
+// normaliser spreads it back onto the items, so the stored data has the same shape.
 
 const str = { type: 'string' }
 const measureSchema = { type: 'number', description: '0 when the pattern does not say' }
 const indexSchema = { type: 'integer', description: '-1 for none' }
 const strArr = { type: 'array', items: str }
-const boolSchema = { type: 'boolean' }
 const obj = (properties: Record<string, unknown>) => ({
   type: 'object',
   properties,
   required: Object.keys(properties),
   additionalProperties: false,
 })
-const uncertainList = { type: 'array', items: obj({ field: str, reason: str }) }
+const list = (properties: Record<string, unknown>) => ({ type: 'array', items: obj(properties) })
 
 export const EXTRACTION_SCHEMA = obj({
   title: str,
   designer: str,
   audience: { type: 'string', enum: [...AUDIENCES, ''] },
   garment_type: str,
-  is_collection: boolSchema,
+  is_collection: { type: 'boolean' },
   collection_titles: strArr,
   variants: strArr,
-  sizes: { type: 'array', items: obj({ label: str, uncertain: boolSchema, uncertain_reason: str }) },
-  yarn_lines: {
-    type: 'array',
-    items: obj({
-      color_group: { type: 'integer' },
-      color_label: str,
-      yarn_name: str,
-      brand: str,
-      meterage_m: measureSchema,
-      skein_weight_g: measureSchema,
-      fiber: str,
-      strands: { type: 'integer' },
-      uncertain_fields: uncertainList,
-    }),
-  },
-  amounts: {
-    type: 'array',
-    items: obj({
-      size: { type: 'integer' },
-      color_group: { type: 'integer' },
-      yarn_line: indexSchema,
-      amount: measureSchema,
-      amount_max: measureSchema,
-      unit: { type: 'string', enum: [...UNITS] },
-      candidates: strArr,
-      needs_choice: boolSchema,
-      uncertain: boolSchema,
-      uncertain_reason: str,
-    }),
-  },
-  alternatives: {
-    type: 'array',
-    items: obj({
-      color_group: indexSchema,
-      yarn_line: indexSchema,
-      yarn_name: str,
-      brand: str,
-      meterage_m: measureSchema,
-      skein_weight_g: measureSchema,
-      fiber: str,
-      uncertain: boolSchema,
-      uncertain_reason: str,
-    }),
-  },
+  sizes: strArr,
+  yarn_lines: list({
+    color_group: { type: 'integer' },
+    color_label: str,
+    yarn_name: str,
+    brand: str,
+    meterage_m: measureSchema,
+    skein_weight_g: measureSchema,
+    fiber: str,
+    strands: { type: 'integer' },
+  }),
+  amounts: list({
+    size: { type: 'integer' },
+    color_group: { type: 'integer' },
+    yarn_line: indexSchema,
+    amount: measureSchema,
+    amount_max: measureSchema,
+    unit: { type: 'string', enum: [...UNITS] },
+    candidates: strArr,
+  }),
+  alternatives: list({
+    color_group: indexSchema,
+    yarn_line: indexSchema,
+    yarn_name: str,
+    brand: str,
+    meterage_m: measureSchema,
+    skein_weight_g: measureSchema,
+    fiber: str,
+  }),
   gauge_stitches_10cm: measureSchema,
   gauge_rows_10cm: measureSchema,
   gauge_note: str,
   needles: strArr,
-  accessories: {
-    type: 'array',
-    items: obj({
-      size: indexSchema,
-      kind: { type: 'string', enum: [...ACCESSORY_KINDS] },
-      description: str,
-      quantity: measureSchema,
-      dimension: str,
-      uncertain: boolSchema,
-      uncertain_reason: str,
-    }),
-  },
+  accessories: list({
+    size: indexSchema,
+    kind: { type: 'string', enum: [...ACCESSORY_KINDS] },
+    description: str,
+    quantity: measureSchema,
+    dimension: str,
+  }),
   amounts_page: { type: 'integer', description: '0 when unknown' },
-  uncertain_fields: uncertainList,
+  uncertain: list({ field: str, reason: str }),
 })
 
 export const EXTRACTION_PROMPT = `You read knitting patterns (usually Norwegian, sometimes English or Danish) and extract the material and size data into the JSON schema. Read only what the pattern states. Never fill a field from general knitting knowledge. When the pattern does not say, leave the field empty: "" for text (audience too), 0 for a number, -1 for an index (yarn_line, size, color_group), [] for a list.
@@ -179,16 +162,16 @@ Fields:
 - garment_type: one Norwegian word in lower case, e.g. genser, jakke, vest, lue, votter, sokker, skjerf, kjole, bukse, teppe, sett, kosedyr.
 - variants: named variants of the same pattern (e.g. "med hette", "kort", "V-hals").
 - is_collection: true when the PDF holds several separate patterns (a booklet, e-book or catalogue). Then title is the name of the collection itself and collection_titles lists the patterns in it. A collection gets no sizes and no amounts (both []), and their absence is not uncertain. Give yarn lines, gauge, needles and accessories only when the whole collection shares them.
-- sizes: in the order the pattern lists them, labels as written ("2 år", "S", "86 cm").
+- sizes: the size labels in the order the pattern lists them, as written ("2 år", "S", "86 cm").
 - yarn_lines: one entry per yarn. color_group numbers each colour role from 0 (Farge 1 / hovedfarge / A = 0, the next = 1, ...). Different yarns knitted together in the same colour role share one color_group, e.g. Sunday held together with a strand of Tynn Silk Mohair Kid-Silk = two yarn_lines with the same color_group. Several strands of the same yarn are one yarn_line with strands = the number of strands. color_label is the pattern's name for the colour or role. meterage_m is metres per skein, skein_weight_g grams per skein, fiber the fibre content as written.
-- amounts: for each size and colour role, the amount exactly as given, in g or skeins (nøster = skeins). Give one entry per yarn_line when the pattern gives an amount per yarn; then yarn_line is that line's index. When the pattern gives one amount for the colour role, yarn_line is -1. When one amount is given for several yarns with different meterage (e.g. "300 g Sunday eller Peer Gynt"), set yarn_line -1, needs_choice true and candidates to those yarn names. size is the index into sizes. A range such as "200-250 g" is amount 200 and amount_max 250; a single amount has amount_max 0.
+- amounts: for each size and colour role, the amount exactly as given, in g or skeins (nøster = skeins). Give one entry per yarn_line when the pattern gives an amount per yarn; then yarn_line is that line's index. When the pattern gives one amount for the colour role, yarn_line is -1. When one amount is given for several yarns with different meterage (e.g. "300 g Sunday eller Peer Gynt"), set yarn_line -1 and candidates to those yarn names; otherwise candidates is []. size is the index into sizes. A range such as "200-250 g" is amount 200 and amount_max 250; a single amount has amount_max 0.
 - amounts_page: the page number (from the "Side N" labels) where the yarn amounts stand; 0 when you cannot tell.
 - alternatives: only the substitute yarns the pattern itself suggests, linked to the yarn_line or color_group they replace (-1 when not tied to one).
 - gauge_stitches_10cm, gauge_rows_10cm: stitches and rows/rounds per 10 cm. Convert only exact ratios (e.g. 11 sts = 5 cm -> 22) and then mark the field uncertain. gauge_note: the stitch pattern and needle the gauge is given for.
 - needles: every needle size and type as written (e.g. "rundpinne 3,5 mm 80 cm").
 - accessories: buttons, zippers, elastic and similar; quantity and dimension as written; size is the size index when it differs per size, -1 when it is the same for all.
 
-Uncertainty: when a value is hard to read, inferred, conflicting, or you are not sure which size or colour it belongs to, still give your best reading and mark it with a short reason in Norwegian (at most about twelve words) saying why, e.g. "To ulike tall i tabell og tekst". At the top level and on a yarn line, add {field, reason} to uncertain_fields. On a size, amount, alternative or accessory, set uncertain true and uncertain_reason. When nothing is uncertain, uncertain is false and uncertain_reason is "".`
+Uncertainty: when a value is hard to read, inferred, conflicting, or you are not sure which size or colour it belongs to, still give your best reading and add an entry to uncertain: field is the path to the value in your answer, and reason says briefly in Norwegian (at most about twelve words) why, e.g. "To ulike tall i tabell og tekst". Paths: a top-level field by name ("audience", "gauge_rows_10cm"); a whole item by list and index ("sizes[3]", "amounts[7]", "alternatives[0]", "accessories[1]"); a value on a yarn line by index and field ("yarn_lines[1].meterage_m"). Leave uncertain empty when nothing is uncertain.`
 
 // ── Page choice ─────────────────────────────────────────────────────────────────────
 
@@ -290,21 +273,47 @@ function unitOf(v: unknown): Unit | null {
   return null
 }
 
-// Uncertainty comes as [{field, reason}] (and, from older answers, as plain field names).
-function uncertainOf(v: unknown): { fields: string[]; reasons: Record<string, string> } {
-  const reasons: Record<string, string> = {}
-  const fields: string[] = []
+// Uncertainty, wherever it comes from, as field → reason ("" when no reason was given).
+// Accepts [{field, reason}] and, from older answers and from the review, plain names.
+function marksOf(v: unknown, reasons?: unknown): Map<string, string> {
+  const out = new Map<string, string>()
   for (const item of asArr(v)) {
     const field = typeof item === 'string' ? text(item) : text(asObj(item).field)
-    if (!field) continue
-    if (!fields.includes(field)) fields.push(field)
-    const reason = typeof item === 'string' ? null : text(asObj(item).reason)
-    if (reason) reasons[field] = reason
+    if (field && !out.has(field)) out.set(field, (typeof item === 'string' ? null : text(asObj(item).reason)) ?? '')
   }
-  return { fields, reasons }
+  for (const [field, reason] of Object.entries(asObj(reasons))) {
+    if (out.has(field) && !out.get(field) && typeof reason === 'string') out.set(field, reason)
+  }
+  return out
 }
-const reasonOf = (uncertain: boolean, v: unknown, fallback: string | null = null) =>
-  uncertain ? text(v) ?? fallback : null
+
+// The paths in the answer's uncertain list, sorted to where they belong: whole items by
+// list and raw index, yarn line values by raw index and field, the rest top-level.
+type ItemList = 'sizes' | 'amounts' | 'alternatives' | 'accessories'
+interface Marks {
+  top: Map<string, string>
+  items: Record<ItemList, Map<number, string>>
+  lines: Map<number, Map<string, string>>
+}
+function sortMarks(all: Map<string, string>): Marks {
+  const m: Marks = { top: new Map(), items: { sizes: new Map(), amounts: new Map(), alternatives: new Map(), accessories: new Map() }, lines: new Map() }
+  for (const [path, reason] of all) {
+    const p = path.match(/^(\w+)\[(\d+)\](?:\.(\w+))?$/)
+    const list = p?.[1]
+    if (p && list === 'yarn_lines') {
+      const i = Number(p[2])
+      const fields = m.lines.get(i) ?? new Map<string, string>()
+      fields.set(p[3] ?? 'yarn_name', reason)
+      m.lines.set(i, fields)
+    } else if (p && (list === 'sizes' || list === 'amounts' || list === 'alternatives' || list === 'accessories')) {
+      m.items[list].set(Number(p[2]), reason)
+    } else {
+      const field = list ?? path
+      if (!m.top.has(field) || !m.top.get(field)) m.top.set(field, reason)
+    }
+  }
+  return m
+}
 
 // A range comes low to high; a reversed one is turned round, equal ends are one amount.
 function amountRange(lo: number | null, hi: number | null): { amount: number | null; amount_max: number | null } {
@@ -313,27 +322,29 @@ function amountRange(lo: number | null, hi: number | null): { amount: number | n
   return hi > lo ? { amount: lo, amount_max: hi } : { amount: hi, amount_max: lo }
 }
 
+// An item is uncertain when the answer's list names it or the item says so itself
+// (older answers, and the data the review sends back).
+function itemMark(own: Raw, listed: string | undefined): { uncertain: boolean; uncertain_reason: string | null } {
+  const uncertain = listed !== undefined || bool(own.uncertain)
+  return { uncertain, uncertain_reason: uncertain ? text(listed) ?? text(own.uncertain_reason) : null }
+}
+
 // Turns Claude's answer into what strikk_save_extraction stores. Anything that does not
 // fit (a bad enum, an index that points nowhere) is dropped or nulled and the place is
 // marked uncertain with a reason, so the review shows it instead of the save failing.
 export function normalizeExtraction(input: unknown): ExtractionData {
   const r = asObj(input)
-  const top = uncertainOf(r.uncertain_fields)
-  const uncertain = new Set(top.fields)
-  const reasons = { ...top.reasons }
-  const flag = (f: string, reason: string) => {
-    uncertain.add(f)
-    reasons[f] ??= reason
-  }
+  const marks = sortMarks(new Map([...marksOf(r.uncertain), ...marksOf(r.uncertain_fields, r.uncertain_reasons)]))
+  const top = marks.top
+  const flag = (f: string, reason: string) => { if (!top.get(f)) top.set(f, reason) }
   const isCollection = bool(r.is_collection)
 
   const sizes: SizeData[] = []
-  for (const s of asArr(r.sizes)) {
-    const o = asObj(s)
+  asArr(r.sizes).forEach((s, i) => {
+    const o = typeof s === 'string' ? { label: s } : asObj(s)
     const label = text(o.label)
-    const u = bool(o.uncertain)
-    if (label) sizes.push({ label, uncertain: u, uncertain_reason: reasonOf(u, o.uncertain_reason) })
-  }
+    if (label) sizes.push({ label, ...itemMark(o, marks.items.sizes.get(i)) })
+  })
 
   const yarn_lines: YarnLineData[] = []
   const lineIndex = new Map<number, number>()
@@ -343,11 +354,9 @@ export function normalizeExtraction(input: unknown): ExtractionData {
     if (!yarn_name) { flag('yarn_lines', 'Et garn uten navn ble utelatt'); return }
     const group = int(o.color_group)
     const strands = int(o.strands)
-    const u = uncertainOf(o.uncertain_fields)
-    const fields = new Set(u.fields)
-    const lineReasons = { ...u.reasons }
-    if (group === null || group < 0) { fields.add('color_group'); lineReasons.color_group ??= 'Mangler farge' }
-    if (strands === null || strands < 1) { fields.add('strands'); lineReasons.strands ??= 'Antall tråder mangler, satt til 1' }
+    const own = new Map([...marksOf(o.uncertain_fields, o.uncertain_reasons), ...(marks.lines.get(i) ?? [])])
+    if (group === null || group < 0) own.set('color_group', own.get('color_group') || 'Mangler farge')
+    if (strands === null || strands < 1) own.set('strands', own.get('strands') || 'Antall tråder mangler, satt til 1')
     lineIndex.set(i, yarn_lines.length)
     yarn_lines.push({
       color_group: group !== null && group >= 0 ? group : 0,
@@ -358,8 +367,8 @@ export function normalizeExtraction(input: unknown): ExtractionData {
       skein_weight_g: measure(o.skein_weight_g),
       fiber: text(o.fiber),
       strands: strands !== null && strands >= 1 ? strands : 1,
-      uncertain_fields: [...fields],
-      uncertain_reasons: lineReasons,
+      uncertain_fields: [...own.keys()],
+      uncertain_reasons: Object.fromEntries([...own].filter(([, why]) => why)),
     })
   })
   const line = (v: unknown): number | null | undefined => {
@@ -369,18 +378,17 @@ export function normalizeExtraction(input: unknown): ExtractionData {
   }
 
   const amounts: AmountData[] = []
-  for (const a of asArr(r.amounts)) {
+  asArr(r.amounts).forEach((a, i) => {
     const o = asObj(a)
     const size = int(o.size)
     const unit = unitOf(o.unit)
     if (size === null || size < 0 || size >= sizes.length || !unit) {
       flag('amounts', 'En mengde uten gyldig størrelse eller enhet ble utelatt')
-      continue
+      return
     }
     let yarn_line = line(o.yarn_line)
-    let u = bool(o.uncertain)
-    let fallback: string | null = null
-    if (yarn_line === undefined) { yarn_line = null; u = true; fallback = 'Garnet mengden viste til, finnes ikke' }
+    let mark = itemMark(o, marks.items.amounts.get(i))
+    if (yarn_line === undefined) { yarn_line = null; mark = { uncertain: true, uncertain_reason: 'Garnet mengden viste til, finnes ikke' } }
     const group = yarn_line !== null ? yarn_lines[yarn_line].color_group : optIndex(o.color_group) ?? 0
     const candidates = texts(o.candidates)
     amounts.push({
@@ -390,21 +398,20 @@ export function normalizeExtraction(input: unknown): ExtractionData {
       ...amountRange(measure(o.amount), measure(o.amount_max)),
       unit,
       candidates,
+      // Not asked for any more: an amount for no single yarn with several candidates is a choice.
       needs_choice: bool(o.needs_choice) || (yarn_line === null && candidates.length > 1),
-      uncertain: u,
-      uncertain_reason: reasonOf(u, fallback ?? o.uncertain_reason, fallback),
+      ...mark,
     })
-  }
+  })
 
   const alternatives: AlternativeData[] = []
-  for (const a of asArr(r.alternatives)) {
+  asArr(r.alternatives).forEach((a, i) => {
     const o = asObj(a)
     const yarn_name = text(o.yarn_name)
-    if (!yarn_name) continue
+    if (!yarn_name) return
     let yarn_line = line(o.yarn_line)
-    let u = bool(o.uncertain)
-    let fallback: string | null = null
-    if (yarn_line === undefined) { yarn_line = null; u = true; fallback = 'Garnet det erstatter, finnes ikke' }
+    let mark = itemMark(o, marks.items.alternatives.get(i))
+    if (yarn_line === undefined) { yarn_line = null; mark = { uncertain: true, uncertain_reason: 'Garnet det erstatter, finnes ikke' } }
     alternatives.push({
       color_group: yarn_line !== null ? yarn_lines[yarn_line].color_group : optIndex(o.color_group),
       yarn_line,
@@ -413,40 +420,34 @@ export function normalizeExtraction(input: unknown): ExtractionData {
       meterage_m: measure(o.meterage_m),
       skein_weight_g: measure(o.skein_weight_g),
       fiber: text(o.fiber),
-      uncertain: u,
-      uncertain_reason: reasonOf(u, fallback ?? o.uncertain_reason, fallback),
+      ...mark,
     })
-  }
+  })
 
   const accessories: AccessoryData[] = []
-  for (const a of asArr(r.accessories)) {
+  asArr(r.accessories).forEach((a, i) => {
     const o = asObj(a)
     const kind = pick(o.kind, ACCESSORY_KINDS) ?? 'other'
     let size = optIndex(o.size)
-    let u = bool(o.uncertain)
-    let fallback: string | null = null
-    if (kind !== o.kind) { u = true; fallback = 'Ukjent type, satt til annet' }
-    if (size !== null && size >= sizes.length) { size = null; u = true; fallback = 'Størrelsen finnes ikke, gjelder nå alle' }
+    let mark = itemMark(o, marks.items.accessories.get(i))
+    if (kind !== o.kind) mark = { uncertain: true, uncertain_reason: 'Ukjent type, satt til annet' }
+    if (size !== null && size >= sizes.length) { size = null; mark = { uncertain: true, uncertain_reason: 'Størrelsen finnes ikke, gjelder nå alle' } }
     accessories.push({
       size,
       kind,
       description: text(o.description),
       quantity: measure(o.quantity),
       dimension: text(o.dimension),
-      uncertain: u,
-      uncertain_reason: reasonOf(u, fallback ?? o.uncertain_reason, fallback),
+      ...mark,
     })
-  }
+  })
 
   const audience = pick(r.audience, AUDIENCES)
   if (text(r.audience) && !audience) flag('audience', `Ukjent målgruppe «${text(r.audience)}»`)
 
   // A catalogue holds several patterns: no sizes or amounts of its own, and their
   // absence is not uncertain.
-  if (isCollection) {
-    for (const f of ['sizes', 'amounts']) { uncertain.delete(f); delete reasons[f] }
-  }
-  const fields = [...uncertain]
+  if (isCollection) { top.delete('sizes'); top.delete('amounts') }
   return {
     title: text(r.title),
     designer: text(r.designer),
@@ -465,8 +466,8 @@ export function normalizeExtraction(input: unknown): ExtractionData {
     needles: texts(r.needles),
     accessories: isCollection ? accessories.map(a => ({ ...a, size: null })) : accessories,
     amounts_page: isCollection ? null : optIndex(r.amounts_page) || null,
-    uncertain_fields: fields,
-    uncertain_reasons: Object.fromEntries(Object.entries(reasons).filter(([f]) => fields.includes(f))),
+    uncertain_fields: [...top.keys()],
+    uncertain_reasons: Object.fromEntries([...top].filter(([, why]) => why)),
   }
 }
 
@@ -622,11 +623,12 @@ export function heldTogether(lines: YarnLineData[]): Map<number, YarnLineData[]>
   return new Map([...groups].filter(([, ls]) => ls.length > 1))
 }
 
-// «Oppskrift - Designer.pdf», or «Oppskrift.pdf». Slashes and other characters Drive or
-// a download would trip on become spaces; a dash with spaces in the title would make
-// the name read as title + designer, so it is replaced.
+// «Oppskrift - Designer.pdf», or «Oppskrift.pdf». The title is kept as written, dashes
+// too («Ellinor - Flere plagg - Katalog - Viking Garn.pdf»); parseRecipeFileName splits
+// on the last dash, so the designer still reads back. Slashes and other characters Drive
+// or a download would trip on become spaces.
 export function driveFileName(title: string | null, designer: string | null, fallback: string): string {
-  const clean = (s: string) => s.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+-\s+/g, ' ').replace(/\s+/g, ' ').trim()
+  const clean = (s: string) => s.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').trim()
   const t = clean(title ?? '') || clean(fallback.replace(/\.pdf$/i, '')) || 'Oppskrift'
   const d = clean(designer ?? '')
   return d ? `${t} - ${d}.pdf` : `${t}.pdf`

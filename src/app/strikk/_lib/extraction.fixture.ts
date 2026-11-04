@@ -1,11 +1,13 @@
 import type { ExtractionData, StoredRecipe } from './extraction'
 
-// Simulated Claude answers, in the shape EXTRACTION_SCHEMA asks for: "" / 0 / -1 for a
-// missing value, uncertainty with a reason.
+// Simulated Claude answers. SIMULATED_ANSWER and CATALOGUE_ANSWER are in the shape
+// EXTRACTION_SCHEMA asks for now ("" / 0 / -1 for a missing value, one uncertain list of
+// paths). The PREVIOUS_ ones are the same answers in the shape before that, with
+// uncertainty on every item; both must normalise to the same data.
 
 // A sweater in four sizes, two colours, the main colour knitted with two yarns together,
 // a range for the largest size, and one shared amount for two yarns with different meterage.
-export const SIMULATED_ANSWER = {
+export const PREVIOUS_ANSWER = {
   title: 'Rein genser', designer: 'Ber-Lin Design', audience: 'woman', garment_type: 'Genser',
   is_collection: false, collection_titles: [], variants: ['Kort', 'Lang'],
   sizes: [
@@ -39,7 +41,7 @@ export const SIMULATED_ANSWER = {
 }
 
 // A catalogue: Claude still sent sizes and an amount, and flagged amounts as uncertain.
-export const CATALOGUE_ANSWER = {
+export const PREVIOUS_CATALOGUE = {
   title: 'Alpaca Silk', designer: 'Viking Garn', audience: 'child', garment_type: 'sett',
   is_collection: true, collection_titles: ['Genser og bukse 1111-4', 'One piece 1111-8'], variants: [],
   sizes: [{ label: 'x-liten', uncertain: false, uncertain_reason: '' }],
@@ -50,6 +52,57 @@ export const CATALOGUE_ANSWER = {
   accessories: [{ size: 0, kind: 'buttons', description: 'Knapper', quantity: 0, dimension: '', uncertain: false, uncertain_reason: '' }],
   amounts_page: 3,
   uncertain_fields: [{ field: 'amounts', reason: 'Ingen garnmengde funnet' }, { field: 'sizes', reason: 'Ulike størrelser per modell' }, { field: 'audience', reason: 'Både barn og voksen' }],
+}
+
+export const SIMULATED_ANSWER = {
+  title: 'Rein genser', designer: 'Ber-Lin Design', audience: 'woman', garment_type: 'Genser',
+  is_collection: false, collection_titles: [], variants: ['Kort', 'Lang'],
+  sizes: ['S', 'M', 'L', 'XL'],
+  yarn_lines: [
+    { color_group: 0, color_label: 'Natur', yarn_name: 'Sunday', brand: 'Sandnes Garn', meterage_m: 235, skein_weight_g: 50, fiber: '100 % merinoull', strands: 1 },
+    { color_group: 0, color_label: 'Natur', yarn_name: 'Tynn Silk Mohair', brand: 'Sandnes Garn', meterage_m: 212, skein_weight_g: 25, fiber: '57 % mohair, 28 % silke, 15 % ull', strands: 1 },
+    { color_group: 1, color_label: 'Rust', yarn_name: 'Peer Gynt', brand: 'Sandnes Garn', meterage_m: 91, skein_weight_g: 50, fiber: 'ull', strands: 2 },
+  ],
+  amounts: [
+    ...[0, 1, 2].flatMap(s => [
+      { size: s, color_group: 0, yarn_line: 0, amount: 250 + 50 * s, amount_max: 0, unit: 'g', candidates: [] },
+      { size: s, color_group: 0, yarn_line: 1, amount: 2 + s, amount_max: 0, unit: 'skeins', candidates: [] },
+    ]),
+    { size: 3, color_group: 0, yarn_line: 0, amount: 400, amount_max: 450, unit: 'g', candidates: [] },
+    { size: 3, color_group: 0, yarn_line: 1, amount: 5, amount_max: 0, unit: 'skeins', candidates: [] },
+    { size: 0, color_group: 1, yarn_line: -1, amount: 100, amount_max: 0, unit: 'g', candidates: ['Peer Gynt', 'Smart'] },
+  ],
+  alternatives: [{ color_group: 0, yarn_line: 0, yarn_name: 'Tynn Merinoull', brand: 'Sandnes Garn', meterage_m: 175, skein_weight_g: 50, fiber: 'merinoull' }],
+  gauge_stitches_10cm: 22, gauge_rows_10cm: 30, gauge_note: 'glattstrikk på p 4', needles: ['rundpinne 3,5 mm 80 cm', 'rundpinne 4 mm 80 cm'],
+  accessories: [
+    { size: -1, kind: 'buttons', description: 'Knapper', quantity: 7, dimension: '15 mm' },
+    { size: 3, kind: 'zipper', description: 'Glidelås', quantity: 1, dimension: '60 cm' },
+  ],
+  amounts_page: 2,
+  uncertain: [
+    { field: 'gauge_rows_10cm', reason: 'Omregnet fra 15 omg = 5 cm' },
+    { field: 'sizes[3]', reason: 'Står bare i måltabellen' },
+    { field: 'yarn_lines[1].meterage_m', reason: 'Utydelig trykk' },
+    { field: 'amounts[7]', reason: 'Tallet er delvis skjult' },
+  ],
+}
+
+export const CATALOGUE_ANSWER = {
+  title: 'Alpaca Silk', designer: 'Viking Garn', audience: 'child', garment_type: 'sett',
+  is_collection: true, collection_titles: ['Genser og bukse 1111-4', 'One piece 1111-8'], variants: [],
+  sizes: ['x-liten'],
+  yarn_lines: [{ color_group: 0, color_label: '', yarn_name: 'Viking Alpaca Silk', brand: 'Viking Garn', meterage_m: 0, skein_weight_g: 50, fiber: '', strands: 1 }],
+  amounts: [{ size: 0, color_group: 0, yarn_line: 0, amount: 0, amount_max: 0, unit: 'g', candidates: [] }],
+  alternatives: [],
+  gauge_stitches_10cm: 0, gauge_rows_10cm: 0, gauge_note: '', needles: [],
+  accessories: [{ size: 0, kind: 'buttons', description: 'Knapper', quantity: 0, dimension: '' }],
+  amounts_page: 3,
+  uncertain: [
+    { field: 'amounts', reason: 'Ingen garnmengde funnet' },
+    { field: 'sizes', reason: 'Ulike størrelser per modell' },
+    { field: 'audience', reason: 'Både barn og voksen' },
+    { field: 'amounts[0]', reason: 'Mengde mangler' },
+  ],
 }
 
 // The rows strikk_save_extraction would leave for this data (ids instead of indexes, in

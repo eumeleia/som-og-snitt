@@ -9,6 +9,10 @@ const sim = vi.hoisted(() => ({
   result: 'approved' as string,
   rpc: [] as Record<string, unknown>[],
   inserted: [] as Record<string, unknown>[],
+  renamed: [] as Record<string, unknown>[],
+}))
+vi.mock('@/lib/strikk-drive', () => ({
+  syncRecipeDriveName: async (row: Record<string, unknown>) => { sim.renamed.push(row); return 'x.pdf' },
 }))
 vi.mock('@supabase/supabase-js', () => ({
   createClient: () => ({
@@ -34,7 +38,7 @@ const approve = (data: unknown, edit?: boolean) => POST(
 const extracted = () => normalizeExtraction(SIMULATED_ANSWER)
 const withStatus = (s: StoredRecipe['extraction_status']) => storedFrom(extracted(), { extraction_status: s })
 
-beforeEach(() => { sim.stored = withStatus('extracted'); sim.result = 'approved'; sim.rpc = []; sim.inserted = [] })
+beforeEach(() => { sim.stored = withStatus('extracted'); sim.result = 'approved'; sim.rpc = []; sim.inserted = []; sim.renamed = [] })
 
 describe('POST /api/strikk/extraction/[id]/approve', () => {
   it('saves the corrected data as approved, uncertain marks cleared, open choice kept', async () => {
@@ -95,5 +99,12 @@ describe('POST /api/strikk/extraction/[id]/approve', () => {
   it('refuses an empty title', async () => {
     expect((await approve({ ...SIMULATED_ANSWER, title: '  ' })).status).toBe(400)
     expect(sim.rpc).toEqual([])
+  })
+
+  it('renames the Drive file when the title or designer changes, and not otherwise', async () => {
+    await approve(extracted())
+    expect(sim.renamed).toEqual([])
+    await approve({ ...extracted(), title: 'Rein genser - kort', designer: 'Ber-Lin' })
+    expect(sim.renamed).toEqual([expect.objectContaining({ id: 'r1', title: 'Rein genser - kort', designer: 'Ber-Lin', drive_file_id: 'f' })])
   })
 })

@@ -8,6 +8,8 @@ import {
   storedToExtraction,
   type StoredRecipe,
 } from '@/app/strikk/_lib/extraction'
+import { syncRecipeDriveName } from '@/lib/strikk-drive'
+import { logDriveError } from '@/lib/drive-log'
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -55,6 +57,14 @@ export async function POST(req: NextRequest, ctx: RouteContext<'/api/strikk/extr
         // The approval stands; only the examples for next time are missing.
         if (corrError) console.error(`[strikk/approve] corrections: ${corrError.message}`)
         else saved = list.length
+      }
+    }
+    // A changed title or designer renames the Drive file; the approval stands if that fails.
+    if (clean.title !== before.title || (clean.designer ?? null) !== (before.designer ?? null)) {
+      try {
+        await syncRecipeDriveName({ ...before, title: clean.title, designer: clean.designer })
+      } catch (err) {
+        logDriveError('strikk/approve rename', err)
       }
     }
     return NextResponse.json({ status: 'approved', corrections: saved })
