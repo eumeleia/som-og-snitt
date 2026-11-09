@@ -1,9 +1,10 @@
-// Recipe data extraction for Strikk: the output schema Claude answers in, the prompt,
-// which PDF pages to send, and normalising the answer into the shape that
-// strikk_save_extraction (migrations 014 and 015) stores. Pure, so it runs in tests, the browser
-// and the route alike.
+// Recipe data extraction for Strikk: the answer format and reading rules, which PDF pages
+// matter, and normalising an answer into the shape that strikk_save_extraction
+// (migrations 014–016) stores. The reading itself is done locally by Claude Code with
+// scripts/strikk (see docs/strikk-innlesing.md); nothing here calls an API. Pure, with
+// no imports, so the tests, the browser and the Node scripts can all load it.
 
-export const AUDIENCES = ['woman', 'man', 'unisex', 'child'] as const
+export const AUDIENCES = ['woman', 'man', 'unisex', 'child', 'interior', 'other'] as const
 export const ACCESSORY_KINDS = ['buttons', 'zipper', 'elastic', 'other'] as const
 export const UNITS = ['g', 'skeins'] as const
 
@@ -158,7 +159,7 @@ export const EXTRACTION_PROMPT = `You read knitting patterns (usually Norwegian,
 
 Fields:
 - title, designer: as written in the pattern, without model codes, article numbers or dates.
-- audience: woman, man, unisex or child. Baby and child sizes are child. Use unisex only when the pattern says it or gives both women's and men's sizes.
+- audience: woman, man, unisex, child, interior or other. Baby and child sizes are child. Use unisex only when the pattern says it or gives both women's and men's sizes. interior is for things for the home that are not worn: blankets (pledd, tepper), cushions (puter), baskets (kurver), dishcloths (kluter). other is for what fits none of these, e.g. decorations; soft toys are child when made for babies or children, otherwise other.
 - garment_type: one Norwegian word in lower case, e.g. genser, jakke, vest, lue, votter, sokker, skjerf, kjole, bukse, teppe, sett, kosedyr.
 - variants: named variants of the same pattern (e.g. "med hette", "kort", "V-hals").
 - is_collection: true when the PDF holds several separate patterns (a booklet, e-book or catalogue). Then title is the name of the collection itself and collection_titles lists the patterns in it. A collection gets no sizes and no amounts (both []), and their absence is not uncertain. Give yarn lines, gauge, needles and accessories only when the whole collection shares them.
@@ -174,6 +175,17 @@ Fields:
 Uncertainty: when a value is hard to read, inferred, conflicting, or you are not sure which size or colour it belongs to, still give your best reading and add an entry to uncertain: field is the path to the value in your answer, and reason says briefly in Norwegian (at most about twelve words) why, e.g. "To ulike tall i tabell og tekst". Paths: a top-level field by name ("audience", "gauge_rows_10cm"); a whole item by list and index ("sizes[3]", "amounts[7]", "alternatives[0]", "accessories[1]"); a value on a yarn line by index and field ("yarn_lines[1].meterage_m"). Leave uncertain empty when nothing is uncertain.`
 
 // ── Page choice ─────────────────────────────────────────────────────────────────────
+
+// Letter-spaced display fonts («H e i d i») come out of pdf.js one letter per item.
+export function normalizePageText(text: string): string {
+  return text
+    .replace(
+      /([^a-zA-ZÀ-ÿ]|^)([a-zA-ZÀ-ÿ](?:\s+[a-zA-ZÀ-ÿ]){3,})(?![a-zA-ZÀ-ÿ])/g,
+      (_m, pre: string, letters: string) => pre + letters.replace(/\s+/g, ''),
+    )
+    .replace(/[^\S\n]+/g, ' ')
+    .trim()
+}
 
 export interface PageText { page: number; text: string }
 
@@ -671,7 +683,7 @@ export interface Correction { field: string; extracted: string; corrected: strin
 
 export const MAX_CORRECTION_EXAMPLES = 20
 const MAX_VALUE = 300
-const AUDIENCE_NO: Record<Audience, string> = { woman: 'kvinne', man: 'mann', unisex: 'unisex', child: 'barn' }
+const AUDIENCE_NO: Record<Audience, string> = { woman: 'kvinne', man: 'mann', unisex: 'unisex', child: 'barn', interior: 'interiør', other: 'annet' }
 const KIND_NO: Record<AccessoryKind, string> = { buttons: 'knapper', zipper: 'glidelås', elastic: 'elastikk', other: 'annet' }
 
 const groupName = (d: ExtractionData, g: number | null) =>
@@ -742,11 +754,40 @@ export function corrections(before: ExtractionData, after: ExtractionData): Corr
 export interface CorrectionExample extends Correction { recipe_title: string }
 
 // The extraction instructions with the newest corrections appended as examples.
-export function buildExtractionPrompt(examples: CorrectionExample[]): string {
-  const list = examples.slice(0, MAX_CORRECTION_EXAMPLES)
+export function buildExtractionPrompt(examples: CorrectionExample[], limit = MAX_CORRECTION_EXAMPLES): string {
+  const list = examples.slice(0, limit)
   if (list.length === 0) return EXTRACTION_PROMPT
   return `${EXTRACTION_PROMPT}
 
 Corrections the user made to earlier extractions, newest first. They show how this user wants patterns read: apply the same reading when the same situation comes up, but take values only from the pattern in front of you, never from these examples.
 ${list.map(e => `- «${e.recipe_title}», ${e.field}: extracted «${e.extracted}», corrected to «${e.corrected}»`).join('\n')}`
+}
+
+// ── Checking an answer against the schema ───────────────────────────────────────────
+
+// Errors in an answer against the subset of JSON Schema used by EXTRACTION_SCHEMA, so a
+// hand-written or locally produced answer is held to the same shape as one the API
+// returned under structured outputs. Empty when it fits.
+export function schemaErrors(schema: Record<string, unknown>, v: unknown, path = '$'): string[] {
+  const t = schema.type
+  if (schema.enum && !(schema.enum as unknown[]).includes(v)) return [`${path}: ${JSON.stringify(v)} not in enum`]
+  if (t === 'string' && typeof v !== 'string') return [`${path}: not a string`]
+  if (t === 'number' && (typeof v !== 'number' || !Number.isFinite(v))) return [`${path}: not a number`]
+  if (t === 'integer' && !Number.isInteger(v)) return [`${path}: not an integer`]
+  if (t === 'boolean' && typeof v !== 'boolean') return [`${path}: not a boolean`]
+  if (t === 'array') {
+    if (!Array.isArray(v)) return [`${path}: not an array`]
+    return v.flatMap((x, i) => schemaErrors(schema.items as Record<string, unknown>, x, `${path}[${i}]`))
+  }
+  if (t === 'object') {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return [`${path}: not an object`]
+    const o = v as Record<string, unknown>
+    const properties = schema.properties as Record<string, Record<string, unknown>>
+    return [
+      ...(schema.required as string[]).filter(k => !(k in o)).map(k => `${path}.${k}: missing`),
+      ...Object.keys(o).filter(k => !(k in properties)).map(k => `${path}.${k}: not allowed`),
+      ...Object.entries(o).filter(([k]) => k in properties).flatMap(([k, x]) => schemaErrors(properties[k], x, `${path}.${k}`)),
+    ]
+  }
+  return []
 }

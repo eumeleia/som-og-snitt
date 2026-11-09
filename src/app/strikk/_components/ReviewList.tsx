@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import { supabase } from '@/lib/supabase'
 import {
@@ -23,7 +23,6 @@ import {
   type Unit,
   type YarnLineData,
 } from '../_lib/extraction'
-import { extractRecipe, nextBatch, runExtractionBatch } from '../_lib/extract-client'
 import { DriveAuthExpiredError, downloadPdf } from '../_lib/drive'
 import PdfViewer, { openPdf, type PageSize } from './PdfViewer'
 
@@ -33,20 +32,15 @@ const STATUS_LABEL: Record<StoredRecipe['extraction_status'], string> = {
   failed: 'Feilet',
   approved: 'Godkjent',
 }
-const AUDIENCE_LABEL: Record<Audience, string> = { woman: 'Kvinne', man: 'Mann', unisex: 'Unisex', child: 'Barn' }
+const AUDIENCE_LABEL: Record<Audience, string> = { woman: 'Kvinne', man: 'Mann', unisex: 'Unisex', child: 'Barn', interior: 'Interiør', other: 'Annet' }
 const KIND_LABEL: Record<AccessoryKind, string> = { buttons: 'Knapper', zipper: 'Glidelås', elastic: 'Elastikk', other: 'Annet' }
 const FILTERS = ['extracted', 'pending', 'failed', 'approved'] as const
-
-type Run = { done: number; total: number; running: string[]; failed: string[]; stopping: boolean }
 
 export default function ReviewList() {
   const [rows, setRows] = useState<StoredRecipe[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [filter, setFilter] = useState<typeof FILTERS[number]>('extracted')
   const [openId, setOpenId] = useState<string | null>(null)
-  const [run, setRun] = useState<Run | null>(null)
-  const [lastRun, setLastRun] = useState<Run | null>(null)
-  const abortRef = useRef<AbortController | null>(null)
 
   const loadAll = useCallback(async () => {
     const { data, error } = await supabase.from('strikk_oppskrift').select(EXTRACTION_SELECT).order('created_at')
@@ -69,98 +63,19 @@ export default function ReviewList() {
     return () => { cancelled = true }
   }, [])
 
-  useEffect(() => {
-    if (!run) return
-    const warn = (e: BeforeUnloadEvent) => { e.preventDefault() }
-    window.addEventListener('beforeunload', warn)
-    return () => window.removeEventListener('beforeunload', warn)
-  }, [run])
-
-  async function start() {
-    if (!rows || run) return
-    const items = nextBatch(rows)
-    if (items.length === 0) return
-    const ctrl = new AbortController()
-    abortRef.current = ctrl
-    let state: Run = { done: 0, total: items.length, running: [], failed: [], stopping: false }
-    const set = (fn: (r: Run) => Run) => { state = fn(state); setRun(state) }
-    setRun(state)
-    setLastRun(null)
-    await runExtractionBatch(items, async r => {
-      set(s => ({ ...s, running: [...s.running, r.title] }))
-      try {
-        return await extractRecipe(r)
-      } finally {
-        set(s => ({ ...s, running: s.running.filter(t => t !== r.title) }))
-        await loadOne(r.id)
-      }
-    }, {
-      concurrency: 3,
-      signal: ctrl.signal,
-      onDone: (res, done) => set(s => ({ ...s, done, failed: res.ok ? s.failed : [...s.failed, `${res.item.title}: ${res.error}`] })),
-    })
-    setLastRun(state)
-    setRun(null)
-    abortRef.current = null
-  }
-
-  function stop() {
-    abortRef.current?.abort()
-    setRun(r => (r ? { ...r, stopping: true } : r))
-  }
-
   if (loadError) return <p className="max-w-3xl mx-auto px-4 sm:px-8 py-6 text-sm text-red-700">Klarte ikke hente oppskriftene: {loadError}</p>
   if (!rows) return <p className="max-w-3xl mx-auto px-4 sm:px-8 py-6 text-sm text-stone-500">Henter oppskrifter …</p>
 
   const count = (s: StoredRecipe['extraction_status']) => rows.filter(r => r.extraction_status === s).length
-  const upcoming = nextBatch(rows).length
-  const firstRun = !rows.some(r => r.extraction_status === 'extracted' || r.extraction_status === 'approved')
   const shown = rows.filter(r => r.extraction_status === filter)
 
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-8 py-6 flex flex-col gap-4">
-      <div className="flex items-center justify-between gap-3">
-        <h1 className="font-serif text-2xl text-stone-800">Gjennomgang</h1>
-        {run ? (
-          <button onClick={stop} disabled={run.stopping}
-            className="h-11 px-4 rounded-xl border border-stone-300 bg-white text-sm text-stone-800 disabled:opacity-50 shrink-0">
-            {run.stopping ? 'Stopper …' : 'Avbryt'}
-          </button>
-        ) : (
-          <button onClick={() => void start()} disabled={upcoming === 0}
-            className="h-11 px-4 rounded-xl bg-[#2E5339] text-white text-sm disabled:opacity-50 shrink-0">
-            Les inn oppskrifter
-          </button>
-        )}
-      </div>
-      {!run && upcoming > 0 && (
-        <p className="text-sm text-stone-600">
-          {firstRun
-            ? `Første gang leses ${upcoming} oppskrifter, så du kan sjekke dem før resten leses.`
-            : `${upcoming} oppskrifter er ikke lest ennå eller feilet.`}
-        </p>
-      )}
-
-      {run && (
-        <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 flex flex-col gap-2" role="status">
-          <p className="text-sm font-medium text-stone-900">Hold denne siden åpen til innlesingen er ferdig.</p>
-          <p className="text-sm text-stone-700">
-            Avbryter du, eller lukker siden, blir det som er lest så langt lagret. Trykk «Les inn oppskrifter» igjen for å fortsette.
-          </p>
-          <div className="h-2 rounded-full bg-amber-100 overflow-hidden">
-            <div className="h-full bg-[#2E5339] transition-all" style={{ width: `${Math.round((run.done / run.total) * 100)}%` }} />
-          </div>
-          <p className="text-sm text-stone-700 break-words">
-            {run.done} av {run.total} ferdig{run.running.length > 0 && <> · leser «{run.running.join('», «')}»</>}
-          </p>
-        </div>
-      )}
-      {lastRun && (
-        <div className="rounded-2xl border border-stone-200 bg-white p-4 text-sm text-stone-800 flex flex-col gap-1">
-          <p>Lest inn: {lastRun.done - lastRun.failed.length} av {lastRun.total}{lastRun.failed.length > 0 && `, ${lastRun.failed.length} feilet`}.</p>
-          {lastRun.failed.map((f, i) => <p key={i} className="text-red-700 break-words">{f}</p>)}
-        </div>
-      )}
+      <h1 className="font-serif text-2xl text-stone-800">Gjennomgang</h1>
+      <p className="text-sm text-stone-600">
+        Oppskrifter leses inn via Claude Code: be om å lese inn nye strikkeoppskrifter. De havner her som
+        «Til gjennomgang».{count('pending') + count('failed') > 0 && ` ${count('pending') + count('failed')} venter på å bli lest inn.`}
+      </p>
 
       <div className="flex gap-1 overflow-x-auto">
         {FILTERS.map(f => (
@@ -390,18 +305,6 @@ function RecipeReview({ recipe, onChanged }: { recipe: StoredRecipe; onChanged: 
     } finally { setBusy(null) }
   }
 
-  async function reextract() {
-    setBusy('extract'); setError(null)
-    try {
-      await extractRecipe(recipe)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setBusy(null)
-      await onChanged()
-    }
-  }
-
   const setLine = (i: number, p: Partial<YarnLineData>) =>
     patch({ yarn_lines: d.yarn_lines.map((l, k) => (k === i ? { ...l, ...p } : l)) })
   const setAmount = (i: number, p: Partial<AmountData>) =>
@@ -434,7 +337,7 @@ function RecipeReview({ recipe, onChanged }: { recipe: StoredRecipe; onChanged: 
       {recipe.extraction_status === 'failed' && recipe.extraction_error && (
         <p className="text-sm text-red-700 break-words">Uttrekket feilet: {recipe.extraction_error}</p>
       )}
-      {recipe.extraction_status === 'pending' && <p className="text-sm text-stone-600">Ikke lest inn ennå.</p>}
+      {recipe.extraction_status === 'pending' && <p className="text-sm text-stone-600">Ikke lest inn ennå. Be Claude Code om å lese inn nye strikkeoppskrifter.</p>}
       {approved && !editing && <p className="text-sm text-emerald-800">Godkjent. Et nytt uttrekk endrer ikke denne oppskriften.</p>}
       {approved && editing && <p className="text-sm text-stone-700">Du retter en godkjent oppskrift. Den forblir godkjent.</p>}
       <p className="text-xs text-stone-500 break-words">Fil: {recipe.file_name}</p>
@@ -655,14 +558,9 @@ function RecipeReview({ recipe, onChanged }: { recipe: StoredRecipe; onChanged: 
               className="h-11 px-4 rounded-xl bg-[#2E5339] text-white text-sm disabled:opacity-50">
               {busy === 'approve' ? 'Lagrer …' : approved ? 'Lagre endringer' : 'Godkjenn'}
             </button>
-            {approved ? (
+            {approved && (
               <button onClick={() => { setEditing(false); setBad(new Set()); setD(storedToExtraction(recipe)) }} disabled={busy !== null}
                 className="h-11 px-4 rounded-xl border border-stone-300 bg-white text-sm text-stone-800">Avbryt</button>
-            ) : (
-              <button onClick={() => void reextract()} disabled={busy !== null}
-                className="h-11 px-4 rounded-xl border border-stone-300 bg-white text-sm text-stone-800 disabled:opacity-50">
-                {busy === 'extract' ? 'Leser inn …' : recipe.extraction_status === 'pending' ? 'Les inn' : 'Les inn på nytt'}
-              </button>
             )}
           </>
         )}

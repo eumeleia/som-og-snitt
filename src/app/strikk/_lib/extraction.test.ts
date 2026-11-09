@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import {
   EXTRACTION_SCHEMA,
   EXTRACTION_PROMPT,
@@ -13,12 +13,13 @@ import {
   heldTogether,
   normalizeExtraction,
   parseAmountInput,
+  normalizePageText,
   planPages,
   removeSize,
   removeYarnLine,
+  schemaErrors,
   storedToExtraction,
 } from './extraction'
-import { nextBatch, runExtractionBatch, type ExtractionStatus } from './extract-client'
 import { parseRecipeFileName } from './recipes'
 import { CATALOGUE_ANSWER, PREVIOUS_ANSWER, PREVIOUS_CATALOGUE, SIMULATED_ANSWER, storedFrom } from './extraction.fixture'
 
@@ -134,64 +135,6 @@ describe('driveFileName', () => {
   })
 })
 
-describe('nextBatch', () => {
-  const rows = (statuses: string[]) => statuses.map((s, i) => ({
-    id: `r${i}`, extraction_status: s as ExtractionStatus, created_at: `2026-11-04T10:${String(i).padStart(2, '0')}:00Z`,
-  }))
-  it('reads ten first when nothing has been read yet', () => {
-    expect(nextBatch(rows(Array(170).fill('pending')))).toHaveLength(10)
-  })
-  it('retries the ten that failed, and nothing else, when none has been read in yet', () => {
-    const r = rows([...Array(10).fill('failed'), ...Array(160).fill('pending')])
-    const b = nextBatch(r)
-    expect(b.map(x => x.id)).toEqual(r.slice(0, 10).map(x => x.id))
-  })
-  it('puts failed ones first, whenever they were uploaded', () => {
-    const r = rows([...Array(5).fill('pending'), 'failed', 'extracted'])
-    expect(nextBatch(r).map(x => x.id)).toEqual(['r5', 'r0', 'r1', 'r2', 'r3', 'r4'])
-  })
-  it('reads the rest, failed ones included, on the next press', () => {
-    const r = rows([...Array(8).fill('extracted'), 'approved', 'failed', ...Array(160).fill('pending')])
-    const b = nextBatch(r)
-    expect(b).toHaveLength(161)
-    expect(b[0].id).toBe('r9')
-    expect(b[1].id).toBe('r10')
-    expect(b.some(x => x.extraction_status === 'approved' || x.extraction_status === 'extracted')).toBe(false)
-  })
-})
-
-describe('runExtractionBatch', () => {
-  it('runs everything, keeps going past a failure, and limits how many run at once', async () => {
-    let running = 0, peak = 0
-    const extract = vi.fn(async (n: number) => {
-      running++; peak = Math.max(peak, running)
-      await new Promise(r => setTimeout(r, 1))
-      running--
-      if (n === 3) throw new Error('Uttrekket feilet (500)')
-      return { status: 'extracted' as const }
-    })
-    const done: number[] = []
-    const results = await runExtractionBatch([1, 2, 3, 4, 5, 6, 7], extract, { concurrency: 3, onDone: (_r, d) => done.push(d) })
-    expect(results).toHaveLength(7)
-    expect(results.filter(r => !r.ok).map(r => r.item)).toEqual([3])
-    expect(peak).toBe(3)
-    expect(done.at(-1)).toBe(7)
-  })
-
-  it('stops starting new ones when aborted, and lets the started ones finish', async () => {
-    const ctrl = new AbortController()
-    const started: number[] = []
-    const results = await runExtractionBatch(Array.from({ length: 10 }, (_, i) => i), async n => {
-      started.push(n)
-      if (n === 1) ctrl.abort()
-      await new Promise(r => setTimeout(r, 1))
-      return { status: 'extracted' as const }
-    }, { concurrency: 2, signal: ctrl.signal })
-    expect(started).toEqual([0, 1])
-    expect(results.every(r => r.ok)).toBe(true)
-  })
-})
-
 describe('storedToExtraction', () => {
   it('reads stored rows back into the same data, with an app suggestion left out', () => {
     const d = normalizeExtraction(SIMULATED_ANSWER)
@@ -253,31 +196,7 @@ describe('EXTRACTION_SCHEMA limits', () => {
   })
 })
 
-// Minimal validator for the schema subset used here, so the simulated answer is known
-// to be one the API could return.
-function validate(schema: Record<string, unknown>, v: unknown, path = '$'): string[] {
-  const t = schema.type
-  if (schema.enum && !(schema.enum as unknown[]).includes(v)) return [`${path}: ${JSON.stringify(v)} not in enum`]
-  if (t === 'string' && typeof v !== 'string') return [`${path}: not a string`]
-  if (t === 'number' && typeof v !== 'number') return [`${path}: not a number`]
-  if (t === 'integer' && !Number.isInteger(v)) return [`${path}: not an integer`]
-  if (t === 'boolean' && typeof v !== 'boolean') return [`${path}: not a boolean`]
-  if (t === 'array') {
-    if (!Array.isArray(v)) return [`${path}: not an array`]
-    return v.flatMap((x, i) => validate(schema.items as Record<string, unknown>, x, `${path}[${i}]`))
-  }
-  if (t === 'object') {
-    if (!v || typeof v !== 'object' || Array.isArray(v)) return [`${path}: not an object`]
-    const o = v as Record<string, unknown>
-    const properties = schema.properties as Record<string, Record<string, unknown>>
-    return [
-      ...(schema.required as string[]).filter(k => !(k in o)).map(k => `${path}.${k}: missing`),
-      ...Object.keys(o).filter(k => !(k in properties)).map(k => `${path}.${k}: not allowed`),
-      ...Object.entries(o).filter(([k]) => k in properties).flatMap(([k, x]) => validate(properties[k], x, `${path}.${k}`)),
-    ]
-  }
-  return []
-}
+const validate = schemaErrors
 
 describe('answers in the schema shape', () => {
   it('the simulated answers are ones the API could return', () => {
@@ -413,5 +332,25 @@ describe('buildExtractionPrompt', () => {
     expect(p).toContain('- «Oppskrift 0», Målgruppe: extracted «kvinne», corrected to «unisex»')
     expect(p).toContain('«Oppskrift 19»')
     expect(p).not.toContain('«Oppskrift 20»')
+  })
+})
+
+describe('audiences for things that are not worn', () => {
+  it('accepts interior and other, and names them in corrections', () => {
+    expect(normalizeExtraction({ ...SIMULATED_ANSWER, audience: 'interior' }).audience).toBe('interior')
+    expect(normalizeExtraction({ ...SIMULATED_ANSWER, audience: 'other' }).audience).toBe('other')
+    expect(schemaErrors(EXTRACTION_SCHEMA as Record<string, unknown>, { ...SIMULATED_ANSWER, audience: 'interior' })).toEqual([])
+    const d = normalizeExtraction(SIMULATED_ANSWER)
+    expect(corrections(d, { ...d, audience: 'interior' })).toEqual([{ field: 'Målgruppe', extracted: 'kvinne', corrected: 'interiør' }])
+    expect(corrections(d, { ...d, audience: 'other' })[0].corrected).toBe('annet')
+  })
+  it('the reading rules say when to use them', () => {
+    expect(EXTRACTION_PROMPT).toMatch(/interior is for things for the home/)
+  })
+})
+
+describe('normalizePageText', () => {
+  it('joins letter-spaced headings and collapses spaces, keeping line breaks', () => {
+    expect(normalizePageText('H e i d i  strikker\nStr:   S (M)')).toBe('Heidi strikker\nStr: S (M)')
   })
 })

@@ -6,7 +6,6 @@ import { supabase } from '@/lib/supabase'
 import { RECIPE_SELECT, type KnitRecipe } from '../_lib/recipes'
 import { DriveAuthExpiredError, getAccessToken, listDriveFiles, sha256Hex, syncDriveNames, uploadPdf } from '../_lib/drive'
 import { runUploadBatch, type UploadProgress, type UploadResult } from '../_lib/upload'
-import { FIRST_BATCH, extractRecipe } from '../_lib/extract-client'
 import DriveExpired from './DriveExpired'
 
 type ListState =
@@ -53,7 +52,6 @@ export default function RecipeList() {
   const [progress, setProgress] = useState<UploadProgress | null>(null)
   const [results, setResults] = useState<UploadResult<KnitRecipe>[] | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
-  const [autoExtracted, setAutoExtracted] = useState(true)
   const [editing, setEditing] = useState<KnitRecipe | null>(null)
   const [loadAttempt, setLoadAttempt] = useState(0)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -128,8 +126,6 @@ export default function RecipeList() {
         withRow: new Set(recipesRef.current.map(r => r.drive_file_id)),
       }
       let authLost = false
-      const autoExtract = files.length <= FIRST_BATCH
-      setAutoExtracted(autoExtract)
       const done = await runUploadBatch(files, known, {
         hash: sha256Hex,
         upload: async file => {
@@ -138,14 +134,6 @@ export default function RecipeList() {
           return id
         },
         createRow,
-        // A few new files are read in right away from the bytes already here, the Drive
-        // file is renamed to «Oppskrift - Designer.pdf» and the recipe lands in
-        // Gjennomgang. A bulk upload is left for «Les inn oppskrifter», so the first ten
-        // can be checked before the rest is read.
-        afterRow: autoExtract ? async (row, file) => {
-          const res = await extractRecipe(row, { bytes: new Uint8Array(await file.arrayBuffer()), rename: true })
-          return res.renamed ? { ...row, ...res.renamed } : row
-        } : undefined,
         isFatal: err => (authLost = err instanceof DriveAuthExpiredError),
       }, (p, result) => {
         setProgress(p)
@@ -170,7 +158,6 @@ export default function RecipeList() {
   }
 
   const failed = results?.filter(r => r.status === 'failed') ?? []
-  const notes = results?.filter(r => r.note) ?? []
   const count = (s: UploadResult<KnitRecipe>['status']) => results?.filter(r => r.status === s).length ?? 0
 
   return (
@@ -213,7 +200,7 @@ export default function RecipeList() {
           </div>
           <p className="text-sm text-stone-700 break-words">
             {progress.done} av {progress.total} ferdig
-            {progress.current && <> · {autoExtracted ? 'laster opp og leser inn' : 'laster opp'} «{progress.current}»</>}
+            {progress.current && <> · laster opp «{progress.current}»</>}
           </p>
         </div>
       )}
@@ -225,14 +212,9 @@ export default function RecipeList() {
             {count('skipped') > 0 && <>, {count('skipped')} fantes fra før</>}
             {failed.length > 0 && <>, {failed.length} feilet</>}.
           </p>
-          {!autoExtracted && count('uploaded') + count('linked') > 0 && (
+          {count('uploaded') + count('linked') > 0 && (
             <p className="text-sm text-stone-700">
-              Så mange filer leses ikke inn automatisk. Bruk «Les inn oppskrifter» under Gjennomgang.
-            </p>
-          )}
-          {notes.length > 0 && (
-            <p className="text-sm text-amber-800">
-              {notes.length} ble lastet opp, men kunne ikke leses inn. Prøv igjen fra Gjennomgang.
+              De nye står som «Ikke lest» under Gjennomgang til de er lest inn via Claude Code.
             </p>
           )}
           {failed.length > 0 && (

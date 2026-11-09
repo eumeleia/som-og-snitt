@@ -55,3 +55,6 @@ Floral Font.zip
 # Lokale strikkeoppskrifter (PDF-er) — skal aldri i git
 strikk/Strikkeoppskrifter/
 strikk/Strikkeoppskrifter ryddet/
+
+# Lokal innlesing av strikkeoppskrifter (tekst og sidebilder fra PDF-ene)
+strikk/innlesing/

@@ -18,3 +18,8 @@ Måldiagrammet (Aldrich) ligger i `public/monster/Body_measurement_method.png`.
 
 **Regel:** Nye konstruksjoner skrives aldri uten verifisering mot Aldrichs bok. OCR-en i
 bøkene er upålitelig — brøker som ½ og ¼ leses ofte feil. Gjett aldri på en formel.
+
+## Strikk: lese inn oppskrifter
+
+Ber Maria om å «lese inn nye strikkeoppskrifter», følg `docs/strikk-innlesing.md`. Uttrekket
+gjøres lokalt av Claude Code; Claude-API-et brukes ikke i Strikk.
