@@ -30,6 +30,11 @@ describe('nextRound', () => {
     expect(r.every((x: { extraction_status: string }) => x.extraction_status === 'pending' || x.extraction_status === 'failed')).toBe(true)
     expect(r[0].id).toBe('t29')
   })
+  it('leaves out recipes that already have an answer waiting to be saved', () => {
+    const r = nextRound(rows, 20, new Set(['t29', 't28']))
+    expect(r[0].id).toBe('t27')
+    expect(r.some((x: { id: string }) => x.id === 't29' || x.id === 't28')).toBe(false)
+  })
 })
 
 describe('needsImage', () => {

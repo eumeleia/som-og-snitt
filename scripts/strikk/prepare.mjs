@@ -21,14 +21,24 @@ const { data: corr, error: corrError } = await sb
   .from('strikk_extraction_correction').select('recipe_title, field, extracted, corrected').order('created_at', { ascending: false })
 if (corrError) throw new Error(corrError.message)
 
-const round = nextRound(rows, size)
+mkdirSync(OUT, { recursive: true })
+// Answers from earlier rounds not saved yet (e.g. refused by the database): save.mjs on
+// that round saves them; reading them again would only duplicate the work.
+const answered = new Set()
+for (const d of readdirSync(OUT).filter(d => d.startsWith('runde-'))) {
+  for (const id of readdirSync(join(OUT, d))) {
+    if (existsSync(join(OUT, d, id, 'svar.json')) && !existsSync(join(OUT, d, id, 'lagret.json'))) answered.add(id)
+  }
+}
+if (answered.size) console.log(`${answered.size} har svar som ikke er lagret ennå; kjør save.mjs på rundene deres. De tas ikke med her.`)
+
+const round = nextRound(rows, size, answered)
 const left = rows.filter(r => r.extraction_status === 'pending' || r.extraction_status === 'failed').length
 if (round.length === 0) {
-  console.log('Ingenting å lese inn: ingen oppskrifter står som «Ikke lest» eller «Feilet».')
+  console.log('Ingenting å lese inn: ingen oppskrifter står som «Ikke lest» eller «Feilet» uten svar.')
   process.exit(0)
 }
 
-mkdirSync(OUT, { recursive: true })
 const n = readdirSync(OUT).filter(d => d.startsWith('runde-')).length + 1
 const dir = join(OUT, `runde-${n}`)
 mkdirSync(dir)

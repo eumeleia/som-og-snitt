@@ -26,10 +26,11 @@ export function findLocalPdf(row, localNames) {
 }
 
 // The next recipes to read: not read yet or failed, oldest first. Approved and already
-// read recipes are never picked.
-export function nextRound(rows, size = ROUND_SIZE) {
+// read recipes are never picked, nor those that already have an answer waiting to be
+// saved in an earlier round (answered).
+export function nextRound(rows, size = ROUND_SIZE, answered = new Set()) {
   return rows
-    .filter(r => TODO_STATUSES.includes(r.extraction_status))
+    .filter(r => TODO_STATUSES.includes(r.extraction_status) && !answered.has(r.id))
     .sort((a, b) => a.created_at.localeCompare(b.created_at))
     .slice(0, size)
 }
