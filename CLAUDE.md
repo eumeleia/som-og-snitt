@@ -21,5 +21,5 @@ bøkene er upålitelig — brøker som ½ og ¼ leses ofte feil. Gjett aldri på
 
 ## Strikk: lese inn oppskrifter
 
-Ber Maria om å «lese inn nye strikkeoppskrifter», følg `docs/strikk-innlesing.md`. Uttrekket
-gjøres lokalt av Claude Code; Claude-API-et brukes ikke i Strikk.
+Ber Maria om å «lese inn nye strikkeoppskrifter», følg `docs/strikk-innlesing.md`, også steget
+for garnkatalogen. Uttrekket gjøres lokalt av Claude Code; Claude-API-et brukes ikke i Strikk.

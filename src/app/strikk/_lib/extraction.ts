@@ -13,7 +13,7 @@ export type AccessoryKind = typeof ACCESSORY_KINDS[number]
 export type Unit = typeof UNITS[number]
 
 export interface SizeData { label: string; uncertain: boolean; uncertain_reason: string | null }
-export interface YarnLineData {
+export interface YarnLineData extends YarnLink {
   color_group: number
   color_label: string | null
   yarn_name: string
@@ -24,6 +24,14 @@ export interface YarnLineData {
   strands: number
   uncertain_fields: string[]
   uncertain_reasons: Record<string, string>
+}
+
+// The link to the yarn catalogue (strikk_yarn), set by scripts/strikk/yarns.mjs link. It
+// travels with the line through edits so the save function can keep it.
+export interface YarnLink {
+  yarn_id: string | null
+  yarn_link_uncertain: boolean
+  yarn_link_reason: string | null
 }
 export interface AmountData {
   size: number
@@ -38,7 +46,7 @@ export interface AmountData {
   uncertain: boolean
   uncertain_reason: string | null
 }
-export interface AlternativeData {
+export interface AlternativeData extends YarnLink {
   color_group: number | null
   yarn_line: number | null
   yarn_name: string
@@ -327,6 +335,12 @@ function sortMarks(all: Map<string, string>): Marks {
   return m
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+function linkOf(o: Raw): YarnLink {
+  const id = typeof o.yarn_id === 'string' && UUID.test(o.yarn_id) ? o.yarn_id : null
+  return { yarn_id: id, yarn_link_uncertain: o.yarn_link_uncertain === true, yarn_link_reason: text(o.yarn_link_reason) }
+}
+
 // A range comes low to high; a reversed one is turned round, equal ends are one amount.
 function amountRange(lo: number | null, hi: number | null): { amount: number | null; amount_max: number | null } {
   if (lo === null) return { amount: hi, amount_max: null }
@@ -381,6 +395,7 @@ export function normalizeExtraction(input: unknown): ExtractionData {
       strands: strands !== null && strands >= 1 ? strands : 1,
       uncertain_fields: [...own.keys()],
       uncertain_reasons: Object.fromEntries([...own].filter(([, why]) => why)),
+      ...linkOf(o),
     })
   })
   const line = (v: unknown): number | null | undefined => {
@@ -433,6 +448,7 @@ export function normalizeExtraction(input: unknown): ExtractionData {
       skein_weight_g: measure(o.skein_weight_g),
       fiber: text(o.fiber),
       ...mark,
+      ...linkOf(o),
     })
   })
 
@@ -518,9 +534,9 @@ export interface StoredRecipe {
   uncertain_reasons: Record<string, string> | null
   amounts_page: number | null
   strikk_size: { id: string; position: number; label: string; uncertain: boolean; uncertain_reason: string | null }[]
-  strikk_yarn_line: (Omit<YarnLineData, 'uncertain_fields' | 'uncertain_reasons'> & { id: string; position: number; uncertain_fields: string[] | null; uncertain_reasons: Record<string, string> | null })[]
+  strikk_yarn_line: (Omit<YarnLineData, 'uncertain_fields' | 'uncertain_reasons' | keyof YarnLink> & Partial<YarnLink> & { id: string; position: number; uncertain_fields: string[] | null; uncertain_reasons: Record<string, string> | null })[]
   strikk_yarn_amount: { size_id: string; color_group: number; yarn_line_id: string | null; amount: number | null; amount_max: number | null; unit: Unit; candidates: string[] | null; needs_choice: boolean; uncertain: boolean; uncertain_reason: string | null }[]
-  strikk_yarn_alternative: { yarn_line_id: string | null; color_group: number | null; yarn_name: string; brand: string | null; meterage_m: number | null; skein_weight_g: number | null; fiber: string | null; source: 'pattern' | 'app'; uncertain: boolean; uncertain_reason: string | null }[]
+  strikk_yarn_alternative: ({ yarn_line_id: string | null; color_group: number | null; yarn_name: string; brand: string | null; meterage_m: number | null; skein_weight_g: number | null; fiber: string | null; source: 'pattern' | 'app'; uncertain: boolean; uncertain_reason: string | null } & Partial<YarnLink>)[]
   strikk_accessory: { size_id: string | null; kind: AccessoryKind; description: string | null; quantity: number | null; dimension: string | null; uncertain: boolean; uncertain_reason: string | null }[]
 }
 
@@ -545,6 +561,7 @@ export function storedToExtraction(r: StoredRecipe): ExtractionData {
       color_group: l.color_group, color_label: l.color_label, yarn_name: l.yarn_name, brand: l.brand,
       meterage_m: n(l.meterage_m), skein_weight_g: n(l.skein_weight_g), fiber: l.fiber, strands: l.strands,
       uncertain_fields: l.uncertain_fields ?? [], uncertain_reasons: l.uncertain_reasons ?? {},
+      yarn_id: l.yarn_id ?? null, yarn_link_uncertain: l.yarn_link_uncertain ?? false, yarn_link_reason: l.yarn_link_reason ?? null,
     })),
     amounts: (r.strikk_yarn_amount ?? [])
       .filter(a => sizeIx.has(a.size_id))
@@ -561,6 +578,7 @@ export function storedToExtraction(r: StoredRecipe): ExtractionData {
         color_group: a.color_group, yarn_line: a.yarn_line_id && lineIx.has(a.yarn_line_id) ? lineIx.get(a.yarn_line_id)! : null,
         yarn_name: a.yarn_name, brand: a.brand, meterage_m: n(a.meterage_m), skein_weight_g: n(a.skein_weight_g), fiber: a.fiber,
         uncertain: a.uncertain, uncertain_reason: a.uncertain_reason ?? null,
+        yarn_id: a.yarn_id ?? null, yarn_link_uncertain: a.yarn_link_uncertain ?? false, yarn_link_reason: a.yarn_link_reason ?? null,
       })),
     gauge_stitches_10cm: n(r.gauge_stitches_10cm),
     gauge_rows_10cm: n(r.gauge_rows_10cm),

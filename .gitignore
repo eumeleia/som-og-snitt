@@ -58,3 +58,6 @@ strikk/Strikkeoppskrifter ryddet/
 
 # Lokal innlesing av strikkeoppskrifter (tekst og sidebilder fra PDF-ene)
 strikk/innlesing/
+
+# Lokal oppbygging av garnkatalogen (kandidater, runder og svar)
+strikk/garn/

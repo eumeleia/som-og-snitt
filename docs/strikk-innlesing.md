@@ -20,6 +20,7 @@ listen over manglende PDF-er.
 - `.env.local` med `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` og
   `SUPABASE_SERVICE_ROLE_KEY`.
 - Migrering 016 er kjørt (målgruppene `interior` og `other`).
+- Migrering 017 er kjørt (garnkatalogen `strikk_yarn` og koblingene fra garnlinjene).
 
 ## Fremgang
 
@@ -45,10 +46,40 @@ listen over manglende PDF-er.
    Svar som ikke følger skjemaet, lagres ikke. Rett dem og kjør på nytt. Lagrede oppskrifter
    får status «Til gjennomgang».
 5. **Gjenta** steg 2–4 til `prepare.mjs` sier at det ikke er noe igjen.
-6. **Avslutt** med antall lagret per runde, og listen i `strikk/innlesing/mangler-alle.json`
-   over oppskrifter uten lokal PDF.
+6. **Garnkatalogen.** Nye garn fra oppskriftene skal inn i katalogen på samme måte som
+   resten. Alle kommandoene kjøres som
+   `node --no-warnings --env-file=.env.local scripts/strikk/yarns.mjs <kommando>`.
+   1. `link` kobler alle garnlinjer og garnalternativer (også i godkjente oppskrifter) til
+      garn som allerede er i katalogen. Bare de tre koblingsfeltene endres.
+   2. `collect` skriver skrivemåtene som ikke finnes i katalogen ennå til
+      `strikk/garn/kandidater.json`, med oppskriftene de står i, designer, de andre garnene i
+      oppskriften og det oppskriften selv oppgir om garnet.
+   3. **Grupper** kandidatene i `strikk/garn/grupper.json`: én rad per garn,
+      `{brand, name, aliases: [{brand, name, certain, reason}]}`, med produsentens egen
+      skrivemåte som `brand`/`name` og alle skrivemåtene fra oppskriftene som `aliases`
+      («Peer Gynt» og «Sandnes Garn Peer Gynt» er samme garn). En skrivemåte uten
+      produsent som er plassert ut fra designer eller de andre garnene i oppskriften, får
+      `certain: false` og en grunn. Generiske «garn» («restegarn», «DK-garn», «tynt
+      mohairgarn») får en rad `{generic: true, aliases: [...]}` og kommer ikke i katalogen.
+      Se over grupperingen før neste steg.
+   4. `create strikk/garn/grupper.json` legger garnene inn som utkast («Ikke slått opp»).
+      Er garnet der fra før, legges bare skrivemåtene til.
+   5. `prepare` lager neste runde på 20 i `strikk/garn/runde-N/`, med `INSTRUKS.md` (fra
+      `scripts/strikk/yarn-lookup.md`, med skjemaet) og én mappe per garn med `meta.json`.
+   6. **Slå opp** med underagenter, for eksempel fire med fem garn hver. De bruker egne
+      verktøy for nettsøk og nettlesing, oppskriftenes tall først, så produsenten, og for
+      utgåtte garn en annen pålitelig kilde. Hver skriver `svar.json` i garnets mappe.
+   7. `save strikk/garn/runde-N --dry-run`, så `save strikk/garn/runde-N`. Godkjente garn
+      endres aldri. Lagrede garn får status «Til godkjenning».
+   8. Gjenta 5–7 til `prepare` sier at det ikke er noe igjen, og kjør `link` til slutt.
+      `status` viser antall garn og hvor mange linjer som er koblet, usikkert koblet,
+      generiske og ikke koblet.
+7. **Avslutt** med antall lagret per runde, nye garn i katalogen, tallene fra
+   `yarns.mjs status`, og listen i `strikk/innlesing/mangler-alle.json` over oppskrifter uten
+   lokal PDF.
 
 Blir arbeidet stoppet, starter neste økt på steg 1. Det som er lagret, er «Til gjennomgang»
-og velges ikke igjen.
+og velges ikke igjen. For garn: mapper i `strikk/garn/runde-*` med `svar.json` uten
+`lagret.json` lagres først, og garn som er slått opp, velges ikke igjen.
 
-`strikk/innlesing/` er i `.gitignore` og skal ikke committes.
+`strikk/innlesing/` og `strikk/garn/` er i `.gitignore` og skal ikke committes.

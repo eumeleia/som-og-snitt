@@ -202,6 +202,7 @@ function Num({ value, onChange, onBad, uncertain, disabled, parse = parseNumber,
     </span>
   )
 }
+const NO_LINK = { yarn_id: null, yarn_link_uncertain: false, yarn_link_reason: null }
 const formatNumber = (v: number | null) => (v === null ? '' : String(v).replace('.', ','))
 function parseNumber(s: string): number | null | undefined {
   if (!s.trim()) return null
@@ -329,7 +330,7 @@ function RecipeReview({ recipe, onChanged }: { recipe: StoredRecipe; onChanged: 
   )
   const newLine = (g: number, label: string | null): YarnLineData => ({
     color_group: g, color_label: label, yarn_name: '', brand: null, meterage_m: null, skein_weight_g: null, fiber: null,
-    strands: 1, uncertain_fields: [], uncertain_reasons: {},
+    strands: 1, uncertain_fields: [], uncertain_reasons: {}, ...NO_LINK,
   })
 
   const editor = (
@@ -499,7 +500,7 @@ function RecipeReview({ recipe, onChanged }: { recipe: StoredRecipe; onChanged: 
           </div>
         ))}
         {!locked && (
-          <button onClick={() => patch({ alternatives: [...d.alternatives, { color_group: groups[0] ?? null, yarn_line: null, yarn_name: '', brand: null, meterage_m: null, skein_weight_g: null, fiber: null, uncertain: false, uncertain_reason: null }] })}
+          <button onClick={() => patch({ alternatives: [...d.alternatives, { color_group: groups[0] ?? null, yarn_line: null, yarn_name: '', brand: null, meterage_m: null, skein_weight_g: null, fiber: null, uncertain: false, uncertain_reason: null, ...NO_LINK }] })}
             className="self-start text-sm text-stone-600 underline">+ alternativ</button>
         )}
       </Section>
