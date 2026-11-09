@@ -66,6 +66,8 @@ listen over manglende PDF-er.
       Er garnet der fra før, legges bare skrivemåtene til.
    5. `prepare` lager neste runde på 20 i `strikk/garn/runde-N/`, med `INSTRUKS.md` (fra
       `scripts/strikk/yarn-lookup.md`, med skjemaet) og én mappe per garn med `meta.json`.
+      Garn som ligger i en runde som ikke er lagret, velges ikke igjen, så flere runder
+      kan klargjøres og slås opp samtidig.
    6. **Slå opp** med underagenter, for eksempel fire med fem garn hver. De bruker egne
       verktøy for nettsøk og nettlesing, oppskriftenes tall først, så produsenten, og for
       utgåtte garn en annen pålitelig kilde. Hver skriver `svar.json` i garnets mappe.

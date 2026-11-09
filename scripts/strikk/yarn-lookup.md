@@ -17,7 +17,11 @@ det oppskriftene selv oppgir om garnet (`pattern_data`), og hvilke oppskrifter d
 3. **Utgått garn.** Finnes garnet ikke lenger hos produsenten, sett `discontinued: true` og
    bruk en annen pålitelig kilde: en garnbutikk (`retailer`), Ravelry eller et arkiv
    (`other`). Si i `source_note` hvorfor.
-4. **Ett oppslag per garn.** Garnet slås opp én gang her; slå ikke opp de andre garnene i
+4. **Produsenten er ikke alltid sikker.** Står `brand` tomt, finn produsenten. Har garnet en
+   skrivemåte uten produsent i `aliases`, er produsenten utledet fra oppskriften: sjekk at
+   garnet finnes hos den produsenten, og rett `brand` hvis ikke. Finner du ikke garnet i
+   det hele tatt, la feltene stå tomme og før dem i `uncertain`.
+5. **Ett oppslag per garn.** Garnet slås opp én gang her; slå ikke opp de andre garnene i
    runden for å sammenligne.
 
 ## Feltene
@@ -35,4 +39,8 @@ det oppskriftene selv oppgir om garnet (`pattern_data`), og hvilke oppskrifter d
   («Ikke oppgitt hos produsenten», «To ulike tall på siden»). Ikke fyll et felt ut fra
   kunnskap om lignende garn; la det stå 0 eller "" og før det her.
 
-Sjekk hvert svar mot skjemaet med kommandoen i oppdraget før du er ferdig.
+Sjekk hvert svar før du er ferdig, og rett til den svarer `ok`:
+
+```
+node --no-warnings --env-file=.env.local scripts/strikk/yarns.mjs check strikk/garn/runde-N/<id>/svar.json
+```

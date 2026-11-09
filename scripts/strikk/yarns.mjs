@@ -7,6 +7,7 @@
 //                     spellings; generic «yarns» go to strikk/garn/generisk.json
 //   prepare [--size]  next round of drafts to look up → strikk/garn/runde-N/
 //   save <dir>        checked lookup answers into the catalogue (never approved yarns)
+//   check <svar.json> one lookup answer against the schema, without the database
 //   link              links every yarn line and alternative to its catalogue yarn
 //   status            counts
 //
@@ -101,15 +102,16 @@ else if (cmd === 'create') {
 
 else if (cmd === 'prepare') {
   const size = flag('--size') ? Number(process.argv[process.argv.indexOf('--size') + 1]) : 20
-  const answered = new Set()
+  // A yarn in a round that is not saved yet is taken: finish that round instead.
+  const taken = new Set()
   for (const d of readdirSync(OUT).filter(d => d.startsWith('runde-'))) {
     for (const id of readdirSync(join(OUT, d))) {
-      if (existsSync(join(OUT, d, id, 'svar.json')) && !existsSync(join(OUT, d, id, 'lagret.json'))) answered.add(id)
+      if (existsSync(join(OUT, d, id, 'meta.json')) && !existsSync(join(OUT, d, id, 'lagret.json'))) taken.add(id)
     }
   }
   const [yarns, lines, recipes] = await Promise.all([loadYarns(), loadLines(), all('strikk_oppskrift', 'id, title')])
   const title = new Map(recipes.map(r => [r.id, r.title]))
-  const round = yarns.filter(y => y.status === 'draft' && !answered.has(y.id)).sort((a, b) => a.name.localeCompare(b.name, 'nb')).slice(0, size)
+  const round = yarns.filter(y => y.status === 'draft' && !taken.has(y.id)).sort((a, b) => a.name.localeCompare(b.name, 'nb')).slice(0, size)
   if (round.length === 0) { console.log('Ingen garn å slå opp.'); process.exit(0) }
   const n = readdirSync(OUT).filter(d => d.startsWith('runde-')).length + 1
   const dir = join(OUT, `runde-${n}`)
@@ -125,7 +127,8 @@ else if (cmd === 'prepare') {
       used_in: [...new Set(used.map(l => title.get(l.oppskrift_id)))],
     }, null, 1))
   }
-  console.log(`${dir}: ${round.length} garn klare, ${yarns.filter(y => y.status === 'draft').length - answered.size} utkast igjen før denne runden.`)
+  const left = yarns.filter(y => y.status === 'draft' && !taken.has(y.id)).length - round.length
+  console.log(`${dir}: ${round.length} garn klare, ${left} utkast igjen utenfor rundene.`)
 }
 
 else if (cmd === 'save') {
@@ -164,6 +167,17 @@ else if (cmd === 'save') {
   for (const p of problems) console.log(`- ${p}`)
 }
 
+else if (cmd === 'check') {
+  // Checks one lookup answer against the schema without touching the database.
+  if (!arg || !existsSync(arg)) throw new Error('Oppgi svar.json')
+  const answer = JSON.parse(readFileSync(arg, 'utf8'))
+  const errors = schemaErrors(YARN_SCHEMA, answer)
+  if (errors.length) { console.log(`FEIL: ${errors.join('; ')}`); process.exit(1) }
+  const y = normalizeYarn(answer)
+  const missing = missingFields(y).filter(f => !y.uncertain_fields.includes(f))
+  console.log(missing.length ? `ok, men mangler uten å stå i uncertain: ${missing.join(', ')}` : 'ok')
+}
+
 else if (cmd === 'link') {
   const [yarns, lines] = await Promise.all([loadYarns(), loadLines()])
   const plan = linkPlan(lines, yarns, new Set(generic().map(g => g.key)))
@@ -194,5 +208,5 @@ else if (cmd === 'status') {
 }
 
 else {
-  console.log('Bruk: collect | create <fil> | prepare [--size N] | save <mappe> [--dry-run] | link [--dry-run] | status')
+  console.log('Bruk: collect | create <fil> | prepare [--size N] | check <svar.json> | save <mappe> [--dry-run] | link [--dry-run] | status')
 }
