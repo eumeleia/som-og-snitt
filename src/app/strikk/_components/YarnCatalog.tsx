@@ -17,6 +17,7 @@ import {
   type YarnRow,
   type YarnStatus,
 } from '../_lib/yarns'
+import { scheduleOverviewRefresh } from '../_lib/overview-client'
 
 const STATUS_LABEL: Record<YarnStatus, string> = { draft: 'Ikke slått opp', looked_up: 'Til godkjenning', approved: 'Godkjent' }
 const FILTERS = ['all', 'draft', 'looked_up', 'approved', 'plastic'] as const
@@ -264,6 +265,7 @@ function YarnEditor({ yarn, uses, titles, onSaved }: { yarn: YarnRow; uses: Use[
       const body = await res.json() as { error?: string }
       if (!res.ok) { setMessage({ ok: false, text: body.error ?? `Feil ${res.status}` }); return }
       setMessage({ ok: true, text: approve ? 'Godkjent' : 'Lagret' })
+      scheduleOverviewRefresh()
       await onSaved()
     } catch (e) {
       setMessage({ ok: false, text: e instanceof Error ? e.message : String(e) })

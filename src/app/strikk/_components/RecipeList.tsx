@@ -7,6 +7,7 @@ import { RECIPE_SELECT, type KnitRecipe } from '../_lib/recipes'
 import { DriveAuthExpiredError, getAccessToken, listDriveFiles, sha256Hex, syncDriveNames, uploadPdf } from '../_lib/drive'
 import { runUploadBatch, type UploadProgress, type UploadResult } from '../_lib/upload'
 import DriveExpired from './DriveExpired'
+import { scheduleOverviewRefresh } from '../_lib/overview-client'
 
 type ListState =
   | { kind: 'loading' }
@@ -40,6 +41,7 @@ async function createRow(driveFileId: string, fileName: string): Promise<KnitRec
   })
   const body = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(body.error ?? `Lagring feilet (${res.status})`)
+  scheduleOverviewRefresh()
   return body as KnitRecipe
 }
 
@@ -155,6 +157,7 @@ export default function RecipeList() {
     const body = await res.json().catch(() => ({}))
     if (!res.ok) { window.alert(body.error ?? `Fjerning feilet (${res.status})`); return }
     replace(rs => rs.filter(x => x.id !== r.id))
+    scheduleOverviewRefresh()
   }
 
   const failed = results?.filter(r => r.status === 'failed') ?? []
@@ -326,6 +329,7 @@ function EditSheet({ recipe, onClose, onSaved, onDeleted }: {
       const body = await res.json()
       if (!res.ok) throw new Error(body.error ?? `Lagring feilet (${res.status})`)
       onSaved(body as KnitRecipe)
+      scheduleOverviewRefresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setBusy(false)
@@ -341,6 +345,7 @@ function EditSheet({ recipe, onClose, onSaved, onDeleted }: {
       const body = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(body.error ?? `Sletting feilet (${res.status})`)
       onDeleted(recipe.id)
+      scheduleOverviewRefresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setBusy(false)

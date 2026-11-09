@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { STRIKK_SECTIONS } from '../sections'
+import OverviewButton from './OverviewButton'
 
 export default function StrikkSubnav() {
   const pathname = usePathname()
@@ -23,6 +24,7 @@ export default function StrikkSubnav() {
           </Link>
         )
       })}
+      <OverviewButton />
     </nav>
   )
 }

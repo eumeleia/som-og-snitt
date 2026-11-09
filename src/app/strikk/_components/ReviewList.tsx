@@ -25,6 +25,7 @@ import {
 } from '../_lib/extraction'
 import { DriveAuthExpiredError, downloadPdf } from '../_lib/drive'
 import PdfViewer, { openPdf, type PageSize } from './PdfViewer'
+import { scheduleOverviewRefresh } from '../_lib/overview-client'
 
 const STATUS_LABEL: Record<StoredRecipe['extraction_status'], string> = {
   pending: 'Ikke lest',
@@ -300,6 +301,7 @@ function RecipeReview({ recipe, onChanged }: { recipe: StoredRecipe; onChanged: 
       const body = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(body.error ?? `Godkjenning feilet (${res.status})`)
       setEditing(false)
+      scheduleOverviewRefresh()
       await onChanged()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
