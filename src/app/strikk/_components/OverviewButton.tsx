@@ -13,18 +13,20 @@ export default function OverviewButton() {
     return off
   }, [])
 
+  // On a phone the button is short and a message gets its own line under the menu.
   return (
-    <div className="flex items-center gap-2 shrink-0 ml-auto py-2">
-      {result && !busy && (
-        <span className={`text-xs ${result.ok ? 'hidden sm:inline text-stone-500' : 'text-red-700'}`}>{result.message}</span>
-      )}
+    <>
       <button
         disabled={busy}
         onClick={async () => { setBusy(true); try { await refreshOverview(true) } finally { setBusy(false) } }}
-        className="h-9 px-3 rounded-full border border-stone-300 bg-white text-sm text-stone-700 whitespace-nowrap disabled:opacity-50"
+        aria-label="Oppdater regnearket nå"
+        className="shrink-0 my-2 h-9 px-3 rounded-full border border-stone-300 bg-white text-sm text-stone-700 whitespace-nowrap disabled:opacity-50 sm:order-last"
       >
-        {busy ? 'Skriver regnearket …' : 'Oppdater regnearket nå'}
+        {busy ? 'Skriver …' : <><span className="sm:hidden">↻ Regneark</span><span className="hidden sm:inline">Oppdater regnearket nå</span></>}
       </button>
-    </div>
+      {result && !busy && (
+        <span className={`basis-full sm:basis-auto pb-2 sm:pb-0 text-xs ${result.ok ? 'hidden sm:inline text-stone-500' : 'text-red-700'}`}>{result.message}</span>
+      )}
+    </>
   )
 }

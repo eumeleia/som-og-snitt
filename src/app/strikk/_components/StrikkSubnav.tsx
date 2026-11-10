@@ -8,7 +8,9 @@ import OverviewButton from './OverviewButton'
 export default function StrikkSubnav() {
   const pathname = usePathname()
   return (
-    <nav className="flex gap-1 overflow-x-auto border-b border-stone-200 px-4 sm:px-8" aria-label="Strikk">
+    // The button sits outside the scrolling menu, so it is always fully on screen.
+    <div className="flex flex-wrap items-center gap-x-2 border-b border-stone-200 px-4 sm:px-8">
+      <nav className="flex flex-1 min-w-0 gap-1 overflow-x-auto" aria-label="Strikk">
       {STRIKK_SECTIONS.map(s => {
         const active = pathname === s.href || pathname.startsWith(s.href + '/')
         return (
@@ -24,7 +26,8 @@ export default function StrikkSubnav() {
           </Link>
         )
       })}
+      </nav>
       <OverviewButton />
-    </nav>
+    </div>
   )
 }
