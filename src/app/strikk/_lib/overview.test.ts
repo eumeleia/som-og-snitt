@@ -69,6 +69,41 @@ describe('Oppskrifter sheet', () => {
   })
 })
 
+describe('discontinued yarns', () => {
+  const OLD = '3f2a8b1c-2222-4222-8333-944455556666'
+  const GONE_ALT = '3f2a8b1c-3333-4222-8333-944455556666'
+  const merino = (id: string, name: string, discontinued: boolean, m = 110) =>
+    yarn(id, { brand: 'Sandnes Garn', name, fibers: [{ fiber: 'merinoull', percent: 100 }], skein_weight_g: 50, meterage_m: m, gauge_stitches_min: 22, gauge_stitches_max: 22, discontinued })
+  const cat = [merino(OLD, 'Mandarin Merino', true), merino(GONE_ALT, 'Gammel Merino', true), merino('new1', 'Merinoull', false, 105), merino('far', 'Tynn Merinoull', false, 175)]
+  const recipe = (alternatives: Record<string, unknown>[]) => {
+    const d = normalizeExtraction({ ...SIMULATED_ANSWER, alternatives })
+    d.yarn_lines[2] = { ...d.yarn_lines[2], yarn_id: OLD }
+    return storedFrom(d)
+  }
+  const row = (r: ReturnType<typeof recipe>) => byHeader(recipeSheet([r], cat), 0)
+
+  it('marks a discontinued original yarn and suggests catalogue yarns that are not discontinued', () => {
+    const r = row(recipe([]))
+    expect(r['Garn 2']).toBe('Rust: Sandnes Garn Mandarin Merino (utgått) (2 tråder)')
+    expect(r['Garnalternativer']).toBe('Forslag for Sandnes Garn Mandarin Merino: Sandnes Garn Merinoull')
+  })
+  it('never lists a discontinued yarn as an alternative, and suggests when none is left', () => {
+    const r = row(recipe([{ color_group: 1, yarn_line: 2, yarn_name: 'Gammel Merino', brand: 'Sandnes Garn', yarn_id: GONE_ALT }]))
+    expect(r['Garnalternativer']).toBe('Forslag for Sandnes Garn Mandarin Merino: Sandnes Garn Merinoull')
+  })
+  it('keeps the pattern\'s own alternative when it is still made, without extra suggestions', () => {
+    const r = row(recipe([{ color_group: 1, yarn_line: 2, yarn_name: 'Smart', brand: 'Sandnes Garn' }]))
+    expect(r['Garnalternativer']).toBe('Rust: Sandnes Garn Smart')
+  })
+  it('says so when nothing in the catalogue compares, or when the old yarn lacks the numbers to compare', () => {
+    const r = byHeader(recipeSheet([recipe([])], cat.filter(y => y.id !== 'new1')), 0)
+    expect(r['Garnalternativer']).toBe('Forslag for Sandnes Garn Mandarin Merino: ingen sammenlignbare garn i katalogen')
+    const noGauge = cat.map(y => (y.id === OLD ? { ...y, gauge_stitches_min: null, gauge_stitches_max: null } : y))
+    expect(byHeader(recipeSheet([recipe([])], noGauge), 0)['Garnalternativer'])
+      .toBe('Forslag for Sandnes Garn Mandarin Merino: mangler fiber, strikkefasthet eller løpelengde til å sammenligne')
+  })
+})
+
 describe('Garn sheet', () => {
   it('has one row per catalogue yarn with fibre, plastic, ranges and source', () => {
     const sheet = yarnSheet(catalogue)

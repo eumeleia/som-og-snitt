@@ -7,10 +7,10 @@ import {
   hasPlastic,
   isPlasticFiber,
   matchYarn,
+  substitutes,
+  mainFibre,
   missingFields,
   normalizeYarn,
-  parseFibers,
-  parseRange,
   type Alias,
 } from './yarns'
 import { normalizeExtraction, schemaErrors, storedToExtraction } from './extraction'
@@ -29,22 +29,10 @@ describe('plastic', () => {
   })
 })
 
-describe('fibre text', () => {
-  it('reads and writes «80 % merinoull, 20 % polyamid»', () => {
-    const f = parseFibers('80 % merinoull, 20% polyamid')
-    expect(f).toEqual([{ fiber: 'merinoull', percent: 80 }, { fiber: 'polyamid', percent: 20 }])
-    expect(formatFibers(f)).toBe('80 % merinoull, 20 % polyamid')
-    expect(parseFibers('ull 57,5 %; silke')).toEqual([{ fiber: 'ull', percent: 57.5 }, { fiber: 'silke', percent: null }])
-  })
-})
-
-describe('ranges', () => {
-  it('reads one value or a range, and shows them back', () => {
-    expect(parseRange('22')).toEqual({ min: 22, max: 22 })
-    expect(parseRange('3,5–4')).toEqual({ min: 3.5, max: 4 })
-    expect(parseRange('24-22')).toEqual({ min: 22, max: 24 })
-    expect(parseRange('')).toEqual({ min: null, max: null })
-    expect(parseRange('ca 22')).toBeNull()
+describe('fibre and range text', () => {
+  it('writes «80 % merinoull, 20 % polyamid» and ranges', () => {
+    expect(formatFibers([{ fiber: 'merinoull', percent: 80 }, { fiber: 'polyamid', percent: 20 }])).toBe('80 % merinoull, 20 % polyamid')
+    expect(formatFibers([{ fiber: 'ull', percent: 57.5 }, { fiber: 'silke', percent: null }])).toBe('57,5 % ull, silke')
     expect(formatRange(3.5, 4)).toBe('3,5–4')
     expect(formatRange(22, 22)).toBe('22')
     expect(formatRange(null, null)).toBe('')
@@ -116,5 +104,31 @@ describe('yarn links on recipe lines', () => {
   it('drop an id that is not a uuid', () => {
     const d = normalizeExtraction({ ...SIMULATED_ANSWER, alternatives: [{ ...SIMULATED_ANSWER.alternatives[0], yarn_id: 'peer-gynt' }] })
     expect(d.alternatives[0].yarn_id).toBeNull()
+  })
+})
+
+describe('substitutes for a discontinued yarn', () => {
+  const y = (id: string, fiber: string, g: number, m: number, w = 50, over: Record<string, unknown> = {}) =>
+    ({ id, ...normalizeYarn({ name: id, fibers: [{ fiber, percent: 100 }], skein_weight_g: w, meterage_m: m, gauge_stitches_min: g, gauge_stitches_max: g + 2, ...over }) })
+  const old = y('old', 'merinoull', 22, 110, 50, { discontinued: true })
+  const cat = [
+    old,
+    y('close', 'ekstrafin merinoull', 22, 112),
+    y('heavier-skein', 'Merino wool', 23, 220, 100),
+    y('wool', 'ull', 22, 110),
+    y('thin', 'merinoull', 28, 175),
+    y('gone', 'merinoull', 22, 110, 50, { discontinued: true }),
+    y('no-gauge', 'merinoull', 0, 110),
+  ]
+  it('picks yarns that are not discontinued, as thick and of the same main fibre, closest first', () => {
+    expect(substitutes(old, cat).map(c => c.id)).toEqual(['close', 'heavier-skein'])
+  })
+  it('gives nothing when the old yarn lacks gauge or meterage', () => {
+    expect(substitutes({ ...old, meterage_m: null }, cat)).toEqual([])
+  })
+  it('groups fibres into families by their largest share', () => {
+    expect(mainFibre([{ fiber: 'baby alpakka', percent: 68 }, { fiber: 'polyamid', percent: 22 }, { fiber: 'merinoull', percent: 10 }])).toBe('alpakka')
+    expect(mainFibre([{ fiber: 'nylon', percent: 60 }, { fiber: 'ull', percent: 40 }])).toBe('syntetisk')
+    expect(mainFibre([])).toBeNull()
   })
 })

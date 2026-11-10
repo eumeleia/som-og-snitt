@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { GENERIC_REASON, NOT_IN_CATALOGUE, RENAMED, linkPlan, mergeAliases } from './yarn-lib.mjs'
-import { aliasKey } from '../../src/app/strikk/_lib/yarns'
+import { GENERIC_REASON, NOT_IN_CATALOGUE, RENAMED, linkPlan, mergeAliases, toAnswer } from './yarn-lib.mjs'
+import { YARN_SCHEMA, aliasKey, normalizeYarn } from '../../src/app/strikk/_lib/yarns'
+import { schemaErrors } from '../../src/app/strikk/_lib/extraction'
 
 const yarns = [
   { id: 'pg', brand: 'Sandnes Garn', name: 'Peer Gynt', aliases: [{ brand: '', name: 'Sandnes Garn Peer Gynt', certain: true, reason: null }] },
@@ -60,5 +61,20 @@ describe('linkPlan', () => {
       { yarn_id: 'pg', yarn_link_uncertain: true, yarn_link_reason: RENAMED },
     ])
     expect(counts.renamed).toBe(2)
+  })
+})
+
+describe('toAnswer', () => {
+  it('turns a catalogue row into an answer that follows the schema and reads back the same', () => {
+    const row = {
+      brand: 'Mjuk', name: 'Spire', fibers: [{ fiber: 'merinoull', percent: 100 }], skein_weight_g: 50, meterage_m: 175,
+      gauge_stitches_min: null, gauge_stitches_max: null, needle_mm_min: 3, needle_mm_max: 3, drops_group: null, discontinued: false,
+      source_url: 'https://www.obs.no/x', source_kind: 'retailer', source_note: 'opplyst av Maria', field_sources: { meterage_m: 'https://www.obs.no/x' },
+      favorite: null, price_per_skein: null, uncertain_fields: ['gauge_stitches_min'], uncertain_reasons: { gauge_stitches_min: 'Ikke oppgitt' },
+    }
+    const a = toAnswer(row)
+    expect(schemaErrors(YARN_SCHEMA as Record<string, unknown>, a)).toEqual([])
+    const { favorite, price_per_skein, ...rest } = row
+    expect(normalizeYarn(a)).toEqual({ ...rest, favorite, price_per_skein })
   })
 })

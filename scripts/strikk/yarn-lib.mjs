@@ -50,3 +50,19 @@ export function linkPlan(lines, yarns, genericKeys) {
   }
   return { counts, updates }
 }
+
+// A catalogue row in the lookup answer format (YARN_SCHEMA): 0 or "" for what is missing.
+export function toAnswer(row) {
+  const n = v => (v === null || v === undefined ? 0 : Number(v))
+  return {
+    brand: row.brand ?? '', name: row.name,
+    fibers: (row.fibers ?? []).map(f => ({ fiber: f.fiber, percent: n(f.percent) })),
+    skein_weight_g: n(row.skein_weight_g), meterage_m: n(row.meterage_m),
+    gauge_stitches_min: n(row.gauge_stitches_min), gauge_stitches_max: n(row.gauge_stitches_max),
+    needle_mm_min: n(row.needle_mm_min), needle_mm_max: n(row.needle_mm_max),
+    drops_group: row.drops_group ?? '', discontinued: !!row.discontinued,
+    source_url: row.source_url ?? '', source_kind: row.source_kind ?? 'other', source_note: row.source_note ?? '',
+    field_sources: Object.entries(row.field_sources ?? {}).map(([field, source]) => ({ field, source })),
+    uncertain: (row.uncertain_fields ?? []).map(field => ({ field, reason: row.uncertain_reasons?.[field] ?? '' })),
+  }
+}

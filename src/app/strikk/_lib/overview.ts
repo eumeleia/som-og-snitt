@@ -9,7 +9,7 @@ import {
   type ExtractionData,
   type StoredRecipe,
 } from './extraction'
-import { formatFibers, formatRange, type SourceKind, type YarnRow, type YarnStatus } from './yarns'
+import { formatFibers, formatRange, substitutes, type SourceKind, type YarnRow, type YarnStatus } from './yarns'
 
 export const OVERVIEW_FILE_NAME = 'Strikkeoversikt.xlsx'
 
@@ -27,20 +27,40 @@ const SOURCE_KIND: Record<SourceKind, string> = { manufacturer: 'Produsent', pat
 const decimal = (n: number) => String(n).replace('.', ',')
 const pdfLink = (r: StoredRecipe): Cell => ({ text: r.file_name, hyperlink: `https://drive.google.com/file/d/${r.drive_file_id}/view` })
 
-type CatalogueYarn = Pick<YarnRow, 'id' | 'brand' | 'name'>
-
 // ── Oppskrifter ─────────────────────────────────────────────────────────────────────
 
+const fullName = (y: Pick<YarnRow, 'brand' | 'name'>) => [y.brand, y.name].filter(Boolean).join(' ')
+
 // The catalogue name when the line is linked, otherwise the yarn as the pattern writes it.
-function yarnName(l: { yarn_id: string | null; brand: string | null; yarn_name: string }, catalogue: Map<string, string>): string {
-  return (l.yarn_id && catalogue.get(l.yarn_id)) || [l.brand, l.yarn_name].filter(Boolean).join(' ')
+function yarnName(l: { yarn_id: string | null; brand: string | null; yarn_name: string }, catalogue: Map<string, YarnRow>): string {
+  const y = l.yarn_id ? catalogue.get(l.yarn_id) : undefined
+  return y ? fullName(y) + (y.discontinued ? ' (utgått)' : '') : [l.brand, l.yarn_name].filter(Boolean).join(' ')
+}
+
+const isDiscontinued = (l: { yarn_id: string | null }, catalogue: Map<string, YarnRow>) => !!(l.yarn_id && catalogue.get(l.yarn_id)?.discontinued)
+
+// The pattern's own alternatives, except discontinued ones. A discontinued original yarn
+// with no alternative left gets substitutes from the catalogue.
+function alternatives(d: ExtractionData, catalogue: Map<string, YarnRow>, all: YarnRow[]): string {
+  const kept = d.alternatives.filter(a => !isDiscontinued(a, catalogue))
+  const out = kept.map(a => `${a.color_group !== null ? `${groupLabel(d, a.color_group)}: ` : ''}${yarnName(a, catalogue)}`)
+  d.yarn_lines.forEach((l, i) => {
+    if (!isDiscontinued(l, catalogue)) return
+    if (kept.some(a => a.yarn_line === i || (a.yarn_line === null && a.color_group === l.color_group))) return
+    const gone = catalogue.get(l.yarn_id!)!
+    const found = substitutes(gone, all).map(fullName)
+    const comparable = gone.fibers.length > 0 && gone.gauge_stitches_min !== null && gone.meterage_m !== null && gone.skein_weight_g !== null
+    const none = comparable ? 'ingen sammenlignbare garn i katalogen' : 'mangler fiber, strikkefasthet eller løpelengde til å sammenligne'
+    out.push(`Forslag for ${fullName(gone)}: ${found.length ? found.join(', ') : none}`)
+  })
+  return out.join('; ')
 }
 
 function colourGroups(d: ExtractionData): number[] {
   return [...new Set(d.yarn_lines.map(l => l.color_group))].sort((a, b) => a - b)
 }
 
-function groupYarns(d: ExtractionData, g: number, catalogue: Map<string, string>): string[] {
+function groupYarns(d: ExtractionData, g: number, catalogue: Map<string, YarnRow>): string[] {
   return d.yarn_lines.filter(l => l.color_group === g)
     .map(l => yarnName(l, catalogue) + (l.strands > 1 ? ` (${l.strands} tråder)` : ''))
 }
@@ -70,8 +90,8 @@ function accessories(d: ExtractionData, size: number | null): string {
     .join('; ')
 }
 
-export function recipeSheet(recipes: StoredRecipe[], yarns: CatalogueYarn[]): Sheet {
-  const catalogue = new Map(yarns.map(y => [y.id, [y.brand, y.name].filter(Boolean).join(' ')]))
+export function recipeSheet(recipes: StoredRecipe[], yarns: YarnRow[]): Sheet {
+  const catalogue = new Map(yarns.map(y => [y.id, y]))
   const prepared = recipes
     .map(r => ({ r, d: storedToExtraction(r) }))
     .sort((a, b) => a.r.title.localeCompare(b.r.title, 'nb') || (a.r.designer ?? '').localeCompare(b.r.designer ?? '', 'nb'))
@@ -86,8 +106,7 @@ export function recipeSheet(recipes: StoredRecipe[], yarns: CatalogueYarn[]): Sh
     const groups = colourGroups(d)
     const together = groups.filter(g => d.yarn_lines.filter(l => l.color_group === g).length > 1)
       .map(g => `${groupLabel(d, g)}: ${groupYarns(d, g, catalogue).join(' + ')}`).join('; ')
-    const alternatives = d.alternatives
-      .map(a => `${a.color_group !== null ? `${groupLabel(d, a.color_group)}: ` : ''}${yarnName(a, catalogue)}`).join('; ')
+    const alts = alternatives(d, catalogue, yarns)
     // A collection gets one row and no sizes; a recipe not read yet has no sizes either.
     const sizes: (number | null)[] = d.is_collection || d.sizes.length === 0 ? [null] : d.sizes.map((_, i) => i)
     for (const s of sizes) {
@@ -101,7 +120,7 @@ export function recipeSheet(recipes: StoredRecipe[], yarns: CatalogueYarn[]): Sh
         r.id, d.title ?? r.title, d.designer, d.audience && AUDIENCE[d.audience], d.garment_type,
         s === null ? null : d.sizes[s].label,
         ...colour,
-        together || null, d.needles.join(', ') || null, gauge(d) || null, accessories(d, s) || null, alternatives || null,
+        together || null, d.needles.join(', ') || null, gauge(d) || null, accessories(d, s) || null, alts || null,
         d.is_collection ? d.collection_titles.join('; ') || null : null,
         STATUS[r.extraction_status], pdfLink(r),
       ])

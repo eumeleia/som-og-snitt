@@ -47,7 +47,9 @@ listen over manglende PDF-er.
    får status «Til gjennomgang».
 5. **Gjenta** steg 2–4 til `prepare.mjs` sier at det ikke er noe igjen.
 6. **Garnkatalogen.** Nye garn fra oppskriftene skal inn i katalogen på samme måte som
-   resten. Alle kommandoene kjøres som
+   resten. Katalogen er skjult: den har ingen side i appen, men ligger i databasen
+   (`strikk_yarn`) og i arket Garn i Strikkeoversikt.xlsx. Maria går ikke gjennom garnene;
+   Claude Code kontrollerer og godkjenner dem selv (punkt 9). Alle kommandoene kjøres som
    `node --no-warnings --env-file=.env.local scripts/strikk/yarns.mjs <kommando>`.
    1. `link` kobler alle garnlinjer og garnalternativer (også i godkjente oppskrifter) til
       garn som allerede er i katalogen. Bare de tre koblingsfeltene endres.
@@ -73,15 +75,30 @@ listen over manglende PDF-er.
       utgåtte garn en annen pålitelig kilde. Hver skriver `svar.json` i garnets mappe.
    7. `save strikk/garn/runde-N --dry-run`, så `save strikk/garn/runde-N`. Godkjente garn
       endres aldri. Lagrede garn får status «Til godkjenning».
-   8. Gjenta 5–7 til `prepare` sier at det ikke er noe igjen, og kjør `link` til slutt.
-      `status` viser antall garn og hvor mange linjer som er koblet, usikkert koblet,
-      generiske og ikke koblet.
+   8. Gjenta 5–7 til `prepare` sier at det ikke er noe igjen, og kjør `link`.
+   9. **Kontroller og godkjenn.** `verify-prepare` legger hvert garn som ikke er godkjent i
+      `strikk/garn/kontroll/<id>/garn.json`, med `INSTRUKS.md` fra
+      `scripts/strikk/yarn-check.md`. Underagenter kontrollerer hvert garn mot produsentens
+      side og skriver `kontroll.json`; del garnene etter produsent, så samme nettsted ikke får
+      spørsmål fra flere agenter samtidig. `verify-save --dry-run`, så `verify-save`,
+      lagrer rettelsene og setter garnet til «Godkjent». Til slutt `link` og `status`, som
+      viser antall garn og hvor mange linjer som er koblet, usikkert koblet, generiske og
+      ikke koblet.
+
+   **Utgåtte garn.** `discontinued` settes bare når en kilde sier rett ut at garnet er
+   utgått. Et utgått garn foreslås aldri som alternativ. Er det originalgarnet i en
+   oppskrift, beholder det koblingen og merkes «(utgått)» i regnearket, og alternativene
+   viser oppskriftens egne alternativer som ikke er utgått, eller, om ingen er igjen, inntil
+   tre garn fra katalogen med samme hovedfiber og tykkelse (`substitutes` i
+   `src/app/strikk/_lib/yarns.ts`). Alternativer som ikke er koblet til katalogen, har ukjent
+   status og vises som før.
 7. **Avslutt** med antall lagret per runde, nye garn i katalogen, tallene fra
    `yarns.mjs status`, og listen i `strikk/innlesing/mangler-alle.json` over oppskrifter uten
    lokal PDF.
 
 Blir arbeidet stoppet, starter neste økt på steg 1. Det som er lagret, er «Til gjennomgang»
 og velges ikke igjen. For garn: mapper i `strikk/garn/runde-*` med `svar.json` uten
-`lagret.json` lagres først, og garn som er slått opp, velges ikke igjen.
+`lagret.json` lagres først, og garn som er slått opp, velges ikke igjen. I
+`strikk/garn/kontroll/` lagres mapper med `kontroll.json` uten `godkjent.json` først.
 
 `strikk/innlesing/` og `strikk/garn/` er i `.gitignore` og skal ikke committes.

@@ -8,6 +8,8 @@
 //   prepare [--size]  next round of drafts to look up → strikk/garn/runde-N/
 //   save <dir>        checked lookup answers into the catalogue (never approved yarns)
 //   check <svar.json> one lookup answer against the schema, without the database
+//   verify-prepare    every yarn not approved yet, for a second check → strikk/garn/kontroll/
+//   verify-save       checked yarns (kontroll.json) into the catalogue, approved
 //   link              links every yarn line and alternative to its catalogue yarn
 //   status            counts
 //
@@ -17,7 +19,7 @@ import { join } from 'path'
 import { createClient } from '@supabase/supabase-js'
 import { schemaErrors } from '../../src/app/strikk/_lib/extraction.ts'
 import { YARN_SCHEMA, aliasKey, hasPlastic, matchYarn, missingFields, normalizeYarn } from '../../src/app/strikk/_lib/yarns.ts'
-import { GENERIC_REASON, linkPlan, mergeAliases } from './yarn-lib.mjs'
+import { GENERIC_REASON, linkPlan, mergeAliases, toAnswer } from './yarn-lib.mjs'
 
 const OUT = 'strikk/garn'
 const GENERIC = join(OUT, 'generisk.json')
@@ -167,10 +169,74 @@ else if (cmd === 'save') {
   for (const p of problems) console.log(`- ${p}`)
 }
 
+else if (cmd === 'verify-prepare') {
+  // Claude Code checks every yarn itself before it is approved; see scripts/strikk/yarn-check.md.
+  const dir = join(OUT, 'kontroll')
+  mkdirSync(dir, { recursive: true })
+  const [yarns, lines, recipes] = await Promise.all([all('strikk_yarn', '*'), loadLines(), all('strikk_oppskrift', 'id, title')])
+  const title = new Map(recipes.map(r => [r.id, r.title]))
+  writeFileSync(join(dir, 'INSTRUKS.md'), readFileSync('scripts/strikk/yarn-check.md', 'utf8') + `\n\n## Skjema for answer i kontroll.json\n\n\`\`\`json\n${JSON.stringify(YARN_SCHEMA, null, 1)}\n\`\`\`\n`)
+  let added = 0
+  for (const y of yarns.filter(y => y.status !== 'approved')) {
+    const ydir = join(dir, y.id)
+    if (existsSync(ydir)) continue
+    const used = lines.filter(l => l.yarn_id === y.id)
+    mkdirSync(ydir)
+    writeFileSync(join(ydir, 'garn.json'), JSON.stringify({
+      id: y.id, aliases: y.aliases, used_in: [...new Set(used.map(l => title.get(l.oppskrift_id)))],
+      pattern_data: used.filter(l => l.meterage_m || l.skein_weight_g || l.fiber)
+        .map(l => ({ recipe: title.get(l.oppskrift_id), meterage_m: l.meterage_m, skein_weight_g: l.skein_weight_g, fiber: l.fiber })),
+      current: toAnswer(y),
+    }, null, 1))
+    added++
+  }
+  const open = readdirSync(dir).filter(d => existsSync(join(dir, d, 'garn.json')) && !existsSync(join(dir, d, 'godkjent.json')))
+  console.log(`${added} nye garn til kontroll, ${open.length} ikke godkjent ennå i ${dir}`)
+}
+
+else if (cmd === 'verify-save') {
+  const dir = arg && !arg.startsWith('--') ? arg : join(OUT, 'kontroll')
+  const db = admin()
+  const count = {}
+  const problems = []
+  const tally = r => { count[r] = (count[r] ?? 0) + 1 }
+  for (const id of readdirSync(dir, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name)) {
+    const ydir = join(dir, id)
+    if (existsSync(join(ydir, 'godkjent.json'))) { tally('already-approved'); continue }
+    if (!existsSync(join(ydir, 'kontroll.json'))) { tally('not-checked'); continue }
+    const { answer, note } = JSON.parse(readFileSync(join(ydir, 'kontroll.json'), 'utf8'))
+    const errors = schemaErrors(YARN_SCHEMA, answer)
+    if (errors.length) { tally('invalid'); problems.push(`${id}: ${errors.slice(0, 5).join('; ')}`); continue }
+    const y = normalizeYarn(answer)
+    for (const f of missingFields(y)) {
+      if (!y.uncertain_fields.includes(f)) { y.uncertain_fields.push(f); y.uncertain_reasons[f] ??= 'Ikke funnet' }
+    }
+    const { data: row, error: readError } = await db.from('strikk_yarn').select('brand, name, aliases, favorite, price_per_skein').eq('id', id).maybeSingle()
+    if (readError) throw new Error(readError.message)
+    if (!row) { tally('missing'); problems.push(`${id}: finnes ikke`); continue }
+    if (flag('--dry-run')) { tally('dry-run'); continue }
+    const now = new Date().toISOString()
+    const { error } = await db.from('strikk_yarn').update({
+      ...y, brand: y.brand || row.brand, name: y.name || row.name,
+      // Favourite and price are Maria's; the check never sets them.
+      favorite: row.favorite, price_per_skein: row.price_per_skein,
+      source_note: [y.source_note, note && `Kontroll: ${note}`].filter(Boolean).join(' '),
+      aliases: mergeAliases(row.aliases, [{ brand: row.brand, name: row.name, certain: true, reason: null }]),
+      has_plastic: hasPlastic(y.fibers), status: 'approved', approved_at: now, updated_at: now,
+    }).eq('id', id)
+    if (error) { tally('error'); problems.push(`${id}: ${error.message}`); continue }
+    writeFileSync(join(ydir, 'godkjent.json'), JSON.stringify({ approved_at: now }))
+    tally('approved')
+  }
+  console.log(JSON.stringify(count))
+  for (const p of problems) console.log(`- ${p}`)
+}
+
 else if (cmd === 'check') {
-  // Checks one lookup answer against the schema without touching the database.
-  if (!arg || !existsSync(arg)) throw new Error('Oppgi svar.json')
-  const answer = JSON.parse(readFileSync(arg, 'utf8'))
+  // Checks one lookup answer (svar.json, or the answer in kontroll.json) without the database.
+  if (!arg || !existsSync(arg)) throw new Error('Oppgi svar.json eller kontroll.json')
+  const raw = JSON.parse(readFileSync(arg, 'utf8'))
+  const answer = raw && typeof raw === 'object' && 'answer' in raw ? raw.answer : raw
   const errors = schemaErrors(YARN_SCHEMA, answer)
   if (errors.length) { console.log(`FEIL: ${errors.join('; ')}`); process.exit(1) }
   const y = normalizeYarn(answer)
@@ -208,5 +274,5 @@ else if (cmd === 'status') {
 }
 
 else {
-  console.log('Bruk: collect | create <fil> | prepare [--size N] | check <svar.json> | save <mappe> [--dry-run] | link [--dry-run] | status')
+  console.log('Bruk: collect | create <fil> | prepare [--size N] | check <svar.json|kontroll.json> | save <mappe> [--dry-run] | verify-prepare | verify-save [mappe] [--dry-run] | link [--dry-run] | status')
 }

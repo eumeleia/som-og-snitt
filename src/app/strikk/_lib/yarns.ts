@@ -63,19 +63,9 @@ export function hasPlastic(fibers: Fiber[]): boolean | null {
   return fibers.some(f => isPlasticFiber(f.fiber))
 }
 
-// «80 % merinoull, 20 % polyamid» ↔ [{fiber, percent}], for the edit field.
+// [{fiber, percent}] → «80 % merinoull, 20 % polyamid».
 export function formatFibers(fibers: Fiber[]): string {
   return fibers.map(f => (f.percent !== null ? `${String(f.percent).replace('.', ',')} % ${f.fiber}` : f.fiber)).join(', ')
-}
-
-export function parseFibers(input: string): Fiber[] {
-  // A comma right before a digit is a decimal comma («57,5 %»), not a separator.
-  return input.split(/,(?!\d)|[;+\n]/).map(s => s.trim()).filter(Boolean).map(part => {
-    const m = part.match(/^(\d+(?:[.,]\d+)?)\s*%\s*(.+)$/) ?? part.match(/^(.+?)\s+(\d+(?:[.,]\d+)?)\s*%$/)
-    if (!m) return { fiber: part, percent: null }
-    const [num, fiber] = /^\d/.test(m[1]) ? [m[1], m[2]] : [m[2], m[1]]
-    return { fiber: fiber.trim(), percent: Number(num.replace(',', '.')) }
-  })
 }
 
 // ── Ranges ──────────────────────────────────────────────────────────────────────────
@@ -86,17 +76,6 @@ export function formatRange(min: number | null, max: number | null): string {
   if (min === null && max === null) return ''
   if (min === null || max === null || min === max) return decimal((min ?? max)!)
   return `${decimal(min)}–${decimal(max)}`
-}
-
-// «22», «3,5», «22-24», «3,5–4». Empty is no value; anything else is null.
-export function parseRange(input: string): { min: number | null; max: number | null } | null {
-  const t = input.trim()
-  if (!t) return { min: null, max: null }
-  const m = t.match(/^(\d+(?:[.,]\d+)?)\s*(?:[-–—]\s*(\d+(?:[.,]\d+)?))?$/)
-  if (!m) return null
-  const a = Number(m[1].replace(',', '.'))
-  const b = m[2] ? Number(m[2].replace(',', '.')) : a
-  return { min: Math.min(a, b), max: Math.max(a, b) }
 }
 
 // ── Spellings ───────────────────────────────────────────────────────────────────────
@@ -125,6 +104,48 @@ export function matchYarn<T extends { id: string; brand: string; name: string; a
     if (a) return { yarn: y, certain: a.certain, reason: a.certain ? null : a.reason ?? 'Usikker sammenslåing av skrivemåter' }
   }
   return null
+}
+
+// ── Substitutes ─────────────────────────────────────────────────────────────────────
+// A yarn that can replace a discontinued one: not discontinued itself, about as thick
+// (overlapping gauge, meterage per 50 g within 15 %) and with the same main fibre.
+
+const FIBRE_FAMILIES: [RegExp, string][] = [
+  [/merino/, 'merinoull'], [/mohair/, 'mohair'], [/alpak|alpac|lama|llama/, 'alpakka'], [/kasjmir|cashmere/, 'kasjmir'],
+  [/silke|silk/, 'silke'], [/bomull|cotton|pima/, 'bomull'], [/\blin\b|linen/, 'lin'], [/viskose|viscose|bambus|bamboo/, 'viskose'],
+  [/ull|wool/, 'ull'],
+]
+
+export function fibreFamily(fiber: string): string {
+  const f = fiber.toLowerCase()
+  if (isPlasticFiber(f)) return 'syntetisk'
+  return FIBRE_FAMILIES.find(([re]) => re.test(f))?.[1] ?? f.trim()
+}
+
+// The fibre with the largest share; the first one when no shares are given.
+export function mainFibre(fibers: Fiber[]): string | null {
+  if (fibers.length === 0) return null
+  const top = fibers.reduce((a, b) => ((b.percent ?? -1) > (a.percent ?? -1) ? b : a))
+  return fibreFamily(top.fiber)
+}
+
+type Comparable = Pick<YarnData, 'fibers' | 'skein_weight_g' | 'meterage_m' | 'gauge_stitches_min' | 'gauge_stitches_max' | 'discontinued'> & { id: string }
+
+const per50 = (y: Comparable) => (y.meterage_m && y.skein_weight_g ? (y.meterage_m * 50) / y.skein_weight_g : null)
+
+export function substitutes<T extends Comparable>(yarn: Comparable, catalogue: T[], max = 3): T[] {
+  const m = per50(yarn)
+  const fibre = mainFibre(yarn.fibers)
+  if (m === null || fibre === null || yarn.gauge_stitches_min === null) return []
+  const gMin = yarn.gauge_stitches_min, gMax = yarn.gauge_stitches_max ?? gMin
+  return catalogue
+    .filter(c => c.id !== yarn.id && !c.discontinued && c.gauge_stitches_min !== null && mainFibre(c.fibers) === fibre)
+    .map(c => ({ c, m: per50(c), min: c.gauge_stitches_min!, max: c.gauge_stitches_max ?? c.gauge_stitches_min! }))
+    .filter(x => x.m !== null && Math.abs(x.m - m) / m <= 0.15 && x.min <= gMax && gMin <= x.max)
+    .map(x => ({ c: x.c, score: Math.abs((x.min + x.max) / 2 - (gMin + gMax) / 2) + (10 * Math.abs(x.m! - m)) / m }))
+    .sort((a, b) => a.score - b.score)
+    .slice(0, max)
+    .map(x => x.c)
 }
 
 // ── Checking one yarn ───────────────────────────────────────────────────────────────
@@ -204,9 +225,7 @@ export function normalizeYarn(input: unknown): YarnData {
   }
 }
 
-// The fields every yarn should have; a missing one is shown as missing in the catalogue.
-export const REQUIRED_YARN_FIELDS = ['fibers', 'skein_weight_g', 'meterage_m', 'gauge_stitches_min', 'needle_mm_min', 'source_url'] as const
-
+// The fields every yarn should have; a missing one is marked as missing.
 export function missingFields(y: YarnData): string[] {
   const out: string[] = []
   if (y.fibers.length === 0) out.push('fibers')
