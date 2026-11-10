@@ -21,6 +21,7 @@ listen over manglende PDF-er.
   `SUPABASE_SERVICE_ROLE_KEY`.
 - Migrering 016 er kjørt (målgruppene `interior` og `other`).
 - Migrering 017 er kjørt (garnkatalogen `strikk_yarn` og koblingene fra garnlinjene).
+- Migrering 018 er kjørt (restegarnmerket `mentions_leftover` på oppskriftene).
 
 ## Fremgang
 
@@ -45,6 +46,16 @@ listen over manglende PDF-er.
    ```
    Svar som ikke følger skjemaet, lagres ikke. Rett dem og kjør på nytt. Lagrede oppskrifter
    får status «Til gjennomgang».
+
+   `save.mjs` setter også **restegarnmerket**: finnes ordene restegarn, restgarn,
+   garnrester, rester, leftover, left-over eller scrap yarn i `tekst.txt`, får oppskriften
+   `mentions_leftover = true` og ordene rundt som `leftover_note`; ellers `false`. En PDF uten
+   tekstlag får ikke noe merke (`null`). Oppskrifter som mangler merket, sjekkes med
+   ```
+   node --no-warnings --env-file=.env.local scripts/strikk/leftover.mjs
+   ```
+   som leser de lokale PDF-ene (`--all` sjekker alle på nytt). At en oppskrift har minst tre
+   farger som hver trenger under to nøster, regner appen ut selv fra mengdene.
 5. **Gjenta** steg 2–4 til `prepare.mjs` sier at det ikke er noe igjen.
 6. **Garnkatalogen.** Nye garn fra oppskriftene skal inn i katalogen på samme måte som
    resten. Katalogen er skjult: den har ingen side i appen, men ligger i databasen

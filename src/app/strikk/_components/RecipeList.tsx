@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 import { RECIPE_SELECT, type KnitRecipe } from '../_lib/recipes'
@@ -8,6 +8,9 @@ import { DriveAuthExpiredError, getAccessToken, listDriveFiles, sha256Hex, syncD
 import { runUploadBatch, type UploadProgress, type UploadResult } from '../_lib/upload'
 import DriveExpired from './DriveExpired'
 import { scheduleOverviewRefresh } from '../_lib/overview-client'
+import { applyFilter, type FilterResult } from '../_lib/recipe-filter'
+import { spellingKey } from '../_lib/yarns'
+import { FilterBar, FilterSheet, HitInfo, filterCount, useFilterData, useStoredFilter } from './RecipeFilters'
 
 type ListState =
   | { kind: 'loading' }
@@ -56,6 +59,10 @@ export default function RecipeList() {
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [editing, setEditing] = useState<KnitRecipe | null>(null)
   const [loadAttempt, setLoadAttempt] = useState(0)
+  const [filterReload, setFilterReload] = useState(0)
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const filterData = useFilterData(loadAttempt + filterReload)
+  const [filter, setFilter] = useStoredFilter()
   const fileInput = useRef<HTMLInputElement>(null)
   const recipesRef = useRef<KnitRecipe[]>([])
 
@@ -142,6 +149,7 @@ export default function RecipeList() {
         if (result?.row) replace(r => [result.row!, ...r.filter(x => x.id !== result.row!.id)])
       })
       setResults(done)
+      setFilterReload(n => n + 1)
       if (authLost) setConnection({ kind: 'disconnected' })
     } catch (err) {
       if (err instanceof DriveAuthExpiredError) setConnection({ kind: 'disconnected' })
@@ -159,6 +167,24 @@ export default function RecipeList() {
     replace(rs => rs.filter(x => x.id !== r.id))
     scheduleOverviewRefresh()
   }
+
+  // The list as filtered and sorted. Until the filter data is there, the plain list shows.
+  const view = useMemo(() => {
+    if (list.kind !== 'ready') return null
+    if (filterData.kind !== 'ready') return { items: list.recipes.map(recipe => ({ recipe, result: null as FilterResult | null })), unread: 0 }
+    const byId = new Map(list.recipes.map(r => [r.id, r]))
+    const known = new Set(filterData.recipes.map(r => r.id))
+    const items = applyFilter(filterData.recipes, filter, filterData.yarns)
+      .filter(x => byId.has(x.recipe.id))
+      .map(x => ({ recipe: byId.get(x.recipe.id)!, result: x as FilterResult | null }))
+    // A recipe added after the filter data loaded shows while no filter is set.
+    if (filterCount(filter) === 0) {
+      const q = spellingKey(filter.query)
+      for (const r of list.recipes) if (!known.has(r.id) && spellingKey(`${r.title} ${r.designer ?? ''}`).includes(q)) items.unshift({ recipe: r, result: null })
+    }
+    const unread = filterData.recipes.filter(r => r.extraction_status === 'pending' || r.extraction_status === 'failed').length
+    return { items, unread }
+  }, [list, filterData, filter])
 
   const failed = results?.filter(r => r.status === 'failed') ?? []
   const count = (s: UploadResult<KnitRecipe>['status']) => results?.filter(r => r.status === s).length ?? 0
@@ -255,9 +281,19 @@ export default function RecipeList() {
       {list.kind === 'ready' && list.recipes.length === 0 && (
         <p className="text-sm text-stone-500">Ingen strikkeoppskrifter ennå. Last opp en PDF for å begynne.</p>
       )}
-      {list.kind === 'ready' && list.recipes.length > 0 && (
+      {list.kind === 'ready' && list.recipes.length > 0 && filterData.kind === 'ready' && view && (
+        <FilterBar filter={filter} onChange={setFilter} yarns={filterData.yarns} shown={view.items.length}
+          total={list.recipes.length} unread={view.unread} onOpen={() => setFiltersOpen(true)} />
+      )}
+      {list.kind === 'ready' && filterData.kind === 'error' && (
+        <p className="text-sm text-amber-800 break-words">Filtrene er ikke tilgjengelige: {filterData.text}</p>
+      )}
+      {list.kind === 'ready' && list.recipes.length > 0 && view && view.items.length === 0 && (
+        <p className="text-sm text-stone-500">Ingen oppskrifter passer filtrene.</p>
+      )}
+      {list.kind === 'ready' && view && view.items.length > 0 && (
         <ul className="flex flex-col divide-y divide-stone-200 rounded-2xl border border-stone-200 bg-white overflow-hidden">
-          {list.recipes.map(r => {
+          {view.items.map(({ recipe: r, result }) => {
             const elsewhere = visibleIds !== null && !visibleIds.has(r.drive_file_id)
             return (
               <li key={r.id} className="flex items-center">
@@ -270,6 +306,7 @@ export default function RecipeList() {
                   <Link href={`/strikk/oppskrifter/${r.id}`} className="flex-1 min-w-0 px-4 py-3 active:bg-stone-50">
                     <div className="text-base text-stone-800 truncate">{r.title}</div>
                     {r.designer && <div className="text-sm text-stone-500 truncate">{r.designer}</div>}
+                    {result && filterData.kind === 'ready' && <HitInfo result={result} yarns={filterData.yarns} filter={filter} />}
                   </Link>
                 )}
                 {elsewhere ? (
@@ -294,12 +331,17 @@ export default function RecipeList() {
         </ul>
       )}
 
+      {filtersOpen && filterData.kind === 'ready' && view && (
+        <FilterSheet filter={filter} onChange={setFilter} recipes={filterData.recipes} yarns={filterData.yarns}
+          shown={view.items.length} onClose={() => setFiltersOpen(false)} />
+      )}
+
       {editing && (
         <EditSheet
           recipe={editing}
           onClose={() => setEditing(null)}
-          onSaved={saved => { replace(rs => rs.map(r => (r.id === saved.id ? saved : r))); setEditing(null) }}
-          onDeleted={id => { replace(rs => rs.filter(r => r.id !== id)); setEditing(null) }}
+          onSaved={saved => { replace(rs => rs.map(r => (r.id === saved.id ? saved : r))); setEditing(null); setFilterReload(n => n + 1) }}
+          onDeleted={id => { replace(rs => rs.filter(r => r.id !== id)); setEditing(null); setFilterReload(n => n + 1) }}
         />
       )}
     </div>

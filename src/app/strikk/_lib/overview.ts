@@ -9,7 +9,7 @@ import {
   type ExtractionData,
   type StoredRecipe,
 } from './extraction'
-import { formatFibers, formatRange, substitutes, type SourceKind, type YarnRow, type YarnStatus } from './yarns'
+import { discontinuedSuggestions, formatFibers, formatRange, type SourceKind, type YarnRow, type YarnStatus } from './yarns'
 
 export const OVERVIEW_FILE_NAME = 'Strikkeoversikt.xlsx'
 
@@ -44,15 +44,11 @@ const isDiscontinued = (l: { yarn_id: string | null }, catalogue: Map<string, Ya
 function alternatives(d: ExtractionData, catalogue: Map<string, YarnRow>, all: YarnRow[]): string {
   const kept = d.alternatives.filter(a => !isDiscontinued(a, catalogue))
   const out = kept.map(a => `${a.color_group !== null ? `${groupLabel(d, a.color_group)}: ` : ''}${yarnName(a, catalogue)}`)
-  d.yarn_lines.forEach((l, i) => {
-    if (!isDiscontinued(l, catalogue)) return
-    if (kept.some(a => a.yarn_line === i || (a.yarn_line === null && a.color_group === l.color_group))) return
-    const gone = catalogue.get(l.yarn_id!)!
-    const found = substitutes(gone, all).map(fullName)
+  for (const { gone, suggestions } of discontinuedSuggestions(d.yarn_lines, d.alternatives, catalogue, all)) {
     const comparable = gone.fibers.length > 0 && gone.gauge_stitches_min !== null && gone.meterage_m !== null && gone.skein_weight_g !== null
     const none = comparable ? 'ingen sammenlignbare garn i katalogen' : 'mangler fiber, strikkefasthet eller løpelengde til å sammenligne'
-    out.push(`Forslag for ${fullName(gone)}: ${found.length ? found.join(', ') : none}`)
-  })
+    out.push(`Forslag for ${fullName(gone)}: ${suggestions.length ? suggestions.map(fullName).join(', ') : none}`)
+  }
   return out.join('; ')
 }
 

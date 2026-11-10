@@ -3,11 +3,12 @@
 // Each svar.json is checked against the schema and normalised as in the app, and saved
 // through strikk_save_extraction with the service role key. Approved or already read
 // recipes are skipped; the save function refuses approved ones too. A saved recipe gets
-// lagret.json and is not saved twice.
+// lagret.json and is not saved twice. It also gets the leftover-yarn mark from tekst.txt.
 import { readdirSync, readFileSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { createClient } from '@supabase/supabase-js'
 import { saveAnswer } from './lib.mjs'
+import { findLeftoverMention, hasSearchableText } from '../../src/app/strikk/_lib/leftover.ts'
 
 const dir = process.argv[2]
 const dryRun = process.argv.includes('--dry-run')
@@ -40,7 +41,16 @@ for (const id of readdirSync(dir, { withFileTypes: true }).filter(d => d.isDirec
   try {
     const r = await saveAnswer({ id, answer, pages }, db)
     results.push({ ...r, title: meta.title })
-    if (r.result === 'saved') writeFileSync(join(rdir, 'lagret.json'), JSON.stringify({ saved_at: new Date().toISOString() }))
+    if (r.result === 'saved') {
+      // The leftover-yarn mark, from the same page text the answer was read from.
+      const text = existsSync(join(rdir, 'tekst.txt')) ? readFileSync(join(rdir, 'tekst.txt'), 'utf8') : ''
+      if (hasSearchableText(text)) {
+        const note = findLeftoverMention(text)
+        const { error: e } = await sb.from('strikk_oppskrift').update({ mentions_leftover: !!note, leftover_note: note }).eq('id', id)
+        if (e) results.push({ id, title: meta.title, result: 'leftover-mark-failed', errors: [e.message] })
+      }
+      writeFileSync(join(rdir, 'lagret.json'), JSON.stringify({ saved_at: new Date().toISOString() }))
+    }
   } catch (e) {
     results.push({ id, title: meta.title, result: 'error', errors: [e.message] })
   }

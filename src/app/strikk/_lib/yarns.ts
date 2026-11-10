@@ -148,6 +148,27 @@ export function substitutes<T extends Comparable>(yarn: Comparable, catalogue: T
     .map(x => x.c)
 }
 
+// For a recipe: each discontinued original yarn whose colour has no alternative left that
+// is still made, with the catalogue yarns suggested instead. Used by the spreadsheet and
+// by the yarn filter, so both follow the same rule.
+interface LinkedLine { yarn_id: string | null; color_group: number }
+interface LinkedAlternative { yarn_id: string | null; color_group: number | null; yarn_line: number | null }
+
+export function discontinuedSuggestions<T extends Comparable>(
+  lines: LinkedLine[], alternatives: LinkedAlternative[], catalogue: Map<string, T>, all: T[],
+): { line: number; gone: T; suggestions: T[] }[] {
+  const gone = (yarnId: string | null) => !!(yarnId && catalogue.get(yarnId)?.discontinued)
+  const kept = alternatives.filter(a => !gone(a.yarn_id))
+  const out: { line: number; gone: T; suggestions: T[] }[] = []
+  lines.forEach((l, i) => {
+    if (!gone(l.yarn_id)) return
+    if (kept.some(a => a.yarn_line === i || (a.yarn_line === null && a.color_group === l.color_group))) return
+    const y = catalogue.get(l.yarn_id!)!
+    out.push({ line: i, gone: y, suggestions: substitutes(y, all) })
+  })
+  return out
+}
+
 // ── Checking one yarn ───────────────────────────────────────────────────────────────
 
 type Raw = Record<string, unknown>
