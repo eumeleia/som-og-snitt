@@ -89,7 +89,7 @@ export async function writeOverview(force: boolean): Promise<{ status: 'created'
     fileId = res.data.id ?? null
   }
   const value: OverviewState = { file_id: fileId, hash, written_at: new Date().toISOString() }
-  const { error } = await supabaseAdmin.from('app_config').upsert({ key: STATE_KEY, value, updated_at: value.written_at })
+  const { error } = await supabaseAdmin.from('app_config').upsert({ key: STATE_KEY, value, updated_at: value.written_at }, { onConflict: 'key' })
   if (error) throw new Error(error.message)
   return { status: plan === 'update' ? 'updated' : 'created', ...count }
 }
