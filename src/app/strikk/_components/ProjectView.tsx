@@ -23,6 +23,8 @@ import { compressCover, coverUrl, removeCover, uploadCover } from '../_lib/cover
 import Counters from './Counters'
 import YarnPicker from './YarnPicker'
 import DriveExpired from './DriveExpired'
+import AssignedYarnStash from './AssignedYarnStash'
+import CompleteProjectModal from './CompleteProjectModal'
 
 const COLORS = [
   { name: 'Gul', hex: '#FFD84D' },
@@ -326,6 +328,7 @@ function InfoView({ project, recipe, extraction, yarns, combos, swatches, yarnLi
   const [notes, setNotes] = useState(project.notes ?? '')
   const [sizeLabel, setSizeLabel] = useState(project.size_label ?? '')
   const [pickerFor, setPickerFor] = useState<number | null>(null)
+  const [showComplete, setShowComplete] = useState(false)
   const byYarnId = useMemo(() => new Map(yarns.map(y => [y.id, y])), [yarns])
 
   useEffect(() => setName(project.name), [project.name])
@@ -399,7 +402,11 @@ function InfoView({ project, recipe, extraction, yarns, combos, swatches, yarnLi
           <label className={labelCls}>Status</label>
           <div className="flex gap-1.5">
             {STATUSES.map(s => (
-              <button key={s} onClick={() => onSave({ status: s }, { status: s as ProjectStatus })}
+              <button key={s}
+                onClick={() => {
+                  if (s === 'done' && project.status !== 'done') setShowComplete(true)
+                  else onSave({ status: s }, { status: s as ProjectStatus })
+                }}
                 className={`px-3 py-1.5 rounded-lg text-sm transition-colors border ${
                   project.status === s ? 'bg-stone-800 text-white border-stone-800' : 'bg-white text-stone-600 border-stone-200'
                 }`}>
@@ -408,6 +415,8 @@ function InfoView({ project, recipe, extraction, yarns, combos, swatches, yarnLi
             ))}
           </div>
         </div>
+
+        <AssignedYarnStash projectId={project.id} />
 
         <div>
           <label className={labelCls}>Størrelse</label>
@@ -506,6 +515,13 @@ function InfoView({ project, recipe, extraction, yarns, combos, swatches, yarnLi
           onSelect={yarnId => setYarnId(pickerFor, yarnId)}
           onYarnUpdated={onYarnUpdated}
           onClose={() => setPickerFor(null)}
+        />
+      )}
+      {showComplete && (
+        <CompleteProjectModal
+          projectId={project.id}
+          onCancel={() => setShowComplete(false)}
+          onDone={() => { setShowComplete(false); onSaved({ status: 'done' }) }}
         />
       )}
     </div>

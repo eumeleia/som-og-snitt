@@ -25,7 +25,7 @@ export async function PATCH(req: NextRequest, ctx: RouteContext<'/api/strikk/gar
       if (body[k] !== null && typeof body[k] !== 'number') throw new Error(`${k} må være tall eller null`)
       patch[k] = body[k]
     }
-    str('color_number'); str('color_name'); str('note')
+    str('color_number'); str('color_name'); str('note'); str('project_id')
     num('skein_count'); num('leftover_g')
 
     if (body.status !== undefined) {

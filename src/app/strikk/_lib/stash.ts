@@ -6,6 +6,9 @@ export const STASH_STATUSES = ['til_gjennomgang', 'godkjent'] as const
 export type StashStatus = typeof STASH_STATUSES[number]
 
 export interface StashYarnRef { id: string; brand: string; name: string; discontinued: boolean }
+// Status er en av strikk_project sine ('planned', 'in_progress', 'done') — holdt som ren
+// tekst her (ikke importert fra _lib/projects) for å beholde denne fila uten avhengigheter.
+export interface StashProjectRef { id: string; name: string; status: string }
 
 export interface StashData {
   color_number: string | null
@@ -27,12 +30,21 @@ export interface StashRow extends StashData {
   created_at: string
   updated_at: string
   strikk_yarn: StashYarnRef | null
+  project_id: string | null
+  strikk_project: StashProjectRef | null
 }
 
 export const STASH_SELECT =
   'id, yarn_id, color_number, color_name, skein_count, leftover_g, thumbnail_path, source_images, note, ' +
-  'uncertain_fields, uncertain_reasons, status, approved_at, created_at, updated_at, ' +
-  'strikk_yarn(id, brand, name, discontinued)'
+  'uncertain_fields, uncertain_reasons, status, approved_at, created_at, updated_at, project_id, ' +
+  'strikk_yarn(id, brand, name, discontinued), strikk_project(id, name, status)'
+
+// Tildelt et prosjekt som er «pågående» eller «ferdig»: garnet vises bare der, ikke i
+// Garnlageret. Tildelt et «planlagt» prosjekt (eller ikke tildelt i det hele tatt) vises det
+// fortsatt i Garnlageret — med en stjerne når det er tildelt.
+export function isVisibleInGarnlager(row: Pick<StashRow, 'strikk_project'>): boolean {
+  return !row.strikk_project || row.strikk_project.status === 'planned'
+}
 
 export const THUMBNAIL_PREFIX = 'garnlager/'
 export const THUMBNAIL_MAX_BYTES = 50 * 1024

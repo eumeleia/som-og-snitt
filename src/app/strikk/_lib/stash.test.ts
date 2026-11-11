@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { FINDING_SCHEMA, mergeStashData, normalizeFinding, stashThumbnailUrl } from './stash'
+import { FINDING_SCHEMA, isVisibleInGarnlager, mergeStashData, normalizeFinding, stashThumbnailUrl } from './stash'
 import { schemaErrors } from './extraction'
 
 describe('normalizeFinding', () => {
@@ -46,6 +46,19 @@ describe('mergeStashData', () => {
   it('keeps leftover_g null when neither row has any', () => {
     const empty = { color_number: null, color_name: null, skein_count: 1, leftover_g: null, note: null, uncertain_fields: [], uncertain_reasons: {}, source_images: [] }
     expect(mergeStashData(empty, empty).leftover_g).toBeNull()
+  })
+})
+
+describe('isVisibleInGarnlager', () => {
+  it('is visible when not tied to any project', () => {
+    expect(isVisibleInGarnlager({ strikk_project: null })).toBe(true)
+  })
+  it('is visible while the project is still planned', () => {
+    expect(isVisibleInGarnlager({ strikk_project: { id: '1', name: 'Genser', status: 'planned' } })).toBe(true)
+  })
+  it('is hidden once the project is in progress or done', () => {
+    expect(isVisibleInGarnlager({ strikk_project: { id: '1', name: 'Genser', status: 'in_progress' } })).toBe(false)
+    expect(isVisibleInGarnlager({ strikk_project: { id: '1', name: 'Genser', status: 'done' } })).toBe(false)
   })
 })
 

@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
-import { STASH_SELECT, stashThumbnailUrl, type StashRow } from '../_lib/stash'
+import { isVisibleInGarnlager, STASH_SELECT, stashThumbnailUrl, type StashRow } from '../_lib/stash'
+
+interface ProjectOption { id: string; name: string; status: string }
 
 const FIELD_LABEL: Record<string, string> = {
   brand: 'Merke', name: 'Garn', color_number: 'Fargenr.', color_name: 'Fargenavn', skein_count: 'Antall',
@@ -45,6 +47,15 @@ export default function GarnlagerList() {
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null)
   const [matches, setMatches] = useState<PatternMatch[] | null>(null)
+  const [projects, setProjects] = useState<ProjectOption[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    supabase.from('strikk_project').select('id, name, status').neq('status', 'done').order('name').then(({ data }) => {
+      if (!cancelled && data) setProjects(data as ProjectOption[])
+    })
+    return () => { cancelled = true }
+  }, [])
 
   const loadAll = useCallback(async () => {
     const { data, error } = await supabase.from('strikk_yarn_stash').select(STASH_SELECT).order('created_at')
@@ -62,7 +73,7 @@ export default function GarnlagerList() {
     return () => { cancelled = true }
   }, [])
 
-  const approved = useMemo(() => (rows ?? []).filter(r => r.status === 'godkjent'), [rows])
+  const approved = useMemo(() => (rows ?? []).filter(r => r.status === 'godkjent' && isVisibleInGarnlager(r)), [rows])
   const pending = useMemo(() => (rows ?? []).filter(r => r.status === 'til_gjennomgang'), [rows])
 
   // «Hva vil du strikke?»: godkjente oppskrifter som bruker garn Maria har godkjent i lageret.
@@ -129,6 +140,10 @@ export default function GarnlagerList() {
       if (!res.ok) throw new Error((await res.json()).error ?? 'Sletting feilet')
       setRows(rs => rs?.filter(r => r.id !== row.id) ?? rs)
     })
+  }
+
+  async function assignProject(row: StashRow, projectId: string | null) {
+    await withBusy(row.id, async () => updateLocal(row.id, await patchRow(row.id, { project_id: projectId })))
   }
 
   async function changeThumbnail(row: StashRow, file: File) {
@@ -209,6 +224,7 @@ export default function GarnlagerList() {
                           <ThumbnailPicker img={stashThumbnailUrl(row.thumbnail_path)} size="w-9 h-9" busy={busy.has(row.id)}
                             onUpload={f => void changeThumbnail(row, f)} />
                           <span className="flex-1 min-w-0 truncate">
+                            {row.project_id && <span className="text-amber-600" title={`Tildelt ${row.strikk_project?.name}`}>* </span>}
                             {[row.color_number, row.color_name].filter(Boolean).join(' · ') || 'Ukjent farge'}
                           </span>
                           <span className="font-medium text-stone-800">
@@ -216,6 +232,12 @@ export default function GarnlagerList() {
                             {row.skein_count > 0 && row.leftover_g ? ' + ' : ''}
                             {row.leftover_g ? `rest ~${row.leftover_g} g` : ''}
                           </span>
+                          <select value={row.project_id ?? ''} disabled={busy.has(row.id)}
+                            onChange={e => void assignProject(row, e.target.value || null)}
+                            title="Tildel til prosjekt" className="text-xs rounded-md border border-stone-200 bg-white text-stone-600 max-w-[7rem]">
+                            <option value="">Ikke tildelt</option>
+                            {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                          </select>
                           <button onClick={() => void unapprove(row)} title="Tilbake til gjennomgang" className="text-xs text-stone-400 hover:text-stone-600">↩</button>
                           {confirmingDelete === row.id ? (
                             <span className="flex items-center gap-1 text-xs shrink-0">
