@@ -16,7 +16,7 @@ export default function Login() {
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       if (data.session) {
-        router.replace('/dashboard')
+        router.replace('/start')
       } else {
         setChecking(false)
       }
@@ -45,7 +45,7 @@ async function handleLogin() {
       return
     }
 
-    router.push('/dashboard')
+    router.push('/start')
     router.refresh()
   } catch (err) {
     console.error('Uventet login-feil:', err)

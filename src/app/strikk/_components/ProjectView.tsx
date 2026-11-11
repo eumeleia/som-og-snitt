@@ -152,7 +152,7 @@ type PdfState =
   | { kind: 'auth-expired' }
   | { kind: 'missing'; text: string }
 
-export default function ProjectView({ id }: { id: string }) {
+export default function ProjectView({ id, initialView }: { id: string; initialView?: 'info' | 'pdf' }) {
   const router = useRouter()
   const [authed, setAuthed] = useState(false)
   const [load, setLoad] = useState<LoadState>({ kind: 'loading' })
@@ -163,7 +163,7 @@ export default function ProjectView({ id }: { id: string }) {
   const [combos, setCombos] = useState<RawCombo[]>([])
   const [swatches, setSwatches] = useState<RawSwatch[]>([])
   const [yarnLines, setYarnLines] = useState<YarnLine[]>([])
-  const [view, setView] = useState<'info' | 'pdf'>('info')
+  const [view, setView] = useState<'info' | 'pdf'>(initialView ?? 'info')
   const [error, setError] = useState('')
 
   useEffect(() => {

@@ -9,7 +9,9 @@ export const viewport: Viewport = {
   viewportFit: 'cover',
 }
 
-export default async function StrikkProjectPage({ params }: PageProps<'/strikk/prosjekt/[id]'>) {
+export default async function StrikkProjectPage({ params, searchParams }: PageProps<'/strikk/prosjekt/[id]'>) {
   const { id } = await params
-  return <ProjectView id={id} />
+  const sp = await searchParams
+  const initialView = sp.view === 'pdf' ? 'pdf' : undefined
+  return <ProjectView id={id} initialView={initialView} />
 }
