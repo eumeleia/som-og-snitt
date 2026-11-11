@@ -210,7 +210,7 @@ export default function PdfPages({
         } catch (err) {
           task = null
           if ((err as { name?: string })?.name !== 'RenderingCancelledException') {
-            console.error('[strikk-prototype] render', num, err)
+            console.error('[strikk-markup] render', num, err)
           }
         }
       }
