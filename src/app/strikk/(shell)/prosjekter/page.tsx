@@ -185,6 +185,7 @@ function ProjectCard({ project }: { project: ProjectListRow }) {
   const url = cover ? coverUrl(project) : null
   return (
     <div ref={setNodeRef}
+      className="relative"
       style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }}
       {...attributes} {...listeners}>
       <Link href={`/strikk/prosjekt/${project.id}`}
@@ -208,6 +209,17 @@ function ProjectCard({ project }: { project: ProjectListRow }) {
           {STATUS_LABEL[project.status]}
         </span>
       </Link>
+      {/* Straight to the recipe in the project, next to the status. A sibling of the card
+          link, since one link cannot hold another. */}
+      {project.oppskrift_id && (
+        <Link href={`/strikk/prosjekt/${project.id}?view=pdf`} aria-label={`Åpne oppskriften til ${project.name || 'prosjektet'}`}
+          className="absolute right-3 bottom-3 h-8 pl-2 pr-2.5 rounded-full bg-[#2E5339] text-white text-xs font-medium flex items-center gap-1 shadow-sm">
+          <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            <path d="M4 5.5A2.5 2.5 0 016.5 3H20v15H6.5A2.5 2.5 0 004 20.5z" /><path d="M4 20.5A2.5 2.5 0 006.5 23H20v-5" />
+          </svg>
+          Oppskrift
+        </Link>
+      )}
     </div>
   )
 }
