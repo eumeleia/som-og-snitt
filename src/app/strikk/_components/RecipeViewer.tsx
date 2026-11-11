@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
@@ -8,24 +8,11 @@ import { supabase } from '@/lib/supabase'
 import { RECIPE_SELECT, type KnitRecipe } from '../_lib/recipes'
 import { renderThumbnail, uploadThumbnail } from '../_lib/thumbnail'
 import { RatingSheet, StarIcon, saveRecipePatch, type RatingPatch } from './RecipeRating'
+import { useSavePosition } from './readingPosition'
 import { DriveAuthExpiredError, downloadPdf } from '../_lib/drive'
 import type { Project } from '../_lib/projects'
 import PdfViewer, { openPdf, type PageSize } from './PdfViewer'
 import DriveExpired from './DriveExpired'
-
-const SAVE_AFTER_MS = 1000
-
-// The page at the top of the screen, and how far down it the screen starts (0–1).
-function readPosition(): { page: number; offset: number } | null {
-  const top = window.visualViewport?.offsetTop ?? 0
-  for (const el of document.querySelectorAll<HTMLElement>('[data-page]')) {
-    const r = el.getBoundingClientRect()
-    if (r.bottom > top + 1) {
-      return { page: Number(el.dataset.page), offset: Math.min(1, Math.max(0, (top - r.top) / r.height)) }
-    }
-  }
-  return null
-}
 
 type Status =
   | { kind: 'loading'; text: string }
@@ -73,7 +60,6 @@ export default function RecipeViewer({ id }: { id: string }) {
   const [placed, setPlaced] = useState(false)
   const box = useVisualViewportBox()
   const onPlaced = useCallback(() => setPlaced(true), [])
-  const saved = useRef<{ page: number; offset: number } | null>(null)
 
   async function changeRating(patch: RatingPatch) {
     if (!recipe) return
@@ -87,42 +73,9 @@ export default function RecipeViewer({ id }: { id: string }) {
     }
   }
 
-  // Where Maria is: saved a second after scrolling stops, and when the page is left or
-  // hidden. Not before the recipe has been placed where she was last, or the top of the
-  // first page would overwrite it.
-  useEffect(() => {
-    if (!placed) return
-    let timer: ReturnType<typeof setTimeout> | null = null
-    // Read while scrolling too: once the view is unmounted its pages can no longer be measured.
-    let seen = readPosition()
-    const save = (keepalive: boolean) => {
-      const p = readPosition() ?? seen
-      const last = saved.current
-      if (!p || (last && last.page === p.page && Math.abs(last.offset - p.offset) < 0.02)) return
-      saved.current = p
-      saveRecipePatch(id, { last_page: p.page, last_offset: p.offset }, keepalive).catch(err => console.error('[strikk] position', err))
-    }
-    const later = () => {
-      seen = readPosition() ?? seen
-      if (timer) clearTimeout(timer)
-      timer = setTimeout(() => save(false), SAVE_AFTER_MS)
-    }
-    const now = () => { if (document.visibilityState === 'hidden') save(true) }
-    const leave = () => save(true)
-    window.addEventListener('scroll', later, { passive: true })
-    window.visualViewport?.addEventListener('scroll', later)
-    document.addEventListener('visibilitychange', now)
-    window.addEventListener('pagehide', leave)
-    return () => {
-      if (timer) clearTimeout(timer)
-      window.removeEventListener('scroll', later)
-      window.visualViewport?.removeEventListener('scroll', later)
-      document.removeEventListener('visibilitychange', now)
-      window.removeEventListener('pagehide', leave)
-      // Going back inside the app unmounts without a pagehide.
-      save(true)
-    }
-  }, [placed, id])
+  useSavePosition(placed, recipe?.last_page ? { page: recipe.last_page, offset: recipe.last_offset ?? 0 } : null, (p, keepalive) => {
+    saveRecipePatch(id, { last_page: p.page, last_offset: p.offset }, keepalive).catch(err => console.error('[strikk] position', err))
+  })
 
   async function startProject() {
     setStartingProject(true)
@@ -155,7 +108,6 @@ export default function RecipeViewer({ id }: { id: string }) {
         if (cancelled) return
         const r = data as KnitRecipe
         setRecipe(r)
-        if (r.last_page) saved.current = { page: r.last_page, offset: r.last_offset ?? 0 }
         setStatus({ kind: 'loading', text: 'Henter PDF fra Disk …' })
         const bytes = await downloadPdf(r.drive_file_id, r.file_name)
         if (cancelled) return

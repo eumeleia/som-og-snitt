@@ -6,17 +6,20 @@ import Link from 'next/link'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import { supabase } from '@/lib/supabase'
 import { EXTRACTION_SELECT, storedToExtraction, type ExtractionData, type StoredRecipe } from '../_lib/extraction'
-import { PROJECT_SELECT, STATUSES, STATUS_LABEL, sortedYarn, type Project, type ProjectStatus } from '../_lib/projects'
+import { PROJECT_SELECT, STATUSES, STATUS_LABEL, sortedYarn, startPosition, type Project, type ProjectStatus } from '../_lib/projects'
 import { amountForLine, formatAmountForLine } from '../_lib/project-amounts'
 import { COMBO_SELECT, SWATCH_SELECT, comboFromRow, swatchFromRow, type ComboRow, type SwatchRow } from '../_lib/combos'
 import { rankAlternatives, mainFibre, type Alternative, type RawCombo, type RawSwatch } from '../_lib/yarn-alternatives'
-import { applyOps, type Counter, type DocState, type Op, type Stroke, type Tool } from '../_lib/markup-ops'
+import { applyOps, undoOps, type Counter, type DocState, type Op, type Stroke, type Tool } from '../_lib/markup-ops'
+import { popStep, pushStep, readStack, writeStack, type UndoStep } from '../_lib/undo-stack'
 import { enqueue, pendingOps, subscribe, subscribeServerCounters, type QueueStatus } from '../_lib/project-save-queue'
 import { DriveAuthExpiredError, DriveFileMissingError, downloadPdf } from '../_lib/drive'
 import type { YarnRow } from '../_lib/yarns'
 import { findSizeMarks, type Measure, type PageText, type SizeMarks } from '../_lib/size-marks'
 import PdfPages, { MARKER_OPACITY, SIZE_MARK_COLOR, type PageSize } from './PdfPages'
+import { placeAt, readPosition, useSavePosition } from './readingPosition'
 import { openPdf } from './PdfViewer'
+import { compressCover, coverUrl, removeCover, uploadCover } from '../_lib/cover'
 import Counters from './Counters'
 import YarnPicker from './YarnPicker'
 import DriveExpired from './DriveExpired'
@@ -116,9 +119,10 @@ function useWakeLock(active: boolean) {
   return got
 }
 
-async function patchProject(id: string, body: Record<string, unknown>) {
+// keepalive lets a position saved as the page is left still arrive.
+async function patchProject(id: string, body: Record<string, unknown>, keepalive = false) {
   const res = await fetch(`/api/strikk/projects/${id}`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), keepalive,
   })
   const j = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(j.error ?? `Lagring feilet (${res.status})`)
@@ -126,6 +130,14 @@ async function patchProject(id: string, body: Record<string, unknown>) {
 }
 
 interface YarnLine { position: number; yarn_id: string | null; color_label: string | null }
+
+interface RecipeInfo {
+  title: string | null
+  drive_file_id: string
+  file_name: string
+  thumbnail_path: string | null
+  thumbnail_at: string | null
+}
 
 type LoadState =
   | { kind: 'loading' }
@@ -145,7 +157,7 @@ export default function ProjectView({ id }: { id: string }) {
   const [authed, setAuthed] = useState(false)
   const [load, setLoad] = useState<LoadState>({ kind: 'loading' })
   const [project, setProject] = useState<Project | null>(null)
-  const [recipe, setRecipe] = useState<{ title: string | null; drive_file_id: string; file_name: string } | null>(null)
+  const [recipe, setRecipe] = useState<RecipeInfo | null>(null)
   const [extraction, setExtraction] = useState<ExtractionData | null>(null)
   const [yarns, setYarns] = useState<YarnRow[]>([])
   const [combos, setCombos] = useState<RawCombo[]>([])
@@ -175,13 +187,18 @@ export default function ProjectView({ id }: { id: string }) {
       setYarnLines(sortedYarn(proj).map(l => ({ position: l.position, yarn_id: l.yarn_id, color_label: l.color_label })))
 
       if (proj.oppskrift_id) {
-        const { data: r, error: rErr } = await supabase
-          .from('strikk_oppskrift').select(EXTRACTION_SELECT).eq('id', proj.oppskrift_id).maybeSingle()
+        const [{ data: r, error: rErr }, { data: thumb }] = await Promise.all([
+          supabase.from('strikk_oppskrift').select(EXTRACTION_SELECT).eq('id', proj.oppskrift_id).maybeSingle(),
+          supabase.from('strikk_oppskrift').select('thumbnail_path, thumbnail_at').eq('id', proj.oppskrift_id).maybeSingle(),
+        ])
         if (cancelled) return
         if (rErr) { setLoad({ kind: 'error', text: rErr.message }); return }
         if (r) {
           const stored = r as unknown as StoredRecipe
-          setRecipe({ title: stored.title, drive_file_id: stored.drive_file_id, file_name: stored.file_name })
+          setRecipe({
+            title: stored.title, drive_file_id: stored.drive_file_id, file_name: stored.file_name,
+            thumbnail_path: thumb?.thumbnail_path ?? null, thumbnail_at: thumb?.thumbnail_at ?? null,
+          })
           setExtraction(storedToExtraction(stored))
         }
       }
@@ -244,6 +261,7 @@ export default function ProjectView({ id }: { id: string }) {
           yarnLines={yarnLines}
           error={error}
           onSave={save}
+          onSaved={patch => setProject(p => (p ? { ...p, ...patch } : p))}
           onSaveYarnLines={saveYarnLines}
           onYarnUpdated={(yarnId, patch) => setYarns(ys => ys.map(y => (y.id === yarnId ? { ...y, ...patch } : y)))}
           onOpenPdf={() => setView('pdf')}
@@ -255,6 +273,7 @@ export default function ProjectView({ id }: { id: string }) {
           project={project}
           recipe={recipe}
           sizeLabels={extraction?.sizes.map(s => s.label) ?? []}
+          onSaved={patch => setProject(p => (p ? { ...p, ...patch } : p))}
           onBack={() => setView('info')}
         />
       )}
@@ -285,9 +304,9 @@ function ColorInput({ value, onCommit }: { value: string; onCommit: (v: string) 
   )
 }
 
-function InfoView({ project, recipe, extraction, yarns, combos, swatches, yarnLines, error, onSave, onSaveYarnLines, onYarnUpdated, onOpenPdf, onDelete }: {
+function InfoView({ project, recipe, extraction, yarns, combos, swatches, yarnLines, error, onSave, onSaved, onSaveYarnLines, onYarnUpdated, onOpenPdf, onDelete }: {
   project: Project
-  recipe: { title: string | null; drive_file_id: string; file_name: string } | null
+  recipe: RecipeInfo | null
   extraction: ExtractionData | null
   yarns: YarnRow[]
   combos: RawCombo[]
@@ -295,6 +314,8 @@ function InfoView({ project, recipe, extraction, yarns, combos, swatches, yarnLi
   yarnLines: YarnLine[]
   error: string
   onSave: (body: Record<string, unknown>, optimistic: Partial<Project>) => void
+  // A change already saved elsewhere (the cover picture), shown without saving again.
+  onSaved: (patch: Partial<Project>) => void
   onSaveYarnLines: (lines: YarnLine[]) => void
   onYarnUpdated: (yarnId: string, patch: { favorite?: boolean | null; price_per_skein?: number | null }) => void
   onOpenPdf: () => void
@@ -371,6 +392,8 @@ function InfoView({ project, recipe, extraction, yarns, combos, swatches, yarnLi
         </div>
 
         {recipe?.title && <p className="text-sm text-stone-500">Fra oppskrift: {recipe.title}</p>}
+
+        <CoverSection project={project} recipe={recipe} onChanged={onSaved} />
 
         <div>
           <label className={labelCls}>Status</label>
@@ -513,17 +536,46 @@ async function readSizeMarks(doc: PDFDocumentProxy, labels: string[], k: number,
   return findSizeMarks(pages, labels, k, measure)
 }
 
-function PdfView({ projectId, project, recipe, sizeLabels, onBack }: {
+function PdfView({ projectId, project, recipe, sizeLabels, onSaved, onBack }: {
   projectId: string
   project: Project
   recipe: { title: string | null; drive_file_id: string; file_name: string } | null
   sizeLabels: string[]
+  // What this view saved on its own (position, «Gjeldende side»), so reopening it starts right.
+  onSaved: (patch: Partial<Project>) => void
   onBack: () => void
 }) {
   const [pdf, setPdf] = useState<PdfState>(() => (
     recipe?.drive_file_id ? { kind: 'idle' } : { kind: 'error', text: 'Prosjektet har ingen oppskrift.' }
   ))
   const [state, setState] = useState<DocState>({ strokes: project.strokes as Stroke[], counters: project.counters as Counter[] })
+  const stateRef = useRef(state)
+  useLayoutEffect(() => { stateRef.current = state })
+  const [undoStack, setUndoStack] = useState<UndoStep[]>(() => readStack(projectId))
+  const [start] = useState(() => startPosition(project))
+  const [placed, setPlaced] = useState(false)
+  const onPlaced = useCallback(() => setPlaced(true), [])
+  const [currentPage, setCurrentPage] = useState<number | null>(project.current_page)
+  const [pageError, setPageError] = useState<string | null>(null)
+
+  useSavePosition(placed, project.last_page ? { page: project.last_page, offset: project.last_offset ?? 0 } : null, (p, keepalive) => {
+    onSaved({ last_page: p.page, last_offset: p.offset })
+    patchProject(projectId, { last_page: p.page, last_offset: p.offset }, keepalive).catch(err => console.error('[strikk] position', err))
+  })
+
+  async function markCurrentPage(page: number | null) {
+    const before = currentPage
+    setCurrentPage(page)
+    setPageError(null)
+    try {
+      await patchProject(projectId, { current_page: page })
+      onSaved({ current_page: page })
+    } catch (err) {
+      setCurrentPage(before)
+      setPageError(err instanceof Error ? err.message : 'Klarte ikke lagre')
+    }
+  }
+  const pageNow = () => readPosition()?.page ?? 1
   const [tool, setTool] = useState<Tool | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [sheetOpen, setSheetOpen] = useState(false)
@@ -612,9 +664,33 @@ function PdfView({ projectId, project, recipe, sizeLabels, onBack }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Every change also goes to the loaded project, so going to the project page and back
+  // to the PDF shows it without a reload.
+  function change(ops: Op[]) {
+    const next = applyOps(stateRef.current, ops)
+    stateRef.current = next
+    setState(next)
+    onSaved({ strokes: next.strokes, counters: next.counters })
+    for (const op of ops) enqueue(projectId, op)
+  }
+
   function commit(op: Op) {
-    setState(s => applyOps(s, [op]))
-    enqueue(projectId, op)
+    change([op])
+  }
+
+  // A drawing or erasing action: saved like any op, and remembered so it can be undone.
+  function commitAction(ops: Op[]) {
+    const step = undoOps(stateRef.current, ops)
+    change(ops)
+    setUndoStack(st => { const next = pushStep(st, step); writeStack(projectId, next); return next })
+  }
+
+  // The undo ops go through the same queue, so undoing a saved change is saved too.
+  function undo() {
+    const { step, stack } = popStep(undoStack)
+    setUndoStack(stack)
+    writeStack(projectId, stack)
+    if (step) change(step)
   }
 
   function toggleTool(t: Tool) {
@@ -635,13 +711,17 @@ function PdfView({ projectId, project, recipe, sizeLabels, onBack }: {
           sizes={pdf.sizes}
           strokes={state.strokes}
           sizeMarks={sizeMarksOn && sizeMarks?.status === 'ok' ? sizeMarks.pages : null}
+          currentPage={currentPage}
+          initialPage={start?.page}
+          initialOffset={start?.offset ?? 0}
+          onPlaced={onPlaced}
           tool={tool}
           color={active.color}
           width={active.width}
           jsTwoFingerScroll={jsTwoFinger}
           bottomPadding={countersVisible ? counterHeight : 0}
-          onStrokeAdd={s => commit({ type: 'stroke_add', stroke: s })}
-          onStrokeSplit={(sid, parts) => commit({ type: 'stroke_split', id: sid, parts })}
+          onStrokeAdd={s => commitAction([{ type: 'stroke_add', stroke: s }])}
+          onStrokeSplits={splits => commitAction(splits.map(x => ({ type: 'stroke_split' as const, id: x.id, parts: x.parts })))}
           onDrawStart={() => { setSheetOpen(false); setMenuOpen(false) }}
         />
       )}
@@ -678,6 +758,7 @@ function PdfView({ projectId, project, recipe, sizeLabels, onBack }: {
             <span className="pointer-events-auto px-2.5 py-1 rounded-full bg-red-700 text-white text-xs">ikke lagret ({queue.pending})</span>
           )}
           {wakeLock === false && <span className="px-2.5 py-1 rounded-full bg-stone-700 text-white text-xs">skjermlås av</span>}
+          {pageError && <span role="alert" className="pointer-events-auto px-2.5 py-1 rounded-full bg-red-700 text-white text-xs">{pageError}</span>}
           {sizeMessage && (
             <span role="status" className="max-w-[16rem] px-2.5 py-1 rounded-2xl bg-stone-700 text-white text-xs">{sizeMessage}</span>
           )}
@@ -686,6 +767,11 @@ function PdfView({ projectId, project, recipe, sizeLabels, onBack }: {
         {pdf.kind === 'ready' && (
           <div className="absolute right-3 flex flex-col gap-2 items-center" style={{ top: 'calc(env(safe-area-inset-top) + 12px)' }}>
             <div className="flex gap-2">
+              {undoStack.length > 0 && (
+                <RoundButton label={`Angre (${undoStack.length})`} on={false} onClick={undo}>
+                  <IconUndo />
+                </RoundButton>
+              )}
               {canMarkSize && (
                 <RoundButton label={`Min størrelse (${sizeLabels[sizeIndex!]})`} on={sizeMarksOn} onClick={toggleSizeMarks}>
                   <IconSizeMark />
@@ -703,6 +789,19 @@ function PdfView({ projectId, project, recipe, sizeLabels, onBack }: {
                 <RoundButton label="Markeringstusj" on={tool === 'marker'} onClick={() => toggleTool('marker')}><ToolIcon tool="marker" /></RoundButton>
                 <RoundButton label="Penn" on={tool === 'pen'} onClick={() => toggleTool('pen')}><ToolIcon tool="pen" /></RoundButton>
                 <RoundButton label="Viskelær" on={tool === 'eraser'} onClick={() => toggleTool('eraser')}><ToolIcon tool="eraser" /></RoundButton>
+                <div className="h-px w-8 bg-stone-400 my-1 mr-1.5" />
+                <MenuButton onClick={() => { void markCurrentPage(pageNow()); setMenuOpen(false) }}
+                  title="Merk som gjeldende side" note="Siden øverst på skjermen. Prosjektet åpnes der neste gang." />
+                {currentPage !== null && (
+                  <>
+                    <MenuButton onClick={() => {
+                      const el = document.querySelector<HTMLElement>(`[data-page="${currentPage}"]`)
+                      if (el) placeAt(el, 0)
+                      setMenuOpen(false)
+                    }} title={`Gå til gjeldende side (side ${currentPage})`} />
+                    <MenuButton onClick={() => { void markCurrentPage(null); setMenuOpen(false) }} title="Fjern gjeldende side" />
+                  </>
+                )}
                 <div className="h-px w-8 bg-stone-400 my-1 mr-1.5" />
                 <button aria-pressed={jsTwoFinger} onClick={() => setJsTwoFinger(v => !v)}
                   className="pointer-events-auto w-52 rounded-2xl px-3 py-2 text-left shadow-md border bg-white/95 border-stone-300">
@@ -779,6 +878,85 @@ function ToolSheet({ tool, color, width, onColor, onWidth, onClose }: {
   )
 }
 
+// The picture on the project's card: Maria's own photo, or the first page of the recipe.
+function CoverSection({ project, recipe, onChanged }: {
+  project: Project
+  recipe: RecipeInfo | null
+  onChanged: (c: Pick<Project, 'cover_path' | 'cover_at'>) => void
+}) {
+  const [busy, setBusy] = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const input = useRef<HTMLInputElement>(null)
+  const url = coverUrl({ cover_path: project.cover_path, cover_at: project.cover_at, strikk_oppskrift: recipe ? { title: recipe.title ?? '', thumbnail_path: recipe.thumbnail_path, thumbnail_at: recipe.thumbnail_at } : null })
+
+  async function upload(file: File) {
+    setErr(null)
+    setBusy('Gjør bildet mindre …')
+    try {
+      const blob = await compressCover(file)
+      setBusy('Lagrer …')
+      onChanged(await uploadCover(project.id, blob))
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Klarte ikke lagre bildet')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function backToRecipe() {
+    setErr(null)
+    setBusy('Fjerner …')
+    try {
+      await removeCover(project.id)
+      onChanged({ cover_path: null, cover_at: null })
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Klarte ikke fjerne bildet')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <div>
+      <label className={labelCls}>Forsidebilde</label>
+      <div className="flex gap-3 items-start">
+        <div className="w-20 h-28 shrink-0 rounded-lg border border-stone-200 bg-stone-100 overflow-hidden">
+          {url && (
+            // eslint-disable-next-line @next/next/no-img-element -- a small public file; next/image would only add a resize step
+            <img src={url} alt="" className="w-full h-full object-cover object-top" />
+          )}
+        </div>
+        <div className="flex flex-col gap-2 items-start min-w-0">
+          <p className="text-xs text-stone-500">{project.cover_path ? 'Ditt eget bilde.' : recipe?.thumbnail_path ? 'Første side av oppskriften.' : 'Ingen bilde ennå.'}</p>
+          <input ref={input} type="file" accept="image/*" className="hidden"
+            onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void upload(f) }} />
+          <button onClick={() => input.current?.click()} disabled={busy !== null}
+            className="h-10 px-3 rounded-xl border border-stone-300 bg-white text-sm text-stone-800 disabled:opacity-60">
+            Last opp eget bilde
+          </button>
+          {project.cover_path && (
+            <button onClick={() => void backToRecipe()} disabled={busy !== null}
+              className="h-10 px-3 rounded-xl text-sm text-stone-600 underline disabled:opacity-60">
+              {recipe ? 'Bruk oppskriftens bilde' : 'Fjern bildet'}
+            </button>
+          )}
+          {busy && <p className="text-xs text-stone-500">{busy}</p>}
+          {err && <p className="text-xs text-red-700 break-words">{err}</p>}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function MenuButton({ onClick, title, note }: { onClick: () => void; title: string; note?: string }) {
+  return (
+    <button onClick={onClick} className="pointer-events-auto w-52 rounded-2xl px-3 py-2 text-left shadow-md border bg-white/95 border-stone-300">
+      <span className="block text-sm font-medium text-stone-800">{title}</span>
+      {note && <span className="block text-[11px] leading-snug text-stone-500">{note}</span>}
+    </button>
+  )
+}
+
 function RoundButton({ label, on, onClick, children }: { label: string; on: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
     <button aria-label={label} aria-pressed={on} title={label} onClick={onClick}
@@ -810,6 +988,9 @@ function IconSizeMark() {
       <path d="M8 12h8" />
     </svg>
   )
+}
+function IconUndo() {
+  return <svg {...iconProps}><path d="M9 14L4 9l5-5" /><path d="M4 9h10.5a5.5 5.5 0 010 11H11" /></svg>
 }
 function IconMenu() {
   return <svg {...iconProps}><path d="M4 7h16" /><path d="M4 12h16" /><path d="M4 17h16" /></svg>

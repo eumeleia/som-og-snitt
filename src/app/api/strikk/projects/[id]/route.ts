@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
-import { PROJECT_SELECT, STATUSES, type Project, type ProjectStatus } from '@/app/strikk/_lib/projects'
+import { PROJECT_SELECT, STATUSES, parsePositionPatch, type Project, type ProjectStatus } from '@/app/strikk/_lib/projects'
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -19,7 +19,18 @@ export async function PATCH(req: NextRequest, ctx: RouteContext<'/api/strikk/pro
   try {
     const { id } = await ctx.params
     const body = await req.json() as Body
-    const patch: Record<string, unknown> = { updated_at: new Date().toISOString() }
+    // Where Maria is in the recipe, sent often while she reads: saved on its own, without
+    // touching updated_at and without reading the whole project (its strokes) back.
+    const position = parsePositionPatch(body as Record<string, unknown>)
+    if (position && 'error' in position) return NextResponse.json({ error: position.error }, { status: 400 })
+    const others = Object.keys(body).filter(k => !['last_page', 'last_offset', 'current_page'].includes(k))
+    if (position && others.length === 0) {
+      const { data, error } = await supabaseAdmin.from('strikk_project').update(position.patch).eq('id', id).select('id')
+      if (error) return NextResponse.json({ error: `Klarte ikke lagre: ${error.message}` }, { status: 500 })
+      if (!data?.length) return NextResponse.json({ error: 'Fant ikke prosjektet' }, { status: 404 })
+      return NextResponse.json({ ok: true, ...position.patch })
+    }
+    const patch: Record<string, unknown> = { updated_at: new Date().toISOString(), ...(position?.patch ?? {}) }
 
     if (body.name !== undefined) {
       const name = typeof body.name === 'string' ? body.name.trim() : ''

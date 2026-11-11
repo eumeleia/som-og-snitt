@@ -13,6 +13,7 @@ import { CSS } from '@dnd-kit/utilities'
 import { PROJECT_LIST_SELECT, STATUSES, STATUS_LABEL, type ProjectListRow, type ProjectStatus } from '../../_lib/projects'
 import ProjectRecipePicker from '../../_components/ProjectRecipePicker'
 import type { KnitRecipe } from '../../_lib/recipes'
+import { coverUrl } from '../../_lib/cover'
 
 const STATUS_STYLE: Record<ProjectStatus, string> = {
   planned: 'bg-amber-50 text-amber-700 border-amber-200',
@@ -61,7 +62,7 @@ function ProjectsPageInner() {
   const [projects, setProjects] = useState<ProjectListRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [status, setStatusState] = useState<ProjectStatus>(() => statusFromQuery(searchParams.get('status')) ?? 'planned')
+  const [status, setStatusState] = useState<ProjectStatus>(() => statusFromQuery(searchParams.get('status')) ?? 'in_progress')
   const [newOpen, setNewOpen] = useState(false)
 
   useEffect(() => {
@@ -175,14 +176,27 @@ function ProjectsPageInner() {
   )
 }
 
+// Planned and ongoing projects show their cover: Maria's own photo, or the recipe's first page.
+const SHOWS_COVER: ProjectStatus[] = ['planned', 'in_progress']
+
 function ProjectCard({ project }: { project: ProjectListRow }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: project.id })
+  const cover = SHOWS_COVER.includes(project.status)
+  const url = cover ? coverUrl(project) : null
   return (
     <div ref={setNodeRef}
       style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }}
       {...attributes} {...listeners}>
       <Link href={`/strikk/prosjekt/${project.id}`}
         className="block bg-white rounded-xl border border-stone-200 shadow-sm hover:shadow-md transition-shadow p-3 h-full">
+        {cover && (
+          <div className="-mx-3 -mt-3 mb-2 aspect-[3/4] rounded-t-xl bg-stone-100 overflow-hidden">
+            {url && (
+              // eslint-disable-next-line @next/next/no-img-element -- a small public file; next/image would only add a resize step
+              <img src={url} alt="" loading="lazy" decoding="async" draggable={false} className="w-full h-full object-cover object-top" />
+            )}
+          </div>
+        )}
         <h3 className="font-serif text-base text-stone-800 truncate">
           {project.name || <span className="text-stone-300 italic font-light">Uten navn</span>}
         </h3>

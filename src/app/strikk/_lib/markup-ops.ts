@@ -34,6 +34,9 @@ export type Op =
   | { type: 'stroke_delete'; id: string }
   // Replaces a stroke with what the eraser left of it (empty = fully erased).
   | { type: 'stroke_split'; id: string; parts: Stroke[] }
+  // Undoes an erase: takes away what the eraser left (parts, by id) and puts the whole
+  // stroke back where it was. Nothing happens if the stroke is already there.
+  | { type: 'stroke_restore'; stroke: Stroke; parts: string[] }
   | { type: 'counter_add'; counter: Counter }
   | { type: 'counter_set'; id: string; value: number }
   // +1/−1 from a tap. Steps from two devices add up, unlike counter_set where the last
@@ -66,6 +69,14 @@ export function applyOps(state: DocState, ops: Op[]): DocState {
         strokes = [...strokes.slice(0, i), ...op.parts, ...strokes.slice(i + 1)]
         break
       }
+      case 'stroke_restore': {
+        if (strokes.some(s => s.id === op.stroke.id)) break
+        const drop = new Set(op.parts)
+        const at = strokes.findIndex(s => drop.has(s.id))
+        const rest = strokes.filter(s => !drop.has(s.id))
+        strokes = at === -1 ? [...rest, op.stroke] : [...rest.slice(0, at), op.stroke, ...rest.slice(at)]
+        break
+      }
       case 'counter_add':
         if (!counters.some(c => c.id === op.counter.id)) counters = [...counters, op.counter]
         break
@@ -88,4 +99,22 @@ export function applyOps(state: DocState, ops: Op[]): DocState {
     }
   }
   return { strokes, counters }
+}
+
+// The ops that undo one action (one stroke, or one eraser drag that may cut several
+// strokes), worked out from the state just before it. Applied in order, they bring the
+// strokes back to that state. Counters are not undone.
+export function undoOps(before: DocState, ops: Op[]): Op[] {
+  const undo: Op[] = []
+  for (const op of ops) {
+    if (op.type === 'stroke_add') {
+      undo.unshift({ type: 'stroke_delete', id: op.stroke.id })
+    } else if (op.type === 'stroke_split' || op.type === 'stroke_delete') {
+      const stroke = before.strokes.find(s => s.id === op.id)
+      if (!stroke) continue
+      const parts = op.type === 'stroke_split' ? op.parts.map(p => p.id) : []
+      undo.unshift({ type: 'stroke_restore', stroke, parts })
+    }
+  }
+  return undo
 }

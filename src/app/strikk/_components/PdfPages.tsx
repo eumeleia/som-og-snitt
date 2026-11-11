@@ -5,6 +5,7 @@ import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist'
 import type { Stroke, Tool } from '../_lib/markup-ops'
 import { eraseCircle } from '../_lib/erase'
 import type { Rect } from '../_lib/size-marks'
+import { placeAt } from './readingPosition'
 
 const DPR_CAP = 2
 // iOS Safari refuses canvases above 16 777 216 pixels; stay well under, since two
@@ -35,13 +36,20 @@ interface Props {
   sizes: PageSize[]
   strokes: Stroke[]
   sizeMarks: Map<number, Rect[]> | null
+  // The page marked «Gjeldende side», shown with a small label.
+  currentPage: number | null
+  // Where to start, placed once when the document opens.
+  initialPage?: number
+  initialOffset?: number
+  onPlaced?: () => void
   tool: Tool | null
   color: string
   width: number
   jsTwoFingerScroll: boolean
   bottomPadding: number
   onStrokeAdd: (stroke: Stroke) => void
-  onStrokeSplit: (id: string, parts: Stroke[]) => void
+  // One eraser drag, which may cut several strokes: one call, so it is one undo step.
+  onStrokeSplits: (splits: { id: string; parts: Stroke[] }[]) => void
   onDrawStart: () => void
 }
 
@@ -73,7 +81,7 @@ function isInVisualViewport(el: Element): boolean {
 // Strokes are regrouped on every change, so compare element-wise: a stroke on one page
 // must not re-render every other page.
 function samePageProps(a: PageProps, b: PageProps) {
-  return a.num === b.num && a.size === b.size && a.register === b.register && a.marks === b.marks &&
+  return a.num === b.num && a.size === b.size && a.register === b.register && a.marks === b.marks && a.current === b.current &&
     a.strokes.length === b.strokes.length && a.strokes.every((s, i) => s === b.strokes[i])
 }
 
@@ -82,11 +90,12 @@ interface PageProps {
   size: PageSize
   strokes: Stroke[]
   marks: Rect[] | undefined
+  current: boolean
   register: (num: number, el: HTMLDivElement | null) => void
 }
 
 const Page = memo(function Page({
-  num, size, strokes, marks, register,
+  num, size, strokes, marks, current, register,
 }: PageProps) {
   const aspect = size.height / size.width
   const viewBox = `0 0 ${VB} ${VB * aspect}`
@@ -126,6 +135,11 @@ const Page = memo(function Page({
       <svg data-live-svg viewBox={viewBox} className="absolute inset-0 w-full h-full pointer-events-none">
         <path data-live-path fill="none" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
+      {current && (
+        <span data-current-page className="absolute left-2 top-2 px-2 py-0.5 rounded-full bg-[#2E5339] text-white text-xs shadow pointer-events-none">
+          Gjeldende side
+        </span>
+      )}
     </div>
   )
 }, samePageProps)
@@ -143,8 +157,8 @@ interface Drawing {
 }
 
 export default function PdfPages({
-  doc, sizes, strokes, sizeMarks, tool, color, width, jsTwoFingerScroll, bottomPadding,
-  onStrokeAdd, onStrokeSplit, onDrawStart,
+  doc, sizes, strokes, sizeMarks, currentPage, initialPage, initialOffset = 0, onPlaced, tool, color, width, jsTwoFingerScroll, bottomPadding,
+  onStrokeAdd, onStrokeSplits, onDrawStart,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const pageEls = useRef(new Map<number, HTMLDivElement>())
@@ -159,15 +173,26 @@ export default function PdfPages({
   const byPage = useMemo(() => groupByPage(shown), [shown])
 
   // Pointer handlers read the latest props through this ref instead of re-binding.
-  const latest = useRef({ strokes, tool, color, width, jsTwoFingerScroll, onStrokeAdd, onStrokeSplit, onDrawStart })
+  const latest = useRef({ strokes, tool, color, width, jsTwoFingerScroll, onStrokeAdd, onStrokeSplits, onDrawStart })
   useLayoutEffect(() => {
-    latest.current = { strokes, tool, color, width, jsTwoFingerScroll, onStrokeAdd, onStrokeSplit, onDrawStart }
+    latest.current = { strokes, tool, color, width, jsTwoFingerScroll, onStrokeAdd, onStrokeSplits, onDrawStart }
   })
 
   const register = useCallback((num: number, el: HTMLDivElement | null) => {
     if (el) pageEls.current.set(num, el)
     else pageEls.current.delete(num)
   }, [])
+
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      const el = initialPage ? pageEls.current.get(Math.min(initialPage, sizes.length)) : null
+      if (el && (initialPage! > 1 || initialOffset > 0)) placeAt(el, initialOffset)
+      onPlaced?.()
+    })
+    return () => cancelAnimationFrame(raf)
+    // Placed once per document; a later change of the props must not jump the view.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc])
 
   // ---- Rendering: lazy, one page at a time, sharp re-render after zoom settles ----
   useEffect(() => {
@@ -430,12 +455,12 @@ export default function PdfPages({
     const d = drawing.current
     if (!d || d.pointerId !== e.pointerId) return
     drawing.current = null
-    const { tool: t, color: c, width: w, onStrokeAdd: add, onStrokeSplit: split } = latest.current
+    const { tool: t, color: c, width: w, onStrokeAdd: add, onStrokeSplits: splits } = latest.current
     if (t === 'marker' || t === 'pen') {
       add({ id: crypto.randomUUID(), page: d.page, tool: t, color: c, width: w, points: d.points })
     }
     if (t === 'eraser') {
-      for (const [id, parts] of d.work) split(id, parts)
+      if (d.work.size) splits([...d.work].map(([id, parts]) => ({ id, parts })))
       // Same event, so React renders the committed strokes and the cleared preview together.
       setErasePreview(null)
     }
@@ -474,6 +499,7 @@ export default function PdfPages({
           size={size}
           strokes={byPage.get(i + 1) ?? EMPTY}
           marks={sizeMarks?.get(i + 1)}
+          current={currentPage === i + 1}
           register={register}
         />
       ))}

@@ -7,6 +7,7 @@
 
 import { memo, useCallback, useEffect, useRef } from 'react'
 import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist'
+import { placeAt } from './readingPosition'
 
 const DPR_CAP = 2
 // iOS Safari refuses canvases above 16 777 216 pixels; stay well under, since two
@@ -81,10 +82,7 @@ export default function PdfViewer({ doc, sizes, initialPage, initialOffset = 0, 
   useEffect(() => {
     const raf = requestAnimationFrame(() => {
       const el = initialPage ? pageEls.current.get(Math.min(initialPage, sizes.length)) : null
-      if (el && (initialPage! > 1 || initialOffset > 0)) {
-        el.scrollIntoView({ block: 'start' })
-        if (initialOffset > 0) window.scrollBy(0, el.getBoundingClientRect().height * initialOffset)
-      }
+      if (el && (initialPage! > 1 || initialOffset > 0)) placeAt(el, initialOffset)
       onPlaced?.()
     })
     return () => cancelAnimationFrame(raf)
