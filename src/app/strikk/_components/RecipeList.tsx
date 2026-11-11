@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
-import { RECIPE_SELECT, needsMaria, waitsForClaudeCode, type KnitRecipe } from '../_lib/recipes'
+import { RECIPE_SELECT, needsMaria, thumbnailUrl, waitsForClaudeCode, type KnitRecipe } from '../_lib/recipes'
+import { thumbnailFromFile } from '../_lib/thumbnail'
+import { FavoriteButton, RatingBadge, RatingSheet, saveRecipePatch, type RatingPatch } from './RecipeRating'
 import { AUDIENCES, type Audience } from '../_lib/extraction'
 import { AUDIENCE_LABEL, applyFilter, type FilterResult } from '../_lib/recipe-filter'
 import { DriveAuthExpiredError, getAccessToken, listDriveFiles, sha256Hex, syncDriveNames, uploadPdf } from '../_lib/drive'
@@ -59,6 +61,7 @@ export default function RecipeList() {
   const [results, setResults] = useState<UploadResult<KnitRecipe>[] | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [editing, setEditing] = useState<KnitRecipe | null>(null)
+  const [rating, setRating] = useState<string | null>(null)
   const [loadAttempt, setLoadAttempt] = useState(0)
   const [filterReload, setFilterReload] = useState(0)
   const [filtersOpen, setFiltersOpen] = useState(false)
@@ -145,6 +148,8 @@ export default function RecipeList() {
           return id
         },
         createRow,
+        // A new recipe gets its first-page picture straight away; a failure is a note.
+        afterRow: async (row, file) => ({ ...row, ...await thumbnailFromFile(row.id, file) }),
         isFatal: err => (authLost = err instanceof DriveAuthExpiredError),
       }, (p, result) => {
         setProgress(p)
@@ -163,6 +168,17 @@ export default function RecipeList() {
     }
   }
 
+  // Shown at once, saved behind; put back with a message if saving fails.
+  async function changeRating(r: KnitRecipe, patch: RatingPatch) {
+    replace(rs => rs.map(x => (x.id === r.id ? { ...x, ...patch } : x)))
+    try {
+      await saveRecipePatch(r.id, patch)
+    } catch (err) {
+      replace(rs => rs.map(x => (x.id === r.id ? { ...x, rating: r.rating, favorite: r.favorite } : x)))
+      window.alert(err instanceof Error ? err.message : 'Klarte ikke lagre')
+    }
+  }
+
   async function removeRow(r: KnitRecipe) {
     if (!window.confirm(`Fjerne «${r.title}» fra appen? Filen i den private Disken røres ikke.`)) return
     const res = await fetch(`/api/strikk/oppskrifter/${r.id}`, { method: 'DELETE' })
@@ -178,7 +194,12 @@ export default function RecipeList() {
     if (filterData.kind !== 'ready') return { items: list.recipes.map(recipe => ({ recipe, result: null as FilterResult | null })), unread: 0 }
     const byId = new Map(list.recipes.map(r => [r.id, r]))
     const known = new Set(filterData.recipes.map(r => r.id))
-    const items = applyFilter(filterData.recipes, filter, filterData.yarns)
+    // Stars and favourite as they are now in the list, so a change filters and sorts at once.
+    const current = filterData.recipes.map(r => {
+      const l = byId.get(r.id)
+      return l ? { ...r, rating: l.rating, favorite: l.favorite } : r
+    })
+    const items = applyFilter(current, filter, filterData.yarns)
       .filter(x => byId.has(x.recipe.id))
       .map(x => ({ recipe: byId.get(x.recipe.id)!, result: x as FilterResult | null }))
     // A recipe added after the filter data loaded shows while no filter is set.
@@ -319,7 +340,9 @@ export default function RecipeList() {
                     <div className="text-sm text-amber-800">Ligger ikke i Strikk-Disken, trolig i den private Disken.</div>
                   </div>
                 ) : (
-                  <Link href={`/strikk/oppskrifter/${r.id}`} className="flex-1 min-w-0 px-4 py-3 active:bg-stone-50">
+                  <Link href={`/strikk/oppskrifter/${r.id}`} className="flex-1 min-w-0 pl-3 pr-1 py-3 flex gap-3 items-start active:bg-stone-50">
+                    <Thumbnail recipe={r} />
+                    <div className="flex-1 min-w-0">
                     <div className="text-base text-stone-800 truncate">{r.title}</div>
                     {(r.designer || r.audience) && (
                       <div className="text-sm text-stone-500 truncate">{[r.designer, r.audience && AUDIENCE_LABEL[r.audience]].filter(Boolean).join(' · ')}</div>
@@ -331,6 +354,7 @@ export default function RecipeList() {
                       <span className="inline-block mt-1 text-xs rounded-full bg-stone-200 text-stone-800 px-2 py-0.5">Trenger deg</span>
                     )}
                     {result && filterData.kind === 'ready' && <HitInfo result={result} yarns={filterData.yarns} filter={filter} />}
+                    </div>
                   </Link>
                 )}
                 {elsewhere ? (
@@ -339,6 +363,9 @@ export default function RecipeList() {
                     Fjern fra appen
                   </button>
                 ) : (
+                  <>
+                  <RatingBadge rating={r.rating} title={r.title} onOpen={() => setRating(r.id)} />
+                  <FavoriteButton on={r.favorite} title={r.title} onToggle={() => void changeRating(r, { favorite: !r.favorite })} />
                   <button
                     onClick={() => setEditing(r)}
                     aria-label={`Rediger ${r.title}`}
@@ -348,6 +375,7 @@ export default function RecipeList() {
                       <circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" />
                     </svg>
                   </button>
+                  </>
                 )}
               </li>
             )
@@ -368,6 +396,11 @@ export default function RecipeList() {
           onYarnUpdated={onYarnUpdated} shown={view.items.length} onClose={() => setFiltersOpen(false)} />
       )}
 
+      {rating && list.kind === 'ready' && (() => {
+        const r = list.recipes.find(x => x.id === rating)
+        return r ? <RatingSheet recipe={r} onChange={patch => void changeRating(r, patch)} onClose={() => setRating(null)} /> : null
+      })()}
+
       {editing && (
         <EditSheet
           recipe={editing}
@@ -375,6 +408,19 @@ export default function RecipeList() {
           onSaved={saved => { replace(rs => rs.map(r => (r.id === saved.id ? saved : r))); setEditing(null); setFilterReload(n => n + 1) }}
           onDeleted={id => { replace(rs => rs.filter(r => r.id !== id)); setEditing(null); setFilterReload(n => n + 1) }}
         />
+      )}
+    </div>
+  )
+}
+
+// The first page, small. A recipe without a picture yet gets one the first time it is opened.
+function Thumbnail({ recipe }: { recipe: KnitRecipe }) {
+  const url = thumbnailUrl(recipe)
+  return (
+    <div className="w-12 h-16 shrink-0 rounded-md border border-stone-200 bg-stone-100 overflow-hidden">
+      {url && (
+        // eslint-disable-next-line @next/next/no-img-element -- a small public file; next/image would only add a resize step
+        <img src={url} alt="" loading="lazy" decoding="async" width={48} height={64} className="w-full h-full object-cover object-top" />
       )}
     </div>
   )

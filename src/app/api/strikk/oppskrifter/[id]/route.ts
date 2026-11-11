@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { RECIPE_SELECT, type KnitRecipe } from '@/app/strikk/_lib/recipes'
-import { AUDIENCES, type Audience } from '@/app/strikk/_lib/extraction'
+import { parseRecipePatch } from '@/app/strikk/_lib/recipe-patch'
 import { syncRecipeDriveName } from '@/lib/strikk-drive'
 import { logDriveError } from '@/lib/drive-log'
 
@@ -13,25 +13,9 @@ const supabaseAdmin = createClient(
 export async function PATCH(req: NextRequest, ctx: RouteContext<'/api/strikk/oppskrifter/[id]'>) {
   try {
     const { id } = await ctx.params
-    const body = await req.json() as { title?: unknown; designer?: unknown; audience?: unknown }
-    const patch: { title?: string; designer?: string | null; audience?: Audience | null; updated_at: string } = {
-      updated_at: new Date().toISOString(),
-    }
-    if (body.title !== undefined) {
-      const title = typeof body.title === 'string' ? body.title.trim() : ''
-      if (!title) return NextResponse.json({ error: 'Tittel kan ikke være tom' }, { status: 400 })
-      patch.title = title
-    }
-    if (body.designer !== undefined) {
-      const designer = typeof body.designer === 'string' ? body.designer.trim() : ''
-      patch.designer = designer || null
-    }
-    if (body.audience !== undefined) {
-      if (body.audience !== null && !(AUDIENCES as readonly unknown[]).includes(body.audience)) {
-        return NextResponse.json({ error: 'Ukjent målgruppe' }, { status: 400 })
-      }
-      patch.audience = body.audience as Audience | null
-    }
+    const parsed = parseRecipePatch(await req.json().catch(() => null))
+    if ('error' in parsed) return NextResponse.json({ error: parsed.error }, { status: 400 })
+    const { patch, rename } = parsed
     const { data, error } = await supabaseAdmin
       .from('strikk_oppskrift')
       .update(patch)
@@ -44,7 +28,7 @@ export async function PATCH(req: NextRequest, ctx: RouteContext<'/api/strikk/opp
     // A new title or designer renames the Drive file to «Oppskrift - Designer.pdf». The
     // change itself is saved either way; a file that cannot be renamed (e.g. it is in the
     // private Drive) keeps its old name.
-    if (body.title !== undefined || body.designer !== undefined) {
+    if (rename) {
       try {
         recipe.file_name = await syncRecipeDriveName(recipe)
       } catch (err) {

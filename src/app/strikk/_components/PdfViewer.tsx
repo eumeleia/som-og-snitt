@@ -65,16 +65,32 @@ const Page = memo(function Page({ num, size, register }: {
   )
 })
 
-export default function PdfViewer({ doc, sizes, initialPage }: { doc: PDFDocumentProxy; sizes: PageSize[]; initialPage?: number }) {
+// initialOffset is how far down initialPage to start, 0–1. Pages are laid out at their
+// full height before they are rendered, so the place is right before any page is drawn.
+export default function PdfViewer({ doc, sizes, initialPage, initialOffset = 0, onPlaced }: {
+  doc: PDFDocumentProxy
+  sizes: PageSize[]
+  initialPage?: number
+  initialOffset?: number
+  onPlaced?: () => void
+}) {
   const containerRef = useRef<HTMLDivElement>(null)
   const pageEls = useRef(new Map<number, HTMLDivElement>())
 
   // Scrolls the nearest scroll container, so it works full screen and inside a panel.
   useEffect(() => {
-    if (!initialPage || initialPage < 2) return
-    const raf = requestAnimationFrame(() => pageEls.current.get(initialPage)?.scrollIntoView({ block: 'start' }))
+    const raf = requestAnimationFrame(() => {
+      const el = initialPage ? pageEls.current.get(Math.min(initialPage, sizes.length)) : null
+      if (el && (initialPage! > 1 || initialOffset > 0)) {
+        el.scrollIntoView({ block: 'start' })
+        if (initialOffset > 0) window.scrollBy(0, el.getBoundingClientRect().height * initialOffset)
+      }
+      onPlaced?.()
+    })
     return () => cancelAnimationFrame(raf)
-  }, [doc, initialPage])
+    // Placed once per document; a later change of the props must not jump the view.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc])
 
   const register = useCallback((num: number, el: HTMLDivElement | null) => {
     if (el) pageEls.current.set(num, el)

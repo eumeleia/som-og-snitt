@@ -5,7 +5,7 @@ import { discontinuedSuggestions, spellingKey, type YarnRow } from './yarns'
 
 export const RECIPE_FILTER_SELECT =
   'id, title, designer, drive_file_id, file_name, source, created_at, updated_at, extraction_status, ' +
-  'audience, garment_type, is_collection, gauge_stitches_10cm, mentions_leftover, leftover_note, ' +
+  'audience, garment_type, is_collection, gauge_stitches_10cm, mentions_leftover, leftover_note, rating, favorite, ' +
   'strikk_size(id, position, label), ' +
   'strikk_yarn_line(id, position, color_group, yarn_id, skein_weight_g), ' +
   'strikk_yarn_amount(size_id, color_group, yarn_line_id, amount, amount_max, unit), ' +
@@ -27,15 +27,19 @@ export interface FilterRecipe {
   gauge_stitches_10cm: number | string | null
   mentions_leftover: boolean | null
   leftover_note: string | null
+  rating: number | null
+  favorite: boolean
   strikk_size: { id: string; position: number; label: string }[]
   strikk_yarn_line: { id: string; position: number; color_group: number; yarn_id: string | null; skein_weight_g: number | string | null }[]
   strikk_yarn_amount: { size_id: string; color_group: number; yarn_line_id: string | null; amount: number | string | null; amount_max: number | string | null; unit: 'g' | 'skeins' }[]
   strikk_yarn_alternative: { yarn_line_id: string | null; color_group: number | null; yarn_id?: string | null; source: 'pattern' | 'app' }[]
 }
 
-export const SORTS = ['title', 'designer', 'gauge', 'newest'] as const
+export const SORTS = ['title', 'designer', 'gauge', 'newest', 'rating', 'favorites'] as const
 export type Sort = typeof SORTS[number]
-export const SORT_LABEL: Record<Sort, string> = { title: 'Navn', designer: 'Designer', gauge: 'Strikkefasthet', newest: 'Sist lagt til' }
+export const SORT_LABEL: Record<Sort, string> = {
+  title: 'Navn', designer: 'Designer', gauge: 'Strikkefasthet', newest: 'Sist lagt til', rating: 'Stjerner', favorites: 'Favoritter først',
+}
 
 export interface RecipeFilter {
   query: string
@@ -45,11 +49,14 @@ export interface RecipeFilter {
   gaugeMax: number | null
   yarnIds: string[]
   leftover: boolean
+  favorites: boolean
+  // At least this many stars; null for any.
+  minRating: number | null
   sort: Sort
 }
 
 export const EMPTY_FILTER: RecipeFilter = {
-  query: '', garmentTypes: [], audiences: [], gaugeMin: null, gaugeMax: null, yarnIds: [], leftover: false, sort: 'newest',
+  query: '', garmentTypes: [], audiences: [], gaugeMin: null, gaugeMax: null, yarnIds: [], leftover: false, favorites: false, minRating: null, sort: 'newest',
 }
 
 export const AUDIENCE_LABEL: Record<Audience, string> = {
@@ -139,6 +146,8 @@ export function applyFilter(recipes: FilterRecipe[], f: RecipeFilter, yarns: Yar
     if (q && !spellingKey(`${r.title} ${r.designer ?? ''}`).includes(q)) continue
     if (types.size && !types.has(garmentKey(r.garment_type))) continue
     if (f.audiences.length && !(r.audience && f.audiences.includes(r.audience))) continue
+    if (f.favorites && !r.favorite) continue
+    if (f.minRating !== null && (r.rating ?? 0) < f.minRating) continue
     if (f.gaugeMin !== null || f.gaugeMax !== null) {
       const g = num(r.gauge_stitches_10cm)
       if (r.is_collection || g === null) continue
@@ -158,6 +167,7 @@ const nb = (a: string, b: string) => a.localeCompare(b, 'nb', { sensitivity: 'ba
 
 export function sortResults(list: FilterResult[], sort: Sort): FilterResult[] {
   const byTitle = (a: FilterResult, b: FilterResult) => nb(a.recipe.title, b.recipe.title)
+  const newest = (a: FilterResult, b: FilterResult) => b.recipe.created_at.localeCompare(a.recipe.created_at) || byTitle(a, b)
   const cmp: Record<Sort, (a: FilterResult, b: FilterResult) => number> = {
     title: byTitle,
     // Missing designer or gauge goes last.
@@ -166,7 +176,10 @@ export function sortResults(list: FilterResult[], sort: Sort): FilterResult[] {
       const x = num(a.recipe.gauge_stitches_10cm), y = num(b.recipe.gauge_stitches_10cm)
       return (x === null ? 1 : 0) - (y === null ? 1 : 0) || (x ?? 0) - (y ?? 0) || byTitle(a, b)
     },
-    newest: (a, b) => b.recipe.created_at.localeCompare(a.recipe.created_at) || byTitle(a, b),
+    newest,
+    // Most stars first; recipes without stars last.
+    rating: (a, b) => (b.recipe.rating ?? 0) - (a.recipe.rating ?? 0) || newest(a, b),
+    favorites: (a, b) => (b.recipe.favorite ? 1 : 0) - (a.recipe.favorite ? 1 : 0) || newest(a, b),
   }
   return [...list].sort(cmp[sort])
 }
@@ -187,6 +200,8 @@ export function activeChips(f: RecipeFilter, yarns: YarnRow[]): Chip[] {
   }
   for (const id of f.yarnIds) { const y = byId.get(id); chips.push({ key: `yarn:${id}`, label: y ? yarnLabel(y) : 'Ukjent garn' }) }
   if (f.leftover) chips.push({ key: 'leftover', label: 'Restegarn' })
+  if (f.favorites) chips.push({ key: 'favorites', label: 'Favoritter' })
+  if (f.minRating !== null) chips.push({ key: 'rating', label: f.minRating === 5 ? '5 stjerner' : `Minst ${f.minRating} stjerner` })
   return chips
 }
 
@@ -199,6 +214,8 @@ export function removeChip(f: RecipeFilter, key: string): RecipeFilter {
     case 'gauge': return { ...f, gaugeMin: null, gaugeMax: null }
     case 'yarn': return { ...f, yarnIds: f.yarnIds.filter(id => id !== value) }
     case 'leftover': return { ...f, leftover: false }
+    case 'favorites': return { ...f, favorites: false }
+    case 'rating': return { ...f, minRating: null }
     default: return f
   }
 }

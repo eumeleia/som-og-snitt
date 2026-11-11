@@ -58,7 +58,8 @@ export function useStoredFilter(): [RecipeFilter, (f: RecipeFilter) => void] {
 }
 
 export const filterCount = (f: RecipeFilter) =>
-  f.garmentTypes.length + f.audiences.length + (f.gaugeMin !== null || f.gaugeMax !== null ? 1 : 0) + f.yarnIds.length + (f.leftover ? 1 : 0)
+  f.garmentTypes.length + f.audiences.length + (f.gaugeMin !== null || f.gaugeMax !== null ? 1 : 0) + f.yarnIds.length + (f.leftover ? 1 : 0) +
+  (f.favorites ? 1 : 0) + (f.minRating !== null ? 1 : 0)
 
 // ── Above the list ──────────────────────────────────────────────────────────────────
 
@@ -189,6 +190,18 @@ export function FilterSheet({ filter, onChange, recipes, yarns, onYarnUpdated, s
             </div>
           </Section>
 
+          <Section title="Favoritter og stjerner">
+            <div className="flex flex-wrap gap-1.5">
+              <Toggle on={filter.favorites} onClick={() => onChange({ ...filter, favorites: !filter.favorites })}>Bare favoritter</Toggle>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {[null, 1, 2, 3, 4, 5].map(n => (
+                <Toggle key={n ?? 0} on={filter.minRating === n} onClick={() => onChange({ ...filter, minRating: n })}>
+                  {n === null ? 'Alle' : n === 5 ? '★ 5' : `★ ${n}+`}
+                </Toggle>
+              ))}
+            </div>
+          </Section>
           <Section title="Plaggtype">
             <div className="flex flex-wrap gap-1.5">
               {types.map(t => (

@@ -11,9 +11,26 @@ export interface KnitRecipe {
   updated_at: string
   audience: Audience | null
   extraction_status: StoredRecipe['extraction_status']
+  rating: number | null
+  favorite: boolean
+  thumbnail_path: string | null
+  thumbnail_at: string | null
+  last_page: number | null
+  last_offset: number | null
 }
 
-export const RECIPE_SELECT = 'id, title, designer, drive_file_id, file_name, source, created_at, updated_at, audience, extraction_status'
+export const RECIPE_SELECT = 'id, title, designer, drive_file_id, file_name, source, created_at, updated_at, audience, extraction_status, rating, favorite, thumbnail_path, thumbnail_at, last_page, last_offset'
+
+export const THUMBNAIL_BUCKET = 'strikk-thumbnails'
+export const THUMBNAIL_MAX_BYTES = 60 * 1024
+
+// Public URL of the first-page picture. The time it was made is added, so a new picture
+// is not served from the cache.
+export function thumbnailUrl(r: Pick<KnitRecipe, 'thumbnail_path' | 'thumbnail_at'>, base = process.env.NEXT_PUBLIC_SUPABASE_URL): string | null {
+  if (!r.thumbnail_path || !base) return null
+  const v = r.thumbnail_at ? `?v=${Date.parse(r.thumbnail_at)}` : ''
+  return `${base}/storage/v1/object/public/${THUMBNAIL_BUCKET}/${encodeURIComponent(r.thumbnail_path)}${v}`
+}
 
 // Not read in yet: waiting for Claude Code. Read in but not approved: Claude Code has
 // checked it and kept it for Maria, because something in the pattern itself is unclear.

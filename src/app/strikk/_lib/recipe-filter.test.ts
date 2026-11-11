@@ -22,7 +22,7 @@ function recipe(over: Partial<FilterRecipe> & { colours?: { yarn_id: string | nu
   return {
     id, title: id, designer: null, drive_file_id: 'f', file_name: 'x.pdf', source: 'upload', created_at: '2026-01-01',
     updated_at: '', extraction_status: 'approved', audience: null, garment_type: null, is_collection: false,
-    gauge_stitches_10cm: null, mentions_leftover: false, leftover_note: null,
+    gauge_stitches_10cm: null, mentions_leftover: false, leftover_note: null, rating: null, favorite: false,
     strikk_size: [{ id: `${id}-s0`, position: 0, label: 'S' }, { id: `${id}-s1`, position: 1, label: 'M' }],
     strikk_yarn_line: colours.map((c, i) => ({ id: `${id}-l${i}`, position: i, color_group: i, yarn_id: c.yarn_id, skein_weight_g: c.weight === undefined ? null : c.weight })),
     strikk_yarn_amount: colours.flatMap((c, i) => [
@@ -117,13 +117,38 @@ describe('sorting', () => {
     expect(titles(rs, f({ sort: 'gauge' }))).toEqual(['Øvre', 'Beta', 'Alfa'])
     expect(titles(rs, f({ sort: 'newest' }))).toEqual(['Øvre', 'Beta', 'Alfa'])
   })
+  it('sorts by stars, most first and none last, and favourites first, then newest', () => {
+    const rated = [
+      recipe({ id: 'Uten', rating: null, created_at: '2026-05-01' }),
+      recipe({ id: 'Tre', rating: 3, favorite: true, created_at: '2026-01-01' }),
+      recipe({ id: 'Fem', rating: 5, created_at: '2026-02-01' }),
+      recipe({ id: 'Tre nyere', rating: 3, favorite: true, created_at: '2026-03-01' }),
+    ]
+    expect(titles(rated, f({ sort: 'rating' }))).toEqual(['Fem', 'Tre nyere', 'Tre', 'Uten'])
+    expect(titles(rated, f({ sort: 'favorites' }))).toEqual(['Tre nyere', 'Tre', 'Uten', 'Fem'])
+  })
+})
+
+describe('favourites and stars', () => {
+  const rs = [
+    recipe({ id: 'Favoritt uten stjerner', favorite: true }),
+    recipe({ id: 'Fire stjerner', rating: 4 }),
+    recipe({ id: 'Favoritt med to', favorite: true, rating: 2 }),
+    recipe({ id: 'Ingenting' }),
+  ]
+  it('keeps only favourites, or recipes with at least so many stars, and both together', () => {
+    expect(titles(rs, f({ favorites: true }))).toEqual(['Favoritt med to', 'Favoritt uten stjerner'])
+    expect(titles(rs, f({ minRating: 2 }))).toEqual(['Favoritt med to', 'Fire stjerner'])
+    expect(titles(rs, f({ minRating: 5 }))).toEqual([])
+    expect(titles(rs, f({ favorites: true, minRating: 1 }))).toEqual(['Favoritt med to'])
+  })
 })
 
 describe('active filters', () => {
   it('lists each active filter, and removes them one at a time', () => {
-    const filter = f({ query: 'rein', garmentTypes: ['genser'], audiences: ['child'], gaugeMin: 18, gaugeMax: 22, yarnIds: ['mandarin'], leftover: true })
+    const filter = f({ query: 'rein', garmentTypes: ['genser'], audiences: ['child'], gaugeMin: 18, gaugeMax: 22, yarnIds: ['mandarin'], leftover: true, favorites: true, minRating: 4 })
     const chips = activeChips(filter, YARNS)
-    expect(chips.map(c => c.label)).toEqual(['Søk: rein', 'genser', 'Barn', '18–22 m/10 cm', 'Sandnes Garn Mandarin Merino (utgått)', 'Restegarn'])
+    expect(chips.map(c => c.label)).toEqual(['Søk: rein', 'genser', 'Barn', '18–22 m/10 cm', 'Sandnes Garn Mandarin Merino (utgått)', 'Restegarn', 'Favoritter', 'Minst 4 stjerner'])
     const emptied = chips.reduce((acc, c) => removeChip(acc, c.key), filter)
     expect(emptied).toEqual({ ...EMPTY_FILTER, sort: filter.sort })
   })
