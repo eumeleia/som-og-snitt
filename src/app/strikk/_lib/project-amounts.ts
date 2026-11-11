@@ -40,3 +40,32 @@ export function estimatedCost(a: Pick<AmountData, 'amount' | 'amount_max' | 'uni
   if (skeins === null) return null
   return Math.ceil(skeins) * yarn.price_per_skein
 }
+
+// Hva Maria har liggende av ett garn fra katalogen, til sizeCoverage.
+export interface OwnedYarn { skein_count: number; leftover_g: number }
+
+export interface SizeShortfall { color_label: string | null; short_skeins: number }
+export interface SizeCoverage { label: string; covered: boolean; shortfalls: SizeShortfall[] }
+
+// Hvilke størrelser i mønsteret Maria har nok garn på lager til, ut fra garnet hun eier
+// (owned, pr. yarn_id) — rester i gram regnes om til nøster med SAMME skein_weight_g som
+// mønsterets egen garnlinje oppgir, slik at nøster og rester av samme garn telles likt.
+// En garnlinje mønsteret ikke har koblet til et garn i katalogen, eller der mengden er et
+// delt valg mellom flere garn (needs_choice), kan ikke sjekkes og hopper over — den blokkerer
+// ikke størrelsen, men den bekreftes heller ikke.
+export function sizeCoverage(d: Pick<ExtractionData, 'sizes' | 'yarn_lines' | 'amounts'>, owned: Map<string, OwnedYarn>): SizeCoverage[] {
+  return d.sizes.map((size, sizeIndex) => {
+    const shortfalls: SizeShortfall[] = []
+    d.yarn_lines.forEach((line, lineIndex) => {
+      if (!line.yarn_id) return
+      const amount = amountForLine(d as ExtractionData, sizeIndex, lineIndex)
+      if (!amount || amount.needs_choice) return
+      const needed = skeinsNeeded(amount, line)
+      if (needed === null) return
+      const o = owned.get(line.yarn_id) ?? { skein_count: 0, leftover_g: 0 }
+      const haveSkeins = o.skein_count + (line.skein_weight_g ? o.leftover_g / line.skein_weight_g : 0)
+      if (haveSkeins + 1e-9 < needed) shortfalls.push({ color_label: line.color_label, short_skeins: Math.ceil(needed - haveSkeins) })
+    })
+    return { label: size.label, covered: shortfalls.length === 0, shortfalls }
+  })
+}

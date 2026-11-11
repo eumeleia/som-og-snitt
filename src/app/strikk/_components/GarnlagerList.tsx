@@ -1,8 +1,11 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { isVisibleInGarnlager, STASH_SELECT, stashThumbnailUrl, type StashRow } from '../_lib/stash'
+import { EXTRACTION_SELECT, storedToExtraction, type StoredRecipe } from '../_lib/extraction'
+import { sizeCoverage, type OwnedYarn, type SizeCoverage } from '../_lib/project-amounts'
 
 interface ProjectOption { id: string; name: string; status: string }
 
@@ -10,7 +13,8 @@ const FIELD_LABEL: Record<string, string> = {
   brand: 'Merke', name: 'Garn', color_number: 'Fargenr.', color_name: 'Fargenavn', skein_count: 'Antall',
 }
 
-interface PatternMatch { id: string; title: string; designer: string | null; have: number; of: number }
+interface MatchYarn { yarnId: string; label: string; colors: string[] }
+interface PatternMatch { id: string; title: string; designer: string | null; yarns: MatchYarn[]; sizes: SizeCoverage[] }
 
 async function patchRow(id: string, body: Record<string, unknown>): Promise<StashRow> {
   const res = await fetch(`/api/strikk/garnlager/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -36,10 +40,15 @@ function yarnLabel(y: StashRow['strikk_yarn']): string {
   return [y.brand, y.name].filter(Boolean).join(' ') + (y.discontinued ? ' (utgått)' : '')
 }
 
+function coveredCount(sizes: SizeCoverage[]): number {
+  return sizes.filter(s => s.covered).length
+}
+
 // Garnlageret: raden som venter på gjennomgang øverst (bilde, rettbare felt, usikre merker),
 // godkjent garn gruppert produsent > garn > farge under, og «Hva vil du strikke?» i hjørnet —
 // oppskrifter som er godkjent og bruker garn Maria allerede har liggende.
 export default function GarnlagerList() {
+  const router = useRouter()
   const [rows, setRows] = useState<StashRow[] | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -76,31 +85,58 @@ export default function GarnlagerList() {
   const approved = useMemo(() => (rows ?? []).filter(r => r.status === 'godkjent' && isVisibleInGarnlager(r)), [rows])
   const pending = useMemo(() => (rows ?? []).filter(r => r.status === 'til_gjennomgang'), [rows])
 
-  // «Hva vil du strikke?»: godkjente oppskrifter som bruker garn Maria har godkjent i lageret.
+  // «Hva vil du strikke?»: godkjente oppskrifter som bruker garn Maria har godkjent i lageret,
+  // med hvilket garn/farge det er snakk om og hvilke størrelser garnet på lager rekker til.
   useEffect(() => {
     const owned = new Set(approved.map(r => r.yarn_id).filter((x): x is string => !!x))
+    const ownedByYarn = new Map<string, OwnedYarn>()
+    for (const r of approved) {
+      if (!r.yarn_id) continue
+      const o = ownedByYarn.get(r.yarn_id) ?? { skein_count: 0, leftover_g: 0 }
+      o.skein_count += r.skein_count
+      o.leftover_g += r.leftover_g ?? 0
+      ownedByYarn.set(r.yarn_id, o)
+    }
+    const colorsByYarn = new Map<string, string[]>()
+    for (const r of approved) {
+      if (!r.yarn_id) continue
+      const label = [r.color_number, r.color_name].filter(Boolean).join(' ')
+      if (!label) continue
+      const list = colorsByYarn.get(r.yarn_id) ?? []
+      if (!list.includes(label)) list.push(label)
+      colorsByYarn.set(r.yarn_id, list)
+    }
+
     let cancelled = false
     Promise.all([
       supabase.from('strikk_yarn_line').select('oppskrift_id, yarn_id'),
       supabase.from('strikk_oppskrift').select('id, title, designer, extraction_status'),
-    ]).then(([{ data: lines }, { data: recipes }]) => {
+    ]).then(async ([{ data: lines }, { data: recipes }]) => {
       if (cancelled || !lines || !recipes) return
       const approvedRecipes = new Map(recipes.filter(r => r.extraction_status === 'approved').map(r => [r.id, r]))
-      const byRecipe = new Map<string, { have: Set<string>; of: Set<string> }>()
+      const candidateIds = new Set<string>()
       for (const l of lines) {
-        if (!approvedRecipes.has(l.oppskrift_id) || !l.yarn_id) continue
-        const e = byRecipe.get(l.oppskrift_id) ?? { have: new Set(), of: new Set() }
-        e.of.add(l.yarn_id)
-        if (owned.has(l.yarn_id)) e.have.add(l.yarn_id)
-        byRecipe.set(l.oppskrift_id, e)
+        if (approvedRecipes.has(l.oppskrift_id) && l.yarn_id && owned.has(l.yarn_id)) candidateIds.add(l.oppskrift_id)
       }
+      if (candidateIds.size === 0) { setMatches([]); return }
+
+      const { data: fullRecipes } = await supabase.from('strikk_oppskrift').select(EXTRACTION_SELECT).in('id', [...candidateIds])
+      if (cancelled || !fullRecipes) return
+
       const out: PatternMatch[] = []
-      for (const [id, e] of byRecipe) {
-        if (e.have.size === 0) continue
-        const r = approvedRecipes.get(id)!
-        out.push({ id, title: r.title, designer: r.designer, have: e.have.size, of: e.of.size })
+      for (const raw of fullRecipes as unknown as StoredRecipe[]) {
+        const r = approvedRecipes.get(raw.id)
+        if (!r) continue
+        const d = storedToExtraction(raw)
+        const matchedYarnIds = [...new Set(d.yarn_lines.map(l => l.yarn_id).filter((x): x is string => !!x && owned.has(x)))]
+        if (matchedYarnIds.length === 0) continue
+        const yarns: MatchYarn[] = matchedYarnIds.map(yarnId => {
+          const line = d.yarn_lines.find(l => l.yarn_id === yarnId)!
+          return { yarnId, label: [line.brand, line.yarn_name].filter(Boolean).join(' '), colors: colorsByYarn.get(yarnId) ?? [] }
+        })
+        out.push({ id: raw.id, title: r.title, designer: r.designer, yarns, sizes: sizeCoverage(d, ownedByYarn) })
       }
-      out.sort((a, b) => (b.have / b.of) - (a.have / a.of) || b.have - a.have)
+      out.sort((a, b) => coveredCount(b.sizes) - coveredCount(a.sizes) || b.yarns.length - a.yarns.length)
       setMatches(out)
     })
     return () => { cancelled = true }
@@ -150,6 +186,22 @@ export default function GarnlagerList() {
     await withBusy(row.id, async () => {
       const thumbnail_path = await uploadThumbnail(row.id, file)
       updateLocal(row.id, { thumbnail_path })
+    })
+  }
+
+  // Lager et prosjekt fra oppskriften og tildeler garnet som ga treffet med én gang — garn
+  // som allerede er tildelt et annet prosjekt, rører den ikke.
+  async function planProject(match: PatternMatch) {
+    await withBusy(match.id, async () => {
+      const res = await fetch('/api/strikk/projects', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ oppskriftId: match.id }),
+      })
+      const project = await res.json()
+      if (!res.ok) throw new Error(project.error ?? 'Klarte ikke lage prosjektet')
+      const yarnIds = new Set(match.yarns.map(y => y.yarnId))
+      const toAssign = approved.filter(r => r.yarn_id && yarnIds.has(r.yarn_id) && !r.project_id)
+      await Promise.all(toAssign.map(r => patchRow(r.id, { project_id: project.id })))
+      router.push(`/strikk/prosjekt/${project.id}`)
     })
   }
 
@@ -262,21 +314,36 @@ export default function GarnlagerList() {
         <button onClick={() => void loadAll()} className="self-start text-sm text-stone-500 underline">Oppdater listen</button>
       </div>
 
-      <aside className="w-full lg:w-72 shrink-0">
+      <aside className="w-full lg:w-80 shrink-0">
         <div className="lg:sticky lg:top-4 rounded-2xl border border-[#D4A574] bg-[#F5EFE6] px-4 py-4">
           <h2 className="font-serif text-lg text-stone-800">Hva vil du strikke?</h2>
           {matches === null && <p className="text-sm text-stone-500 mt-2">Ser gjennom oppskriftene …</p>}
           {matches?.length === 0 && <p className="text-sm text-stone-500 mt-2">Godkjenn garn for å se forslag her.</p>}
-          <ul className="mt-2 flex flex-col gap-2">
+          <ul className="mt-2 flex flex-col gap-3">
             {matches?.slice(0, 20).map(m => (
-              <li key={m.id}>
-                <a href={`/strikk/oppskrifter/${m.id}`} className="block rounded-lg px-2.5 py-2 hover:bg-white/70 transition-colors">
+              <li key={m.id} className="rounded-lg bg-white/70 px-2.5 py-2">
+                <a href={`/strikk/oppskrifter/${m.id}`} className="block hover:underline">
                   <div className="text-sm text-stone-800 truncate">{m.title}</div>
-                  <div className="text-xs text-stone-500">
-                    {m.designer && `${m.designer} · `}
-                    {m.have === m.of ? 'Alle garn på lager' : `${m.have} av ${m.of} garn på lager`}
-                  </div>
+                  {m.designer && <div className="text-xs text-stone-500">{m.designer}</div>}
                 </a>
+                <p className="text-xs text-stone-600 mt-1">
+                  {m.yarns.map(y => `${y.label}${y.colors.length ? ` (${y.colors.join(', ')})` : ''}`).join(' · ')}
+                </p>
+                {m.sizes.length > 0 && (
+                  <p className="text-xs mt-1 flex flex-wrap gap-x-1.5 gap-y-0.5">
+                    {m.sizes.map(s => (
+                      <span key={s.label} className={s.covered ? 'text-emerald-700' : 'text-stone-400'}
+                        title={s.covered ? undefined : s.shortfalls.map(f => `${f.color_label ?? 'Garn'}: mangler ca. ${f.short_skeins} nøste${f.short_skeins === 1 ? '' : 'r'}`).join(', ')}>
+                        {s.label} {s.covered ? '✓' : '✗'}
+                      </span>
+                    ))}
+                  </p>
+                )}
+                <button disabled={busy.has(m.id)} onClick={() => void planProject(m)}
+                  className="mt-1.5 text-xs px-2.5 py-1 rounded-lg bg-[#2E5339] text-white disabled:opacity-40">
+                  Planlegg prosjekt →
+                </button>
+                {errors[m.id] && <p className="text-xs text-red-600 mt-1">{errors[m.id]}</p>}
               </li>
             ))}
           </ul>
