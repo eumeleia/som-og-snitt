@@ -21,6 +21,21 @@ export function readPosition(): Position | null {
   return null
 }
 
+// The page in the middle of the screen: what Maria is looking at. Unlike the page at the
+// top, this can be the last page, which is often too short to scroll up to the top.
+export function pageAtCenter(): number | null {
+  const vv = window.visualViewport
+  const middle = (vv?.offsetTop ?? 0) + (vv?.height ?? window.innerHeight) / 2
+  let nearest: { page: number; distance: number } | null = null
+  for (const el of document.querySelectorAll<HTMLElement>('[data-page]')) {
+    const r = el.getBoundingClientRect()
+    if (r.top <= middle && r.bottom >= middle) return Number(el.dataset.page)
+    const distance = Math.min(Math.abs(r.top - middle), Math.abs(r.bottom - middle))
+    if (!nearest || distance < nearest.distance) nearest = { page: Number(el.dataset.page), distance }
+  }
+  return nearest?.page ?? null
+}
+
 // Scrolls the window so page el starts offset (0–1) of its height above the top. Pages
 // are laid out at their full height before they are drawn, so this is right at once.
 export function placeAt(el: HTMLElement, offset: number) {

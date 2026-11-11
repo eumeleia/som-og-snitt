@@ -17,7 +17,7 @@ import { DriveAuthExpiredError, DriveFileMissingError, downloadPdf } from '../_l
 import type { YarnRow } from '../_lib/yarns'
 import { findSizeMarks, type Measure, type PageText, type SizeMarks } from '../_lib/size-marks'
 import PdfPages, { MARKER_OPACITY, SIZE_MARK_COLOR, type PageSize } from './PdfPages'
-import { placeAt, readPosition, useSavePosition } from './readingPosition'
+import { pageAtCenter, placeAt, useSavePosition } from './readingPosition'
 import { openPdf } from './PdfViewer'
 import { compressCover, coverUrl, removeCover, uploadCover } from '../_lib/cover'
 import Counters from './Counters'
@@ -575,7 +575,7 @@ function PdfView({ projectId, project, recipe, sizeLabels, onSaved, onBack }: {
       setPageError(err instanceof Error ? err.message : 'Klarte ikke lagre')
     }
   }
-  const pageNow = () => readPosition()?.page ?? 1
+  const pageNow = () => pageAtCenter() ?? 1
   const [tool, setTool] = useState<Tool | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [sheetOpen, setSheetOpen] = useState(false)
@@ -791,7 +791,7 @@ function PdfView({ projectId, project, recipe, sizeLabels, onSaved, onBack }: {
                 <RoundButton label="Viskelær" on={tool === 'eraser'} onClick={() => toggleTool('eraser')}><ToolIcon tool="eraser" /></RoundButton>
                 <div className="h-px w-8 bg-stone-400 my-1 mr-1.5" />
                 <MenuButton onClick={() => { void markCurrentPage(pageNow()); setMenuOpen(false) }}
-                  title="Merk som gjeldende side" note="Siden øverst på skjermen. Prosjektet åpnes der neste gang." />
+                  title="Merk som gjeldende side" note="Siden midt på skjermen. Prosjektet åpnes der neste gang." />
                 {currentPage !== null && (
                   <>
                     <MenuButton onClick={() => {
