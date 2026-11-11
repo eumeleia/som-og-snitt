@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
-import { RECIPE_SELECT, waitsForClaudeCode, type KnitRecipe } from '../_lib/recipes'
+import { RECIPE_SELECT, needsMaria, waitsForClaudeCode, type KnitRecipe } from '../_lib/recipes'
 import { AUDIENCES, type Audience } from '../_lib/extraction'
 import { AUDIENCE_LABEL, applyFilter, type FilterResult } from '../_lib/recipe-filter'
 import { DriveAuthExpiredError, getAccessToken, listDriveFiles, sha256Hex, syncDriveNames, uploadPdf } from '../_lib/drive'
@@ -291,6 +291,12 @@ export default function RecipeList() {
           strikkeoppskrifter» til Claude Code, så blir de lest inn, kontrollert og godkjent.
         </p>
       )}
+      {list.kind === 'ready' && list.recipes.some(needsMaria) && (
+        <p className="text-sm rounded-xl p-3 bg-stone-100 text-stone-800">
+          {list.recipes.filter(needsMaria).length} oppskrifter er kontrollert, men har noe uklart i selve oppskriften.
+          Se grunnen under <Link href="/strikk/gjennomgang" className="underline">Gjennomgang</Link>.
+        </p>
+      )}
       {list.kind === 'ready' && list.recipes.length > 0 && filterData.kind === 'ready' && view && (
         <FilterBar filter={filter} onChange={setFilter} yarns={filterData.yarns} shown={view.items.length}
           total={list.recipes.length} unread={view.unread} onOpen={() => setFiltersOpen(true)} />
@@ -320,6 +326,9 @@ export default function RecipeList() {
                     )}
                     {waitsForClaudeCode(r) && (
                       <span className="inline-block mt-1 text-xs rounded-full bg-amber-100 text-amber-900 px-2 py-0.5">Venter på Claude Code</span>
+                    )}
+                    {needsMaria(r) && (
+                      <span className="inline-block mt-1 text-xs rounded-full bg-stone-200 text-stone-800 px-2 py-0.5">Trenger deg</span>
                     )}
                     {result && filterData.kind === 'ready' && <HitInfo result={result} yarns={filterData.yarns} filter={filter} />}
                   </Link>

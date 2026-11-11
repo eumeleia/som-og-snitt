@@ -15,8 +15,10 @@ export interface KnitRecipe {
 
 export const RECIPE_SELECT = 'id, title, designer, drive_file_id, file_name, source, created_at, updated_at, audience, extraction_status'
 
-// Everything not approved yet is waiting for Claude Code to read it in and check it.
-export const waitsForClaudeCode = (r: Pick<KnitRecipe, 'extraction_status'>) => r.extraction_status !== 'approved'
+// Not read in yet: waiting for Claude Code. Read in but not approved: Claude Code has
+// checked it and kept it for Maria, because something in the pattern itself is unclear.
+export const waitsForClaudeCode = (r: Pick<KnitRecipe, 'extraction_status'>) => r.extraction_status === 'pending' || r.extraction_status === 'failed'
+export const needsMaria = (r: Pick<KnitRecipe, 'extraction_status'>) => r.extraction_status === 'extracted'
 
 export function titleFromFileName(fileName: string): string {
   return fileName.replace(/\.pdf$/i, '').trim() || fileName

@@ -5,7 +5,8 @@ Uttrekket gjøres lokalt av Claude Code. Claude-API-et og `ANTHROPIC_API_KEY` br
 verken i appen eller her.
 
 Maria laster opp PDF-en i appen og fyller selv inn navn og hvem oppskriften er ment for.
-Alt som ikke er godkjent, er merket «Venter på Claude Code» i appen. Når hun ber om det,
+Oppskrifter som ikke er lest inn, er merket «Venter på Claude Code» i appen; de som er
+kontrollert, men har noe uklart i selve PDF-en, er merket «Trenger deg». Når hun ber om det,
 leser Claude Code oppskriftene inn, kontrollerer dem mot PDF-en og godkjenner dem (steg 1–7).
 Maria går ikke gjennom oppskriftene selv; bare det som er reelt uklart i selve PDF-en, blir
 stående til henne med grunnen.
