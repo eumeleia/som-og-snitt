@@ -7,6 +7,8 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { NavIcon } from './_shared/DashboardIcons'
+import { PROJECT_LIST_SELECT, type ProjectListRow } from '@/app/strikk/_lib/projects'
+import { coverUrl } from '@/app/strikk/_lib/cover'
 
 // Egen, smal spørring — landingssiden trenger bare et fåtall felt fra projects,
 // ikke hele ProjectData i projects/page.tsx.
@@ -26,6 +28,40 @@ interface LandingProject {
   }
 }
 
+// Sy- og strikkeprosjekter vist side om side her, med et merke som sier hvilket.
+interface SyCard {
+  kind: 'sy'
+  id: string
+  createdAt: string
+  name: string
+  imageUrl: string | null
+  focalX: number
+  focalY: number
+  recipientName?: string
+  size?: string
+  recipeId?: string
+  recipeName?: string
+}
+interface StrikkCard {
+  kind: 'strikk'
+  id: string
+  createdAt: string
+  name: string
+  imageUrl: string | null
+}
+type Card = SyCard | StrikkCard
+
+const BADGE_STYLE: Record<Card['kind'], string> = { strikk: 'bg-[#2E5339]', sy: 'bg-[#C9A57A]' }
+const BADGE_LABEL: Record<Card['kind'], string> = { strikk: 'Strikk', sy: 'Sying' }
+
+function Badge({ kind }: { kind: Card['kind'] }) {
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium text-white ${BADGE_STYLE[kind]}`}>
+      {BADGE_LABEL[kind]}
+    </span>
+  )
+}
+
 function fornavn(userName: string) {
   return userName.split(' ')[0]?.trim() || userName
 }
@@ -34,6 +70,7 @@ export default function DashboardHomePage() {
   const router = useRouter()
   const [userName, setUserName] = useState('')
   const [projects, setProjects] = useState<LandingProject[]>([])
+  const [strikkProjects, setStrikkProjects] = useState<ProjectListRow[]>([])
   const [loading, setLoading]   = useState(true)
 
   useEffect(() => {
@@ -48,12 +85,16 @@ export default function DashboardHomePage() {
   }, [])
 
   useEffect(() => {
-    supabase.from('projects').select('id, created_at, data').order('created_at', { ascending: false })
-      .then(({ data, error }) => {
-        if (error) { console.error('[dashboard] henting av prosjekter feilet', error); setLoading(false); return }
-        setProjects((data as LandingProject[]) ?? [])
-        setLoading(false)
-      })
+    Promise.all([
+      supabase.from('projects').select('id, created_at, data').order('created_at', { ascending: false }),
+      supabase.from('strikk_project').select(PROJECT_LIST_SELECT).eq('status', 'in_progress'),
+    ]).then(([syRes, strikkRes]) => {
+      if (syRes.error) console.error('[dashboard] henting av prosjekter feilet', syRes.error)
+      else setProjects((syRes.data as LandingProject[]) ?? [])
+      if (strikkRes.error) console.error('[dashboard] henting av strikkeprosjekter feilet', strikkRes.error)
+      else setStrikkProjects((strikkRes.data as unknown as ProjectListRow[]) ?? [])
+      setLoading(false)
+    })
   }, [])
 
   function openProject(id: string) {
@@ -66,12 +107,32 @@ export default function DashboardHomePage() {
     router.push('/dashboard/recipes')
   }
 
-  const aktive = projects.filter(p => p.data.status === 'Aktiv')
-  const nyesteAktive = aktive[0]
-  // "Fortsett der du slapp": de tre sist opprettede IKKE-fullførte prosjektene —
-  // det finnes ingen "sist åpnet"-tidsstempel å sortere på (se docs/prompt-
-  // forbedringer), så created_at er nærmeste reelle proxy.
-  const fortsett = projects.filter(p => p.data.status !== 'Fullført').slice(0, 3)
+  function openCard(card: Card) {
+    if (card.kind === 'sy') openProject(card.id)
+    else router.push(`/strikk/prosjekt/${card.id}?view=pdf`)
+  }
+
+  const strikkOngoing: StrikkCard[] = strikkProjects.map(p => ({
+    kind: 'strikk', id: p.id, createdAt: p.created_at,
+    name: p.name || p.strikk_oppskrift?.title || 'Uten navn', imageUrl: coverUrl(p),
+  }))
+  const syOngoing: SyCard[] = projects.filter(p => p.data.status === 'Aktiv').map(p => ({
+    kind: 'sy', id: p.id, createdAt: p.created_at, name: p.data.name || 'Uten navn',
+    imageUrl: p.data.images[0]?.url ?? null, focalX: p.data.focalX ?? 50, focalY: p.data.focalY ?? 50,
+    recipientName: p.data.recipientName, size: p.data.size, recipeId: p.data.recipeId, recipeName: p.data.recipeName,
+  }))
+  // Pågående fra begge, nyeste først: skjæringspunktet mellom strikk og sy sin "Aktiv".
+  const ongoing: Card[] = [...syOngoing, ...strikkOngoing].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  const nyesteAktive = ongoing[0]
+  // "Fortsett der du slapp": syprosjekter som ikke er fullført (som før), pluss
+  // pågående strikkeprosjekter, nyeste først — ingen "sist åpnet"-tidsstempel å sortere
+  // på (se docs/prompt-forbedringer), så created_at er nærmeste reelle proxy.
+  const syIkkeFullfort: SyCard[] = projects.filter(p => p.data.status !== 'Fullført').map(p => ({
+    kind: 'sy', id: p.id, createdAt: p.created_at, name: p.data.name || 'Uten navn',
+    imageUrl: p.data.images[0]?.url ?? null, focalX: p.data.focalX ?? 50, focalY: p.data.focalY ?? 50,
+    recipientName: p.data.recipientName, size: p.data.size, recipeId: p.data.recipeId, recipeName: p.data.recipeName,
+  }))
+  const fortsett: Card[] = [...syIkkeFullfort, ...strikkOngoing].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 3)
 
   return (
     <div className="w-full max-w-6xl mx-auto px-4 sm:px-8 py-8 sm:py-10">
@@ -81,25 +142,25 @@ export default function DashboardHomePage() {
       {!loading && (
         <>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-8">
-            {/* Stort kort — Aktive prosjekter */}
+            {/* Stort kort — pågående prosjekter, strikk og sy */}
             <div className="relative rounded-2xl border border-stone-200 bg-white overflow-hidden min-h-[280px] flex flex-col justify-end">
-              {nyesteAktive?.data.images[0]?.url && (
+              {nyesteAktive?.imageUrl && (
                 <img
-                  src={nyesteAktive.data.images[0].url}
+                  src={nyesteAktive.imageUrl}
                   alt=""
                   className="absolute inset-0 w-full h-full object-cover"
-                  style={{ objectPosition: `${nyesteAktive.data.focalX ?? 50}% ${nyesteAktive.data.focalY ?? 50}%` }}
+                  style={{ objectPosition: nyesteAktive.kind === 'sy' ? `${nyesteAktive.focalX}% ${nyesteAktive.focalY}%` : '50% 50%' }}
                 />
               )}
-              <div className={`relative p-6 ${nyesteAktive?.data.images[0]?.url ? 'bg-gradient-to-t from-white via-white/90 to-transparent pt-20' : ''}`}>
+              <div className={`relative p-6 ${nyesteAktive?.imageUrl ? 'bg-gradient-to-t from-white via-white/90 to-transparent pt-20' : ''}`}>
                 <div className="w-11 h-11 rounded-full bg-[#F5EFE6] flex items-center justify-center mb-4">
                   <NavIcon name="thread" className="w-5 h-5 text-[#8B6340]" />
                 </div>
-                <h2 className="font-serif text-2xl text-stone-800 mb-2">Aktive prosjekter</h2>
+                <h2 className="font-serif text-2xl text-stone-800 mb-2">Pågående prosjekter</h2>
                 <div className="w-10 h-0.5 bg-[#C9A57A] mb-3" />
-                <p className="text-sm text-stone-500 mb-4">{aktive.length} aktiv{aktive.length === 1 ? 't' : 'e'} prosjekt{aktive.length === 1 ? '' : 'er'}</p>
+                <p className="text-sm text-stone-500 mb-4">{ongoing.length} pågående prosjekt{ongoing.length === 1 ? '' : 'er'}</p>
                 <button
-                  onClick={() => nyesteAktive ? openProject(nyesteAktive.id) : router.push('/dashboard/projects?status=Aktiv')}
+                  onClick={() => nyesteAktive ? openCard(nyesteAktive) : router.push('/dashboard/projects?status=Aktiv')}
                   className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#C9A57A] text-white text-sm font-medium rounded-xl hover:bg-[#b8946a] transition-colors"
                 >
                   Fortsett <NavIcon name="chevronRight" className="w-4 h-4" />
@@ -144,31 +205,32 @@ export default function DashboardHomePage() {
             <p className="text-sm text-stone-400">Ingen prosjekter ennå.</p>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {fortsett.map(p => (
-                <div key={p.id} className="rounded-2xl border border-stone-200 bg-white overflow-hidden flex items-center gap-3 p-3">
-                  <div className="w-16 h-16 rounded-xl overflow-hidden bg-stone-100 flex-shrink-0">
-                    {p.data.images[0]?.url ? (
-                      <img src={p.data.images[0].url} alt="" className="w-full h-full object-cover"
-                        style={{ objectPosition: `${p.data.focalX ?? 50}% ${p.data.focalY ?? 50}%` }} />
+              {fortsett.map(card => (
+                <div key={`${card.kind}-${card.id}`} className="rounded-2xl border border-stone-200 bg-white overflow-hidden flex items-center gap-3 p-3">
+                  <div className="w-16 h-16 rounded-xl overflow-hidden bg-stone-100 flex-shrink-0 relative">
+                    {card.imageUrl ? (
+                      <img src={card.imageUrl} alt="" className="w-full h-full object-cover"
+                        style={{ objectPosition: card.kind === 'sy' ? `${card.focalX}% ${card.focalY}%` : '50% 50%' }} />
                     ) : null}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className="font-medium text-stone-800 text-sm truncate">{p.data.name || 'Uten navn'}</p>
-                    {(p.data.recipientName || p.data.size) && (
+                    <div className="mb-0.5"><Badge kind={card.kind} /></div>
+                    <p className="font-medium text-stone-800 text-sm truncate">{card.name}</p>
+                    {card.kind === 'sy' && (card.recipientName || card.size) && (
                       <p className="text-xs text-stone-400 truncate">
-                        {[p.data.recipientName && `Til ${p.data.recipientName}`, p.data.size].filter(Boolean).join(' · ')}
+                        {[card.recipientName && `Til ${card.recipientName}`, card.size].filter(Boolean).join(' · ')}
                       </p>
                     )}
-                    {p.data.recipeId && (
+                    {card.kind === 'sy' && card.recipeId && (
                       <button
-                        onClick={e => { e.stopPropagation(); openRecipe(p.data.recipeId!) }}
+                        onClick={e => { e.stopPropagation(); openRecipe(card.recipeId!) }}
                         className="text-xs text-[#C9A57A] hover:text-[#8B6340] hover:underline transition-colors truncate block"
                       >
-                        {p.data.recipeName || 'Oppskrift'} ↗
+                        {card.recipeName || 'Oppskrift'} ↗
                       </button>
                     )}
                   </div>
-                  <button onClick={() => openProject(p.id)}
+                  <button onClick={() => openCard(card)}
                     className="flex-shrink-0 px-3 py-1.5 text-xs font-medium border border-stone-200 rounded-lg text-stone-600 hover:bg-stone-50 transition-colors whitespace-nowrap">
                     Fortsett →
                   </button>

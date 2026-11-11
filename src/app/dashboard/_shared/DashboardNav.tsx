@@ -29,7 +29,6 @@ interface NavSection {
 // Prosjekter har en undermeny (kun vist i sidemenu2, men bekreftet ønsket av brukeren),
 // og Broderi har tre underpunkter inkludert Bilde til broderi (bekreftet).
 const MENU: NavSection[] = [
-  { label: 'Start', icon: 'home', href: '/start' },
   { label: 'Hjem', icon: 'home', href: '/dashboard' },
   { label: 'Oppskrifter', icon: 'book', href: '/dashboard/recipes' },
   {
