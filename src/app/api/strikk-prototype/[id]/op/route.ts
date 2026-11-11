@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
-import { applyOps, type Op, type DocState } from '@/app/strikk/prototype/ops'
+import { applyOps, type Op, type DocState } from '@/app/strikk/_lib/markup-ops'
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,

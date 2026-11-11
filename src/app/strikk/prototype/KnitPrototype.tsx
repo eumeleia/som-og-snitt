@@ -4,11 +4,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import { supabase } from '@/lib/supabase'
-import { applyOps, type Counter, type DocState, type Op, type Stroke, type Tool } from './ops'
+import { applyOps, type Counter, type DocState, type Op, type Stroke, type Tool } from '../_lib/markup-ops'
 import { enqueue, pendingOps, subscribe, subscribeServerCounters, type QueueStatus } from './saveQueue'
 import { downloadPdf, uploadPdf, DriveAuthExpiredError, DriveFileMissingError } from './drive'
-import PdfPages, { MARKER_OPACITY, type PageSize } from './PdfPages'
-import Counters from './Counters'
+import PdfPages, { MARKER_OPACITY, type PageSize } from '../_components/PdfPages'
+import Counters from '../_components/Counters'
 
 const COLORS = [
   { name: 'Gul', hex: '#FFD84D' },

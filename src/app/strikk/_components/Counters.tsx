@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import type { Counter } from './ops'
+import type { Counter } from '../_lib/markup-ops'
 
 interface Props {
   counters: Counter[]

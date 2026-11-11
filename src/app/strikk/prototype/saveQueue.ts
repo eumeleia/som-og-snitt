@@ -1,4 +1,4 @@
-import type { Counter, Op } from './ops'
+import type { Counter, Op } from '../_lib/markup-ops'
 
 // Every op goes through this queue, not only the failed ones: it is written to
 // localStorage before the request is sent, so a stroke survives Safari being closed

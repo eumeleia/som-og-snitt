@@ -2,10 +2,12 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import { supabase } from '@/lib/supabase'
 import { RECIPE_SELECT, type KnitRecipe } from '../_lib/recipes'
 import { DriveAuthExpiredError, downloadPdf } from '../_lib/drive'
+import type { Project } from '../_lib/projects'
 import PdfViewer, { openPdf, type PageSize } from './PdfViewer'
 import DriveExpired from './DriveExpired'
 
@@ -45,11 +47,29 @@ function useVisualViewportBox() {
 }
 
 export default function RecipeViewer({ id }: { id: string }) {
+  const router = useRouter()
   const [status, setStatus] = useState<Status>({ kind: 'loading', text: 'Henter oppskriften …' })
   const [recipe, setRecipe] = useState<KnitRecipe | null>(null)
   const [pdf, setPdf] = useState<{ doc: PDFDocumentProxy; sizes: PageSize[] } | null>(null)
   const [attempt, setAttempt] = useState(0)
+  const [startingProject, setStartingProject] = useState(false)
   const box = useVisualViewportBox()
+
+  async function startProject() {
+    setStartingProject(true)
+    try {
+      const res = await fetch('/api/strikk/projects', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ oppskriftId: id }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body.error ?? `Oppretting feilet (${res.status})`)
+      router.push(`/strikk/prosjekt/${(body as Project).id}`)
+    } catch (err) {
+      setStartingProject(false)
+      setStatus({ kind: 'error', text: err instanceof Error ? err.message : 'Kunne ikke starte prosjektet' })
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -135,6 +155,14 @@ export default function RecipeViewer({ id }: { id: string }) {
             </svg>
             <span className="truncate">{recipe?.title ?? 'Oppskrifter'}</span>
           </Link>
+          <button
+            onClick={startProject}
+            disabled={startingProject}
+            className="pointer-events-auto absolute right-3 h-11 px-4 rounded-full bg-[#2E5339] text-white shadow-md text-sm font-medium disabled:opacity-60"
+            style={{ top: 'calc(env(safe-area-inset-top) + 12px)' }}
+          >
+            {startingProject ? 'Starter …' : 'Start prosjekt'}
+          </button>
         </div>
       )}
     </div>

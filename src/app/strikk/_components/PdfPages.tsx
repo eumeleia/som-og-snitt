@@ -2,8 +2,8 @@
 
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist'
-import type { Stroke, Tool } from './ops'
-import { eraseCircle } from './erase'
+import type { Stroke, Tool } from '../_lib/markup-ops'
+import { eraseCircle } from '../_lib/erase'
 
 const DPR_CAP = 2
 // iOS Safari refuses canvases above 16 777 216 pixels; stay well under, since two

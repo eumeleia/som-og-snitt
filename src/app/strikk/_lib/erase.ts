@@ -1,4 +1,4 @@
-import type { Stroke } from './ops'
+import type { Stroke } from './markup-ops'
 
 // Parts shorter than this (page-width units) are dropped, so an erased stroke does not
 // leave specks behind.
