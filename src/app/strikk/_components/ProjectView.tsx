@@ -8,6 +8,8 @@ import { supabase } from '@/lib/supabase'
 import { EXTRACTION_SELECT, storedToExtraction, type ExtractionData, type StoredRecipe } from '../_lib/extraction'
 import { PROJECT_SELECT, STATUSES, STATUS_LABEL, sortedYarn, type Project, type ProjectStatus } from '../_lib/projects'
 import { amountForLine, formatAmountForLine } from '../_lib/project-amounts'
+import { COMBO_SELECT, SWATCH_SELECT, comboFromRow, swatchFromRow, type ComboRow, type SwatchRow } from '../_lib/combos'
+import { rankAlternatives, mainFibre, type Alternative, type RawCombo, type RawSwatch } from '../_lib/yarn-alternatives'
 import { applyOps, type Counter, type DocState, type Op, type Stroke, type Tool } from '../_lib/markup-ops'
 import { enqueue, pendingOps, subscribe, subscribeServerCounters, type QueueStatus } from '../_lib/project-save-queue'
 import { DriveAuthExpiredError, DriveFileMissingError, downloadPdf } from '../_lib/drive'
@@ -144,6 +146,8 @@ export default function ProjectView({ id }: { id: string }) {
   const [recipe, setRecipe] = useState<{ title: string | null; drive_file_id: string; file_name: string } | null>(null)
   const [extraction, setExtraction] = useState<ExtractionData | null>(null)
   const [yarns, setYarns] = useState<YarnRow[]>([])
+  const [combos, setCombos] = useState<RawCombo[]>([])
+  const [swatches, setSwatches] = useState<RawSwatch[]>([])
   const [yarnLines, setYarnLines] = useState<YarnLine[]>([])
   const [view, setView] = useState<'info' | 'pdf'>('info')
   const [error, setError] = useState('')
@@ -180,10 +184,16 @@ export default function ProjectView({ id }: { id: string }) {
         }
       }
 
-      const { data: y, error: yErr } = await supabase.from('strikk_yarn').select('*')
+      const [yRes, comboRes, swatchRes] = await Promise.all([
+        supabase.from('strikk_yarn').select('*'),
+        supabase.from('strikk_yarn_combo').select(COMBO_SELECT),
+        supabase.from('strikk_swatch').select(SWATCH_SELECT),
+      ])
       if (cancelled) return
-      if (yErr) { setLoad({ kind: 'error', text: yErr.message }); return }
-      setYarns((y ?? []) as YarnRow[])
+      if (yRes.error) { setLoad({ kind: 'error', text: yRes.error.message }); return }
+      setYarns((yRes.data ?? []) as YarnRow[])
+      if (!comboRes.error) setCombos((comboRes.data as unknown as ComboRow[] ?? []).map(comboFromRow))
+      if (!swatchRes.error) setSwatches((swatchRes.data as unknown as SwatchRow[] ?? []).map(swatchFromRow))
       setLoad({ kind: 'ready' })
     })()
     return () => { cancelled = true }
@@ -228,10 +238,12 @@ export default function ProjectView({ id }: { id: string }) {
     <div className="min-h-screen bg-[#FAF7F4]">
       {view === 'info' ? (
         <InfoView
-          project={project} recipe={recipe} extraction={extraction} yarns={yarns} yarnLines={yarnLines}
+          project={project} recipe={recipe} extraction={extraction} yarns={yarns} combos={combos} swatches={swatches}
+          yarnLines={yarnLines}
           error={error}
           onSave={save}
           onSaveYarnLines={saveYarnLines}
+          onYarnUpdated={(yarnId, patch) => setYarns(ys => ys.map(y => (y.id === yarnId ? { ...y, ...patch } : y)))}
           onOpenPdf={() => setView('pdf')}
           onDelete={deleteProject}
         />
@@ -270,15 +282,18 @@ function ColorInput({ value, onCommit }: { value: string; onCommit: (v: string) 
   )
 }
 
-function InfoView({ project, recipe, extraction, yarns, yarnLines, error, onSave, onSaveYarnLines, onOpenPdf, onDelete }: {
+function InfoView({ project, recipe, extraction, yarns, combos, swatches, yarnLines, error, onSave, onSaveYarnLines, onYarnUpdated, onOpenPdf, onDelete }: {
   project: Project
   recipe: { title: string | null; drive_file_id: string; file_name: string } | null
   extraction: ExtractionData | null
   yarns: YarnRow[]
+  combos: RawCombo[]
+  swatches: RawSwatch[]
   yarnLines: YarnLine[]
   error: string
   onSave: (body: Record<string, unknown>, optimistic: Partial<Project>) => void
   onSaveYarnLines: (lines: YarnLine[]) => void
+  onYarnUpdated: (yarnId: string, patch: { favorite?: boolean | null; price_per_skein?: number | null }) => void
   onOpenPdf: () => void
   onDelete: () => void
 }) {
@@ -306,6 +321,26 @@ function InfoView({ project, recipe, extraction, yarns, yarnLines, error, onSave
   function removeLine(position: number) {
     onSaveYarnLines(yarnLines.filter(l => l.position !== position).map((l, i) => ({ ...l, position: i })))
   }
+
+  const pickerAlternatives = useMemo<Alternative[]>(() => {
+    if (pickerFor === null) return []
+    const line = yarnLines.find(l => l.position === pickerFor)
+    const recipeLine = extraction?.yarn_lines[pickerFor]
+    const currentYarn = line?.yarn_id ? byYarnId.get(line.yarn_id) : undefined
+    const suggestedYarn = recipeLine?.yarn_id ? byYarnId.get(recipeLine.yarn_id) : undefined
+    const targetFibre = currentYarn ? mainFibre(currentYarn.fibers) : suggestedYarn ? mainFibre(suggestedYarn.fibers) : null
+    const patternAlternativeYarnIds = extraction && recipeLine
+      ? extraction.alternatives
+        .filter(a => a.yarn_line === pickerFor || (a.yarn_line === null && a.color_group === recipeLine.color_group))
+        .map(a => a.yarn_id).filter((v): v is string => v !== null)
+      : []
+    return rankAlternatives({
+      targetGauge: extraction?.gauge_stitches_10cm ?? null,
+      targetFibre,
+      excludeYarnId: line?.yarn_id ?? null,
+      catalogue: yarns, combos, swatches, patternAlternativeYarnIds,
+    })
+  }, [pickerFor, yarnLines, extraction, byYarnId, yarns, combos, swatches])
 
   return (
     <div className="max-w-xl mx-auto px-4 py-4 pb-24">
@@ -440,7 +475,10 @@ function InfoView({ project, recipe, extraction, yarns, yarnLines, error, onSave
           yarns={yarns}
           value={yarnLines.find(l => l.position === pickerFor)?.yarn_id ?? null}
           suggestedId={extraction?.yarn_lines[pickerFor]?.yarn_id ?? null}
+          alternatives={pickerAlternatives}
+          amount={pickerFor !== null && extraction && project.size_index !== null ? amountForLine(extraction, project.size_index, pickerFor) : null}
           onSelect={yarnId => setYarnId(pickerFor, yarnId)}
+          onYarnUpdated={onYarnUpdated}
           onClose={() => setPickerFor(null)}
         />
       )}

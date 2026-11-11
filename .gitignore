@@ -61,3 +61,6 @@ strikk/innlesing/
 
 # Lokal oppbygging av garnkatalogen (kandidater, runder og svar)
 strikk/garn/
+
+# Bilder av garnbanderoler, til registrering i garnlageret
+strikk/Banderoler/

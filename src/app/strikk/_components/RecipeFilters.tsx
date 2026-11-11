@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { AUDIENCES, type Audience } from '../_lib/extraction'
 import { spellingKey, type YarnRow } from '../_lib/yarns'
+import YarnFavoriteStar from './YarnFavoriteStar'
 import {
   AUDIENCE_LABEL, EMPTY_FILTER, RECIPE_FILTER_SELECT, SORTS, SORT_LABEL,
   activeChips, garmentTypes, removeChip, yarnLabel,
@@ -12,8 +13,10 @@ import {
 
 export type FilterData = { kind: 'loading' } | { kind: 'ready'; recipes: FilterRecipe[]; yarns: YarnRow[] } | { kind: 'error'; text: string }
 
-// The rows the filters need, loaded beside the plain list so the list still shows if this fails.
-export function useFilterData(reload: number): FilterData {
+// The rows the filters need, loaded beside the plain list so the list still shows if this
+// fails. onYarnUpdated lets a favorite/price edit anywhere in the filter sheet update this
+// same loaded list in place, without a full reload.
+export function useFilterData(reload: number): [FilterData, (yarnId: string, patch: Partial<Pick<YarnRow, 'favorite' | 'price_per_skein'>>) => void] {
   const [data, setData] = useState<FilterData>({ kind: 'loading' })
   useEffect(() => {
     let cancelled = false
@@ -28,7 +31,10 @@ export function useFilterData(reload: number): FilterData {
     })
     return () => { cancelled = true }
   }, [reload])
-  return data
+  const onYarnUpdated = (yarnId: string, patch: Partial<Pick<YarnRow, 'favorite' | 'price_per_skein'>>) => {
+    setData(d => (d.kind === 'ready' ? { ...d, yarns: d.yarns.map(y => (y.id === yarnId ? { ...y, ...patch } : y)) } : d))
+  }
+  return [data, onYarnUpdated]
 }
 
 const STORAGE_KEY = 'strikk-oppskrifter-filter'
@@ -143,18 +149,20 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 const toggle = <T,>(list: T[], v: T) => (list.includes(v) ? list.filter(x => x !== v) : [...list, v])
 const parseGauge = (s: string) => { const n = Number(s.replace(',', '.')); return s.trim() && Number.isFinite(n) && n > 0 ? n : null }
 
-export function FilterSheet({ filter, onChange, recipes, yarns, shown, onClose }: {
+export function FilterSheet({ filter, onChange, recipes, yarns, onYarnUpdated, shown, onClose }: {
   filter: RecipeFilter
   onChange: (f: RecipeFilter) => void
   recipes: FilterRecipe[]
   yarns: YarnRow[]
+  onYarnUpdated: (yarnId: string, patch: Partial<Pick<YarnRow, 'favorite' | 'price_per_skein'>>) => void
   shown: number
   onClose: () => void
 }) {
   const [yarnQuery, setYarnQuery] = useState('')
   const [gauge, setGauge] = useState({ min: filter.gaugeMin?.toString() ?? '', max: filter.gaugeMax?.toString() ?? '' })
   const types = useMemo(() => garmentTypes(recipes), [recipes])
-  const sortedYarns = useMemo(() => [...yarns].sort((a, b) => yarnLabel(a).localeCompare(yarnLabel(b), 'nb')), [yarns])
+  const sortedYarns = useMemo(() => [...yarns]
+    .sort((a, b) => (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0) || yarnLabel(a).localeCompare(yarnLabel(b), 'nb')), [yarns])
   const q = spellingKey(yarnQuery)
   const yarnList = sortedYarns.filter(y => !filter.yarnIds.includes(y.id) && (!q || spellingKey(`${y.brand} ${y.name} ${y.aliases.map(a => a.name).join(' ')}`).includes(q))).slice(0, 40)
   const chosen = sortedYarns.filter(y => filter.yarnIds.includes(y.id))
@@ -229,11 +237,13 @@ export function FilterSheet({ filter, onChange, recipes, yarns, shown, onClose }
               className="h-11 px-3 rounded-lg border border-stone-300 bg-white text-base text-stone-900" />
             <ul className="flex flex-col max-h-56 overflow-y-auto rounded-lg border border-stone-200 bg-white divide-y divide-stone-100">
               {yarnList.map(y => (
-                <li key={y.id}>
+                <li key={y.id} className="flex items-center gap-2 px-3 py-2">
                   <button type="button" onClick={() => { onChange({ ...filter, yarnIds: [...filter.yarnIds, y.id] }); setYarnQuery('') }}
-                    className="w-full text-left px-3 py-2.5 text-sm text-stone-800 active:bg-stone-50">
+                    className="flex-1 min-w-0 text-left truncate text-sm text-stone-800 active:bg-stone-50">
                     {yarnLabel(y)}
                   </button>
+                  <YarnFavoriteStar yarnId={y.id} favorite={y.favorite} pricePerSkein={y.price_per_skein}
+                    onChange={patch => onYarnUpdated(y.id, patch)} />
                 </li>
               ))}
               {yarnList.length === 0 && <li className="px-3 py-2.5 text-sm text-stone-500">Ingen garn passer søket.</li>}

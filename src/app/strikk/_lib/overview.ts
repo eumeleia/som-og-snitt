@@ -10,6 +10,7 @@ import {
   type StoredRecipe,
 } from './extraction'
 import { discontinuedSuggestions, formatFibers, formatRange, type SourceKind, type YarnRow, type YarnStatus } from './yarns'
+import type { RawCombo } from './yarn-alternatives'
 
 export const OVERVIEW_FILE_NAME = 'Strikkeoversikt.xlsx'
 
@@ -148,8 +149,31 @@ export function yarnSheet(yarns: YarnRow[]): Sheet {
   }
 }
 
-export function overviewSheets(recipes: StoredRecipe[], yarns: YarnRow[]): Sheet[] {
-  return [recipeSheet(recipes, yarns), yarnSheet(yarns)]
+// ── Garnalternativer ────────────────────────────────────────────────────────────────
+
+const SOURCE_LABEL: Record<RawCombo['source'], string> = { skaberglaede: 'Skaberglæde', drops: 'DROPS' }
+
+export function comboSheet(combos: RawCombo[], yarns: YarnRow[]): Sheet {
+  const byId = new Map(yarns.map(y => [y.id, y]))
+  const sorted = [...combos].sort((a, b) => (a.gauge_stitches_10cm ?? 0) - (b.gauge_stitches_10cm ?? 0))
+  return {
+    name: 'Garnalternativer',
+    headers: ['Garn', 'Strikkefasthet (m per 10 cm)', 'Omganger per 10 cm', 'Pinne (mm)', 'Strikkeretning', 'Kilde', 'Notat'],
+    rows: sorted.map(c => [
+      c.members.map(m => {
+        const y = m.yarn_id ? byId.get(m.yarn_id) : undefined
+        const name = y ? [y.brand, y.name].filter(Boolean).join(' ') : null
+        return name ? `${name}${m.strands > 1 ? ` (${m.strands} tråder)` : ''}` : null
+      }).filter(Boolean).join(' + ') || null,
+      c.gauge_stitches_10cm, c.gauge_rows_10cm, c.needle_mm, c.stitch_pattern,
+      c.source_url ? { text: SOURCE_LABEL[c.source], hyperlink: c.source_url } : SOURCE_LABEL[c.source],
+      c.note,
+    ]),
+  }
+}
+
+export function overviewSheets(recipes: StoredRecipe[], yarns: YarnRow[], combos: RawCombo[] = []): Sheet[] {
+  return [recipeSheet(recipes, yarns), yarnSheet(yarns), comboSheet(combos, yarns)]
 }
 
 // What to do with the file in Drive. The content is compared by its fingerprint, so a

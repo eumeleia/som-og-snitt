@@ -3,7 +3,8 @@ import ExcelJS from 'exceljs'
 import { normalizeExtraction } from './extraction'
 import { CATALOGUE_ANSWER, SIMULATED_ANSWER, storedFrom } from './extraction.fixture'
 import { normalizeYarn, type YarnRow } from './yarns'
-import { OVERVIEW_FILE_NAME, overviewSheets, planOverviewWrite, recipeSheet, yarnSheet, type Sheet } from './overview'
+import { OVERVIEW_FILE_NAME, comboSheet, overviewSheets, planOverviewWrite, recipeSheet, yarnSheet, type Sheet } from './overview'
+import type { RawCombo } from './yarn-alternatives'
 import { workbookBuffer } from '@/lib/strikk-overview'
 
 vi.mock('@supabase/supabase-js', () => ({ createClient: () => ({}) }))
@@ -117,11 +118,28 @@ describe('Garn sheet', () => {
   })
 })
 
+describe('Garnalternativer sheet', () => {
+  it('names the members, sorted by gauge, with a link to the source', () => {
+    const combos: RawCombo[] = [
+      { source: 'skaberglaede', source_url: 'https://skaberglaede.com/x', stitch_pattern: 'glattstrikk', gauge_stitches_10cm: 22, gauge_rows_10cm: null, needle_mm: 3.5, note: 'Til Rein genser', members: [{ yarn_id: SUNDAY, strands: 2 }] },
+      { source: 'drops', source_url: null, stitch_pattern: null, gauge_stitches_10cm: 18, gauge_rows_10cm: null, needle_mm: null, note: null, members: [{ yarn_id: 'y2', strands: 1 }, { yarn_id: SUNDAY, strands: 1 }] },
+    ]
+    const sheet = comboSheet(combos, catalogue)
+    expect(sheet.rows).toHaveLength(2)
+    const [drops, skaberglaede] = [byHeader(sheet, 0), byHeader(sheet, 1)]
+    expect(drops).toMatchObject({ Garn: 'DROPS Air + Sandnes Garn Sunday', 'Strikkefasthet (m per 10 cm)': 18, Kilde: 'DROPS' })
+    expect(skaberglaede).toMatchObject({
+      Garn: 'Sandnes Garn Sunday (2 tråder)', 'Strikkefasthet (m per 10 cm)': 22, 'Pinne (mm)': 3.5,
+      Strikkeretning: 'glattstrikk', Kilde: { text: 'Skaberglæde', hyperlink: 'https://skaberglaede.com/x' }, Notat: 'Til Rein genser',
+    })
+  })
+})
+
 describe('the workbook', () => {
-  it('has the sheets Oppskrifter and Garn, a filtered header row, and links', async () => {
+  it('has the sheets Oppskrifter, Garn and Garnalternativer, a filtered header row, and links', async () => {
     const wb = new ExcelJS.Workbook()
     await wb.xlsx.load(await workbookBuffer(overviewSheets([rein, collection], catalogue)) as unknown as ArrayBuffer)
-    expect(wb.worksheets.map(w => w.name)).toEqual(['Oppskrifter', 'Garn'])
+    expect(wb.worksheets.map(w => w.name)).toEqual(['Oppskrifter', 'Garn', 'Garnalternativer'])
     const r = wb.getWorksheet('Oppskrifter')!
     expect(r.getRow(1).getCell(2).value).toBe('Oppskrift')
     expect(r.getRow(1).font?.bold).toBe(true)

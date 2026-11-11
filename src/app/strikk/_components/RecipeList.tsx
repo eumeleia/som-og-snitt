@@ -63,7 +63,7 @@ export default function RecipeList() {
   const [filterReload, setFilterReload] = useState(0)
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [newRecipes, setNewRecipes] = useState<KnitRecipe[] | null>(null)
-  const filterData = useFilterData(loadAttempt + filterReload)
+  const [filterData, onYarnUpdated] = useFilterData(loadAttempt + filterReload)
   const [filter, setFilter] = useStoredFilter()
   const fileInput = useRef<HTMLInputElement>(null)
   const recipesRef = useRef<KnitRecipe[]>([])
@@ -365,7 +365,7 @@ export default function RecipeList() {
 
       {filtersOpen && filterData.kind === 'ready' && view && (
         <FilterSheet filter={filter} onChange={setFilter} recipes={filterData.recipes} yarns={filterData.yarns}
-          shown={view.items.length} onClose={() => setFiltersOpen(false)} />
+          onYarnUpdated={onYarnUpdated} shown={view.items.length} onClose={() => setFiltersOpen(false)} />
       )}
 
       {editing && (

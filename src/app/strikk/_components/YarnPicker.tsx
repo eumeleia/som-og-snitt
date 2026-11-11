@@ -2,18 +2,36 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { spellingKey, type YarnRow } from '../_lib/yarns'
+import type { Alternative } from '../_lib/yarn-alternatives'
+import { estimatedCost } from '../_lib/project-amounts'
+import type { AmountData } from '../_lib/extraction'
+import YarnFavoriteStar from './YarnFavoriteStar'
 
 const yarnLabel = (y: Pick<YarnRow, 'brand' | 'name' | 'discontinued'>) =>
   [y.brand, y.name].filter(Boolean).join(' ') + (y.discontinued ? ' (utgått)' : '')
 
+const SOURCE_LABEL: Record<Alternative['source'], string> = {
+  own_swatch: 'Egen strikkeprøve', skaberglaede: 'Skaberglæde', pattern: 'Oppskriftens alternativ',
+  drops: 'DROPS', same_gauge: 'Samme strikkefasthet i katalogen',
+}
+
+function altLabel(a: Alternative): string {
+  return a.members.map(m => `${yarnLabel(m.yarn)}${m.strands > 1 ? ` (${m.strands} tråder)` : ''}`).join(' + ')
+}
+
 // Velger ett garn fra katalogen til én garnlinje i et prosjekt. suggestedId er garnet
 // oppskriften selv er koblet til for den linjen, vist øverst som forslag når det ikke
-// allerede er valgt.
-export default function YarnPicker({ yarns, value, suggestedId, onSelect, onClose }: {
+// allerede er valgt. alternatives (valgfritt) er rangerte garnalternativer for samme
+// strikkefasthet — bare de med ett garn kan velges direkte her, resten (flere garn holdt
+// sammen) er bare til informasjon siden denne linja holder ett garn.
+export default function YarnPicker({ yarns, value, suggestedId, alternatives, amount, onSelect, onYarnUpdated, onClose }: {
   yarns: YarnRow[]
   value: string | null
   suggestedId: string | null
+  alternatives?: Alternative[]
+  amount?: AmountData | null
   onSelect: (yarnId: string | null) => void
+  onYarnUpdated?: (yarnId: string, patch: { favorite?: boolean | null; price_per_skein?: number | null }) => void
   onClose: () => void
 }) {
   const [query, setQuery] = useState('')
@@ -27,7 +45,8 @@ export default function YarnPicker({ yarns, value, suggestedId, onSelect, onClos
   }, [onClose])
 
   const q = spellingKey(query)
-  const list = useMemo(() => [...yarns].sort((a, b) => yarnLabel(a).localeCompare(yarnLabel(b), 'nb'))
+  const list = useMemo(() => [...yarns]
+    .sort((a, b) => (b.favorite ? 1 : 0) - (a.favorite ? 1 : 0) || yarnLabel(a).localeCompare(yarnLabel(b), 'nb'))
     .filter(y => !q || spellingKey(`${y.brand} ${y.name}`).includes(q)), [yarns, q])
 
   function pick(id: string | null) { onSelect(id); onClose() }
@@ -58,6 +77,39 @@ export default function YarnPicker({ yarns, value, suggestedId, onSelect, onClos
             </div>
           )}
 
+          {alternatives && alternatives.length > 0 && !q && (
+            <div className="flex flex-col gap-1">
+              <p className="text-xs font-medium uppercase tracking-wide text-stone-500">Alternativer for strikkefastheten</p>
+              <ul className="flex flex-col rounded-lg border border-stone-200 bg-white divide-y divide-stone-100">
+                {alternatives.map((a, i) => {
+                  const single = a.members.length === 1
+                  const cost = single && amount ? estimatedCost(amount, a.members[0].yarn) : null
+                  const content = (
+                    <>
+                      <div className="text-sm text-stone-800">{altLabel(a)}</div>
+                      <div className="text-xs text-stone-500">
+                        {SOURCE_LABEL[a.source]}
+                        {cost !== null && ` · ca. ${cost} kr`}
+                      </div>
+                    </>
+                  )
+                  return (
+                    <li key={i}>
+                      {single ? (
+                        <button type="button" onClick={() => pick(a.members[0].yarn.id)}
+                          className="w-full text-left px-3 py-2.5 active:bg-stone-50">
+                          {content}
+                        </button>
+                      ) : (
+                        <div className="px-3 py-2.5">{content}</div>
+                      )}
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          )}
+
           <ul className="flex flex-col rounded-lg border border-stone-200 bg-white divide-y divide-stone-100">
             {value && (
               <li>
@@ -68,11 +120,13 @@ export default function YarnPicker({ yarns, value, suggestedId, onSelect, onClos
               </li>
             )}
             {list.map(y => (
-              <li key={y.id}>
+              <li key={y.id} className="flex items-center gap-2 px-3 py-2">
                 <button type="button" onClick={() => pick(y.id)}
-                  className={`w-full text-left px-3 py-2.5 text-sm active:bg-stone-50 ${y.id === value ? 'font-medium text-stone-900' : 'text-stone-800'}`}>
+                  className={`flex-1 min-w-0 text-left truncate text-sm active:bg-stone-50 ${y.id === value ? 'font-medium text-stone-900' : 'text-stone-800'}`}>
                   {yarnLabel(y)}
                 </button>
+                <YarnFavoriteStar yarnId={y.id} favorite={y.favorite} pricePerSkein={y.price_per_skein}
+                  onChange={patch => onYarnUpdated?.(y.id, patch)} />
               </li>
             ))}
             {list.length === 0 && <li className="px-3 py-2.5 text-sm text-stone-500">Ingen garn passer søket.</li>}

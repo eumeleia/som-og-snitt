@@ -10,6 +10,7 @@ import { KNIT_FOLDER_NAME, getOrCreateTopLevelFolder } from '@/lib/knit-folder'
 import { EXTRACTION_SELECT, type StoredRecipe } from '@/app/strikk/_lib/extraction'
 import type { YarnRow } from '@/app/strikk/_lib/yarns'
 import { OVERVIEW_FILE_NAME, overviewSheets, planOverviewWrite, type Sheet } from '@/app/strikk/_lib/overview'
+import { COMBO_SELECT, comboFromRow, type ComboRow } from '@/app/strikk/_lib/combos'
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 const STATE_KEY = 'strikk_overview'
@@ -56,11 +57,12 @@ async function readState(): Promise<OverviewState> {
 }
 
 export async function writeOverview(force: boolean): Promise<{ status: 'created' | 'updated' | 'unchanged'; recipes: number; yarns: number }> {
-  const [recipes, yarns] = await Promise.all([
+  const [recipes, yarns, comboRows] = await Promise.all([
     all<StoredRecipe>('strikk_oppskrift', EXTRACTION_SELECT),
     all<YarnRow>('strikk_yarn', '*'),
+    all<ComboRow>('strikk_yarn_combo', COMBO_SELECT),
   ])
-  const sheets = overviewSheets(recipes, yarns)
+  const sheets = overviewSheets(recipes, yarns, comboRows.map(comboFromRow))
   const hash = createHash('sha256').update(JSON.stringify(sheets)).digest('hex')
 
   const drive = google.drive({ version: 'v3', auth: await getStrikkOAuth2Client() })
