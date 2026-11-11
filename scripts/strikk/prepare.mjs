@@ -7,7 +7,7 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync } from 
 import { join } from 'path'
 import { createClient } from '@supabase/supabase-js'
 import { EXTRACTION_SCHEMA, buildExtractionPrompt, normalizePageText, planPages } from '../../src/app/strikk/_lib/extraction.ts'
-import { LOCAL_DIR, ROUND_SIZE, findLocalPdf, needsImage, nextRound } from './lib.mjs'
+import { LOCAL_DIR, ROUND_SIZE, downloadFromDrive, findLocalPdf, needsImage, nextRound } from './lib.mjs'
 
 const OUT = 'strikk/innlesing'
 const MAX_IMAGES = 6
@@ -15,7 +15,7 @@ const sizeArg = process.argv.indexOf('--size')
 const size = sizeArg > 0 ? Number(process.argv[sizeArg + 1]) : ROUND_SIZE
 
 const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
-const { data: rows, error } = await sb.from('strikk_oppskrift').select('id, title, designer, file_name, created_at, extraction_status')
+const { data: rows, error } = await sb.from('strikk_oppskrift').select('id, title, designer, file_name, drive_file_id, created_at, extraction_status')
 if (error) throw new Error(error.message)
 const { data: corr, error: corrError } = await sb
   .from('strikk_extraction_correction').select('recipe_title, field, extracted, corrected').order('created_at', { ascending: false })
@@ -66,8 +66,19 @@ const localNames = readdirSync(LOCAL_DIR)
 const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
 const missing = []
 for (const r of round) {
-  const local = findLocalPdf(r, localNames)
-  if (!local) { missing.push({ id: r.id, title: r.title, designer: r.designer, file_name: r.file_name }); continue }
+  let local = findLocalPdf(r, localNames)
+  if (!local) {
+    // Uploaded in the app: only in Drive. Fetched into the local folder, then read as usual.
+    try {
+      writeFileSync(join(LOCAL_DIR, r.file_name), await downloadFromDrive(r.drive_file_id))
+      localNames.push(r.file_name)
+      local = r.file_name
+      console.log(`Hentet fra Disk: ${r.file_name}`)
+    } catch (e) {
+      missing.push({ id: r.id, title: r.title, designer: r.designer, file_name: r.file_name, error: e.message })
+      continue
+    }
+  }
   const rdir = join(dir, r.id)
   mkdirSync(rdir)
   const doc = await pdfjs.getDocument({ data: new Uint8Array(readFileSync(join(LOCAL_DIR, local))), verbosity: 0 }).promise

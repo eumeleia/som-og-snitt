@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { findLocalPdf, needsImage, nextRound, saveAnswer } from './lib.mjs'
+import { APP_URL, downloadFromDrive, findLocalPdf, needsImage, nextRound, saveAnswer } from './lib.mjs'
 import { SIMULATED_ANSWER } from '../../src/app/strikk/_lib/extraction.fixture'
 import { normalizeExtraction } from '../../src/app/strikk/_lib/extraction'
 
@@ -61,6 +61,16 @@ describe('saveAnswer', () => {
     }
   })
 
+  it('keeps the audience Maria filled in at upload over the one read from the PDF', async () => {
+    const d = { ...db('pending'), audience: vi.fn(async () => 'child') }
+    await saveAnswer({ id: 'r1', answer: SIMULATED_ANSWER, pages: [] }, d)
+    expect(SIMULATED_ANSWER.audience).toBe('woman')
+    expect(d.save).toHaveBeenCalledWith('r1', expect.objectContaining({ audience: 'child' }))
+    const none = { ...db('pending'), audience: vi.fn(async () => null) }
+    await saveAnswer({ id: 'r1', answer: SIMULATED_ANSWER, pages: [] }, none)
+    expect(none.save).toHaveBeenCalledWith('r1', expect.objectContaining({ audience: 'woman' }))
+  })
+
   it('refuses an answer that does not follow the schema, before looking at the database', async () => {
     const d = db('pending')
     const r = await saveAnswer({ id: 'r1', answer: { ...SIMULATED_ANSWER, audience: 'baby', sizes: 'S' }, pages: [] }, d)
@@ -68,5 +78,26 @@ describe('saveAnswer', () => {
     expect(r.errors).toEqual(expect.arrayContaining(['$.audience: "baby" not in enum', '$.sizes: not an array']))
     expect(d.status).not.toHaveBeenCalled()
     expect(d.save).not.toHaveBeenCalled()
+  })
+})
+
+describe('downloadFromDrive', () => {
+  it('fetches the PDF from Drive with the token the app hands out', async () => {
+    const calls: string[] = []
+    const fake = vi.fn(async (url: string, init?: { headers?: Record<string, string> }) => {
+      calls.push(url)
+      if (url.endsWith('/api/strikk/token')) return new Response(JSON.stringify({ accessToken: 'tok' }))
+      expect(init?.headers?.Authorization).toBe('Bearer tok')
+      return new Response(new Uint8Array([37, 80, 68, 70]))
+    })
+    const bytes = await downloadFromDrive('file 1', fake as unknown as typeof fetch)
+    expect([...bytes]).toEqual([37, 80, 68, 70])
+    expect(calls).toEqual([`${APP_URL}/api/strikk/token`, 'https://www.googleapis.com/drive/v3/files/file%201?alt=media'])
+  })
+  it('says why when Drive cannot be reached', async () => {
+    const expired = vi.fn(async () => new Response(JSON.stringify({ error: 'Disk-tilgangen har utløpt' }), { status: 401 }))
+    await expect(downloadFromDrive('f', expired as unknown as typeof fetch)).rejects.toThrow('Disk-tilgangen har utløpt')
+    const gone = vi.fn(async (url: string) => (url.endsWith('/token') ? new Response(JSON.stringify({ accessToken: 't' })) : new Response('', { status: 404 })))
+    await expect(downloadFromDrive('f', gone as unknown as typeof fetch)).rejects.toThrow('Henting fra Disk feilet (404)')
   })
 })

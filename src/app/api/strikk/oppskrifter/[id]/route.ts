@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { RECIPE_SELECT, type KnitRecipe } from '@/app/strikk/_lib/recipes'
+import { AUDIENCES, type Audience } from '@/app/strikk/_lib/extraction'
 import { syncRecipeDriveName } from '@/lib/strikk-drive'
 import { logDriveError } from '@/lib/drive-log'
 
@@ -12,8 +13,8 @@ const supabaseAdmin = createClient(
 export async function PATCH(req: NextRequest, ctx: RouteContext<'/api/strikk/oppskrifter/[id]'>) {
   try {
     const { id } = await ctx.params
-    const body = await req.json() as { title?: unknown; designer?: unknown }
-    const patch: { title?: string; designer?: string | null; updated_at: string } = {
+    const body = await req.json() as { title?: unknown; designer?: unknown; audience?: unknown }
+    const patch: { title?: string; designer?: string | null; audience?: Audience | null; updated_at: string } = {
       updated_at: new Date().toISOString(),
     }
     if (body.title !== undefined) {
@@ -24,6 +25,12 @@ export async function PATCH(req: NextRequest, ctx: RouteContext<'/api/strikk/opp
     if (body.designer !== undefined) {
       const designer = typeof body.designer === 'string' ? body.designer.trim() : ''
       patch.designer = designer || null
+    }
+    if (body.audience !== undefined) {
+      if (body.audience !== null && !(AUDIENCES as readonly unknown[]).includes(body.audience)) {
+        return NextResponse.json({ error: 'Ukjent målgruppe' }, { status: 400 })
+      }
+      patch.audience = body.audience as Audience | null
     }
     const { data, error } = await supabaseAdmin
       .from('strikk_oppskrift')

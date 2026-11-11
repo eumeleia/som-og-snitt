@@ -3,12 +3,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
-import { RECIPE_SELECT, type KnitRecipe } from '../_lib/recipes'
+import { RECIPE_SELECT, waitsForClaudeCode, type KnitRecipe } from '../_lib/recipes'
+import { AUDIENCES, type Audience } from '../_lib/extraction'
+import { AUDIENCE_LABEL, applyFilter, type FilterResult } from '../_lib/recipe-filter'
 import { DriveAuthExpiredError, getAccessToken, listDriveFiles, sha256Hex, syncDriveNames, uploadPdf } from '../_lib/drive'
 import { runUploadBatch, type UploadProgress, type UploadResult } from '../_lib/upload'
 import DriveExpired from './DriveExpired'
 import { scheduleOverviewRefresh } from '../_lib/overview-client'
-import { applyFilter, type FilterResult } from '../_lib/recipe-filter'
 import { spellingKey } from '../_lib/yarns'
 import { FilterBar, FilterSheet, HitInfo, filterCount, useFilterData, useStoredFilter } from './RecipeFilters'
 
@@ -61,6 +62,7 @@ export default function RecipeList() {
   const [loadAttempt, setLoadAttempt] = useState(0)
   const [filterReload, setFilterReload] = useState(0)
   const [filtersOpen, setFiltersOpen] = useState(false)
+  const [newRecipes, setNewRecipes] = useState<KnitRecipe[] | null>(null)
   const filterData = useFilterData(loadAttempt + filterReload)
   const [filter, setFilter] = useStoredFilter()
   const fileInput = useRef<HTMLInputElement>(null)
@@ -150,6 +152,8 @@ export default function RecipeList() {
       })
       setResults(done)
       setFilterReload(n => n + 1)
+      const added = done.filter(r => (r.status === 'uploaded' || r.status === 'linked') && r.row).map(r => r.row!)
+      if (added.length) setNewRecipes(added)
       if (authLost) setConnection({ kind: 'disconnected' })
     } catch (err) {
       if (err instanceof DriveAuthExpiredError) setConnection({ kind: 'disconnected' })
@@ -243,7 +247,7 @@ export default function RecipeList() {
           </p>
           {count('uploaded') + count('linked') > 0 && (
             <p className="text-sm text-stone-700">
-              De nye står som «Ikke lest» under Gjennomgang til de er lest inn via Claude Code.
+              De nye er merket «Venter på Claude Code» til du ber Claude Code lese dem inn.
             </p>
           )}
           {failed.length > 0 && (
@@ -281,6 +285,12 @@ export default function RecipeList() {
       {list.kind === 'ready' && list.recipes.length === 0 && (
         <p className="text-sm text-stone-500">Ingen strikkeoppskrifter ennå. Last opp en PDF for å begynne.</p>
       )}
+      {list.kind === 'ready' && list.recipes.some(waitsForClaudeCode) && (
+        <p className="text-sm rounded-xl p-3 bg-amber-50 text-amber-900">
+          {list.recipes.filter(waitsForClaudeCode).length} oppskrifter venter på Claude Code. Si «les inn nye
+          strikkeoppskrifter» til Claude Code, så blir de lest inn, kontrollert og godkjent.
+        </p>
+      )}
       {list.kind === 'ready' && list.recipes.length > 0 && filterData.kind === 'ready' && view && (
         <FilterBar filter={filter} onChange={setFilter} yarns={filterData.yarns} shown={view.items.length}
           total={list.recipes.length} unread={view.unread} onOpen={() => setFiltersOpen(true)} />
@@ -305,7 +315,12 @@ export default function RecipeList() {
                 ) : (
                   <Link href={`/strikk/oppskrifter/${r.id}`} className="flex-1 min-w-0 px-4 py-3 active:bg-stone-50">
                     <div className="text-base text-stone-800 truncate">{r.title}</div>
-                    {r.designer && <div className="text-sm text-stone-500 truncate">{r.designer}</div>}
+                    {(r.designer || r.audience) && (
+                      <div className="text-sm text-stone-500 truncate">{[r.designer, r.audience && AUDIENCE_LABEL[r.audience]].filter(Boolean).join(' · ')}</div>
+                    )}
+                    {waitsForClaudeCode(r) && (
+                      <span className="inline-block mt-1 text-xs rounded-full bg-amber-100 text-amber-900 px-2 py-0.5">Venter på Claude Code</span>
+                    )}
                     {result && filterData.kind === 'ready' && <HitInfo result={result} yarns={filterData.yarns} filter={filter} />}
                   </Link>
                 )}
@@ -329,6 +344,14 @@ export default function RecipeList() {
             )
           })}
         </ul>
+      )}
+
+      {newRecipes && (
+        <NewRecipesSheet recipes={newRecipes} onDone={saved => {
+          if (saved.length) replace(rs => rs.map(r => saved.find(x => x.id === r.id) ?? r))
+          setNewRecipes(null)
+          setFilterReload(n => n + 1)
+        }} />
       )}
 
       {filtersOpen && filterData.kind === 'ready' && view && (
@@ -356,6 +379,7 @@ function EditSheet({ recipe, onClose, onSaved, onDeleted }: {
 }) {
   const [title, setTitle] = useState(recipe.title)
   const [designer, setDesigner] = useState(recipe.designer ?? '')
+  const [audience, setAudience] = useState<Audience | null>(recipe.audience)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -366,7 +390,7 @@ function EditSheet({ recipe, onClose, onSaved, onDeleted }: {
       const res = await fetch(`/api/strikk/oppskrifter/${recipe.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, designer }),
+        body: JSON.stringify({ title, designer, audience }),
       })
       const body = await res.json()
       if (!res.ok) throw new Error(body.error ?? `Lagring feilet (${res.status})`)
@@ -413,6 +437,7 @@ function EditSheet({ recipe, onClose, onSaved, onDeleted }: {
           <input value={designer} onChange={e => setDesigner(e.target.value)}
             className="h-11 px-3 rounded-lg border border-stone-300 bg-white text-base text-stone-900" />
         </label>
+        <AudienceSelect value={audience} onChange={setAudience} />
         <p className="text-xs text-stone-500 break-words">Fil: {recipe.file_name}</p>
         {error && <p className="text-sm text-red-700 break-words">{error}</p>}
         <div className="flex gap-2">
@@ -429,6 +454,81 @@ function EditSheet({ recipe, onClose, onSaved, onDeleted }: {
           className="h-11 rounded-xl text-sm text-red-700">
           Slett
         </button>
+      </form>
+    </div>
+  )
+}
+
+function AudienceSelect({ value, onChange }: { value: Audience | null; onChange: (a: Audience | null) => void }) {
+  return (
+    <label className="flex flex-col gap-1 text-sm text-stone-600">
+      Hvem den er ment for
+      <select value={value ?? ''} onChange={e => onChange((e.target.value || null) as Audience | null)}
+        className="h-11 px-3 rounded-lg border border-stone-300 bg-white text-base text-stone-900">
+        <option value="">Ikke satt</option>
+        {AUDIENCES.map(a => <option key={a} value={a}>{AUDIENCE_LABEL[a]}</option>)}
+      </select>
+    </label>
+  )
+}
+
+// Right after an upload: the name and who the recipe is for, which Maria fills in herself.
+// The rest is read in later by Claude Code.
+function NewRecipesSheet({ recipes, onDone }: { recipes: KnitRecipe[]; onDone: (saved: KnitRecipe[]) => void }) {
+  const [rows, setRows] = useState(recipes.map(r => ({ id: r.id, title: r.title, audience: r.audience })))
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const set = (i: number, p: Partial<(typeof rows)[number]>) => setRows(rs => rs.map((r, k) => (k === i ? { ...r, ...p } : r)))
+
+  async function save() {
+    setBusy(true)
+    setError(null)
+    const saved: KnitRecipe[] = []
+    try {
+      for (const r of rows) {
+        const res = await fetch(`/api/strikk/oppskrifter/${r.id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: r.title, audience: r.audience }),
+        })
+        const body = await res.json()
+        if (!res.ok) throw new Error(`«${r.title}»: ${body.error ?? `Lagring feilet (${res.status})`}`)
+        saved.push(body as KnitRecipe)
+      }
+      scheduleOverviewRefresh()
+      onDone(saved)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/30">
+      <form onSubmit={e => { e.preventDefault(); if (rows.every(r => r.title.trim())) void save() }}
+        className="w-full sm:max-w-md bg-[#FAF7F4] rounded-t-2xl sm:rounded-2xl flex flex-col max-h-[90dvh]">
+        <div className="px-4 pt-4 pb-2">
+          <div className="font-serif text-xl text-stone-800">Navn og målgruppe</div>
+          <p className="text-sm text-stone-600">Resten leses inn når du ber Claude Code om det.</p>
+        </div>
+        <div className="overflow-y-auto overscroll-contain px-4 flex flex-col gap-4">
+          {rows.map((r, i) => (
+            <div key={r.id} className="flex flex-col gap-2 rounded-xl border border-stone-200 bg-white p-3">
+              <label className="flex flex-col gap-1 text-sm text-stone-600">
+                Navn på oppskriften
+                <input value={r.title} onChange={e => set(i, { title: e.target.value })}
+                  className="h-11 px-3 rounded-lg border border-stone-300 bg-white text-base text-stone-900" />
+              </label>
+              <AudienceSelect value={r.audience} onChange={a => set(i, { audience: a })} />
+            </div>
+          ))}
+        </div>
+        {error && <p className="px-4 pt-2 text-sm text-red-700 break-words">{error}</p>}
+        <div className="flex gap-2 px-4 pt-3" style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 16px)' }}>
+          <button type="button" onClick={() => onDone([])} disabled={busy}
+            className="flex-1 h-11 rounded-xl border border-stone-300 text-stone-700">Senere</button>
+          <button type="submit" disabled={busy || rows.some(r => !r.title.trim())}
+            className="flex-1 h-11 rounded-xl bg-[#2E5339] text-white disabled:opacity-40">Lagre</button>
+        </div>
       </form>
     </div>
   )

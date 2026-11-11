@@ -1,3 +1,5 @@
+import type { Audience, StoredRecipe } from './extraction'
+
 export interface KnitRecipe {
   id: string
   title: string
@@ -7,9 +9,14 @@ export interface KnitRecipe {
   source: 'upload'
   created_at: string
   updated_at: string
+  audience: Audience | null
+  extraction_status: StoredRecipe['extraction_status']
 }
 
-export const RECIPE_SELECT = 'id, title, designer, drive_file_id, file_name, source, created_at, updated_at'
+export const RECIPE_SELECT = 'id, title, designer, drive_file_id, file_name, source, created_at, updated_at, audience, extraction_status'
+
+// Everything not approved yet is waiting for Claude Code to read it in and check it.
+export const waitsForClaudeCode = (r: Pick<KnitRecipe, 'extraction_status'>) => r.extraction_status !== 'approved'
 
 export function titleFromFileName(fileName: string): string {
   return fileName.replace(/\.pdf$/i, '').trim() || fileName

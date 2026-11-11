@@ -21,6 +21,11 @@ const db = {
     if (error) throw new Error(error.message)
     return data?.extraction_status ?? 'missing'
   },
+  async audience(id) {
+    const { data, error } = await sb.from('strikk_oppskrift').select('audience').eq('id', id).maybeSingle()
+    if (error) throw new Error(error.message)
+    return data?.audience ?? null
+  },
   async save(id, data) {
     if (dryRun) return 'dry-run'
     const { data: result, error } = await sb.rpc('strikk_save_extraction', { p_id: id, p_data: data, p_approve: false })

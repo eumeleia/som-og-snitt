@@ -4,6 +4,12 @@ Fast instruks for Claude Code når Maria ber om å «lese inn nye strikkeoppskri
 Uttrekket gjøres lokalt av Claude Code. Claude-API-et og `ANTHROPIC_API_KEY` brukes ikke,
 verken i appen eller her.
 
+Maria laster opp PDF-en i appen og fyller selv inn navn og hvem oppskriften er ment for.
+Alt som ikke er godkjent, er merket «Venter på Claude Code» i appen. Når hun ber om det,
+leser Claude Code oppskriftene inn, kontrollerer dem mot PDF-en og godkjenner dem (steg 1–7).
+Maria går ikke gjennom oppskriftene selv; bare det som er reelt uklart i selve PDF-en, blir
+stående til henne med grunnen.
+
 ## Hva som leses inn
 
 Oppskrifter i `strikk_oppskrift` med status `pending` («Ikke lest») eller `failed`
@@ -11,9 +17,10 @@ Oppskrifter i `strikk_oppskrift` med status `pending` («Ikke lest») eller `fai
 røres ikke. Skriptene velger aldri dem, og `strikk_save_extraction` nekter å endre
 godkjente.
 
-PDF-en hentes fra `strikk/Strikkeoppskrifter ryddet/`. Nye oppskrifter som er lastet opp i
-appen, ligger bare i Disk. Be Maria legge PDF-en i den mappa først, ellers havner den på
-listen over manglende PDF-er.
+PDF-en leses fra `strikk/Strikkeoppskrifter ryddet/`. En oppskrift som er lastet opp i appen,
+ligger bare i Disk; `prepare.mjs` henter den da dit selv, med det kortvarige Disk-tokenet appen
+deler ut (`/api/strikk/token`). Navn og målgruppe Maria har fylt inn, gjelder: lagringen
+beholder målgruppen hennes, og tittelen endres ikke av innlesingen.
 
 ## Forutsetninger
 
@@ -57,6 +64,20 @@ listen over manglende PDF-er.
    som leser de lokale PDF-ene (`--all` sjekker alle på nytt). At en oppskrift har minst tre
    farger som hver trenger under to nøster, regner appen ut selv fra mengdene.
 5. **Gjenta** steg 2–4 til `prepare.mjs` sier at det ikke er noe igjen.
+5b. **Kontroller og godkjenn oppskriftene.** Alle kommandoene kjøres som
+   `node --no-warnings --env-file=.env.local scripts/strikk/check.mjs <kommando>`.
+   1. `prepare` legger hver oppskrift «Til gjennomgang» i `strikk/innlesing/kontroll/<id>/`
+      (`data.json`, `meta.json`) med `INSTRUKS.md` fra `scripts/strikk/recipe-check.md`,
+      lesereglene og alle Marias rettelser.
+   2. **Kontroller** med underagenter, for eksempel fire med fem oppskrifter hver, gruppert
+      etter designer. Hver sjekker hvert felt mot alle sidene i PDF-en og skriver
+      `kontroll.json`, og kjører `check` på den til den svarer `ok`.
+   3. Les rapportene. Et felt som fortsatt er usikkert fordi en side mangler eller tallene
+      spriker, betyr `approve: false`; rett det i `kontroll.json` om en agent har godkjent
+      likevel. Kontroller selv noen tilfeldige oppskrifter mot sidene.
+   4. `save --dry-run`, så `save`. Godkjente får merkene fjernet; resten lagres med merkene og
+      står «Til gjennomgang» til Maria. Rettelsestabellen skrives aldri herfra: den er
+      Marias egne rettelser, som neste innlesing lærer av.
 6. **Garnkatalogen.** Nye garn fra oppskriftene skal inn i katalogen på samme måte som
    resten. Katalogen er skjult: den har ingen side i appen, men ligger i databasen
    (`strikk_yarn`) og i arket Garn i Strikkeoversikt.xlsx. Maria går ikke gjennom garnene;
@@ -103,13 +124,14 @@ listen over manglende PDF-er.
    tre garn fra katalogen med samme hovedfiber og tykkelse (`substitutes` i
    `src/app/strikk/_lib/yarns.ts`). Alternativer som ikke er koblet til katalogen, har ukjent
    status og vises som før.
-7. **Avslutt** med antall lagret per runde, nye garn i katalogen, tallene fra
-   `yarns.mjs status`, og listen i `strikk/innlesing/mangler-alle.json` over oppskrifter uten
-   lokal PDF.
+7. **Avslutt** med antall lagret per runde, hvor mange som ble godkjent og hvilke som står
+   igjen til Maria med grunnen, nye garn i katalogen, tallene fra `yarns.mjs status`, og
+   listen i `strikk/innlesing/mangler-alle.json` over oppskrifter som ikke kunne hentes.
 
 Blir arbeidet stoppet, starter neste økt på steg 1. Det som er lagret, er «Til gjennomgang»
 og velges ikke igjen. For garn: mapper i `strikk/garn/runde-*` med `svar.json` uten
 `lagret.json` lagres først, og garn som er slått opp, velges ikke igjen. I
-`strikk/garn/kontroll/` lagres mapper med `kontroll.json` uten `godkjent.json` først.
+`strikk/garn/kontroll/` lagres mapper med `kontroll.json` uten `godkjent.json` først, og i
+`strikk/innlesing/kontroll/` mapper med `kontroll.json` uten `lagret.json`.
 
 `strikk/innlesing/` og `strikk/garn/` er i `.gitignore` og skal ikke committes.
