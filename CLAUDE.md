@@ -23,3 +23,8 @@ bøkene er upålitelig — brøker som ½ og ¼ leses ofte feil. Gjett aldri på
 
 Ber Maria om å «lese inn nye strikkeoppskrifter», følg `docs/strikk-innlesing.md`, også steget
 for garnkatalogen. Uttrekket gjøres lokalt av Claude Code; Claude-API-et brukes ikke i Strikk.
+
+## Strikk: registrere garnlageret
+
+Ber Maria om å «registrere garnlageret» eller legger nye bilder i `strikk/garnbilder/`, følg
+`docs/garnlager-registrering.md`. Samme regel: ingen Claude-API, ingen gjetting.

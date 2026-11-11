@@ -1,0 +1,308 @@
+'use client'
+
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { supabase } from '@/lib/supabase'
+import { STASH_SELECT, stashThumbnailUrl, type StashRow } from '../_lib/stash'
+
+const FIELD_LABEL: Record<string, string> = {
+  brand: 'Merke', name: 'Garn', color_number: 'Fargenr.', color_name: 'Fargenavn', skein_count: 'Antall',
+}
+
+interface PatternMatch { id: string; title: string; designer: string | null; have: number; of: number }
+
+async function patchRow(id: string, body: Record<string, unknown>): Promise<StashRow> {
+  const res = await fetch(`/api/strikk/garnlager/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  const j = await res.json()
+  if (!res.ok) throw new Error(j.error ?? `Lagring feilet (${res.status})`)
+  return j as StashRow
+}
+
+function yarnLabel(y: StashRow['strikk_yarn']): string {
+  if (!y) return 'Ukjent garn'
+  return [y.brand, y.name].filter(Boolean).join(' ') + (y.discontinued ? ' (utgått)' : '')
+}
+
+// Garnlageret: raden som venter på gjennomgang øverst (bilde, rettbare felt, usikre merker),
+// godkjent garn gruppert produsent > garn > farge under, og «Hva vil du strikke?» i hjørnet —
+// oppskrifter som er godkjent og bruker garn Maria allerede har liggende.
+export default function GarnlagerList() {
+  const [rows, setRows] = useState<StashRow[] | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [busy, setBusy] = useState<Set<string>>(new Set())
+  const [matches, setMatches] = useState<PatternMatch[] | null>(null)
+
+  const loadAll = useCallback(async () => {
+    const { data, error } = await supabase.from('strikk_yarn_stash').select(STASH_SELECT).order('created_at')
+    if (error) setLoadError(error.message)
+    else setRows((data ?? []) as unknown as StashRow[])
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    supabase.from('strikk_yarn_stash').select(STASH_SELECT).order('created_at').then(({ data, error }) => {
+      if (cancelled) return
+      if (error) setLoadError(error.message)
+      else setRows((data ?? []) as unknown as StashRow[])
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  const approved = useMemo(() => (rows ?? []).filter(r => r.status === 'godkjent'), [rows])
+  const pending = useMemo(() => (rows ?? []).filter(r => r.status === 'til_gjennomgang'), [rows])
+
+  // «Hva vil du strikke?»: godkjente oppskrifter som bruker garn Maria har godkjent i lageret.
+  useEffect(() => {
+    const owned = new Set(approved.map(r => r.yarn_id).filter((x): x is string => !!x))
+    let cancelled = false
+    Promise.all([
+      supabase.from('strikk_yarn_line').select('oppskrift_id, yarn_id'),
+      supabase.from('strikk_oppskrift').select('id, title, designer, extraction_status'),
+    ]).then(([{ data: lines }, { data: recipes }]) => {
+      if (cancelled || !lines || !recipes) return
+      const approvedRecipes = new Map(recipes.filter(r => r.extraction_status === 'approved').map(r => [r.id, r]))
+      const byRecipe = new Map<string, { have: Set<string>; of: Set<string> }>()
+      for (const l of lines) {
+        if (!approvedRecipes.has(l.oppskrift_id) || !l.yarn_id) continue
+        const e = byRecipe.get(l.oppskrift_id) ?? { have: new Set(), of: new Set() }
+        e.of.add(l.yarn_id)
+        if (owned.has(l.yarn_id)) e.have.add(l.yarn_id)
+        byRecipe.set(l.oppskrift_id, e)
+      }
+      const out: PatternMatch[] = []
+      for (const [id, e] of byRecipe) {
+        if (e.have.size === 0) continue
+        const r = approvedRecipes.get(id)!
+        out.push({ id, title: r.title, designer: r.designer, have: e.have.size, of: e.of.size })
+      }
+      out.sort((a, b) => (b.have / b.of) - (a.have / a.of) || b.have - a.have)
+      setMatches(out)
+    })
+    return () => { cancelled = true }
+  }, [approved])
+
+  async function withBusy(id: string, fn: () => Promise<void>) {
+    setBusy(b => new Set(b).add(id))
+    try { await fn() } catch (err) { alert(err instanceof Error ? err.message : 'Noe gikk galt') }
+    finally { setBusy(b => { const n = new Set(b); n.delete(id); return n }) }
+  }
+
+  function updateLocal(id: string, patch: Partial<StashRow>) {
+    setRows(rs => rs?.map(r => (r.id === id ? { ...r, ...patch } : r)) ?? rs)
+  }
+
+  async function saveField(row: StashRow, field: keyof StashRow, value: unknown) {
+    await withBusy(row.id, async () => {
+      const clear = row.uncertain_fields.includes(field as string) ? [field as string] : undefined
+      const updated = await patchRow(row.id, { [field]: value, ...(clear ? { clear_uncertain: clear } : {}) })
+      updateLocal(row.id, updated)
+    })
+  }
+
+  async function approve(row: StashRow) {
+    await withBusy(row.id, async () => updateLocal(row.id, await patchRow(row.id, { status: 'godkjent' })))
+  }
+
+  async function unapprove(row: StashRow) {
+    await withBusy(row.id, async () => updateLocal(row.id, await patchRow(row.id, { status: 'til_gjennomgang' })))
+  }
+
+  async function remove(row: StashRow) {
+    if (!confirm(`Slette ${yarnLabel(row.strikk_yarn)}${row.color_name ? ` (${row.color_name})` : ''}?`)) return
+    await withBusy(row.id, async () => {
+      const res = await fetch(`/api/strikk/garnlager/${row.id}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error((await res.json()).error ?? 'Sletting feilet')
+      setRows(rs => rs?.filter(r => r.id !== row.id) ?? rs)
+    })
+  }
+
+  function toggleSelect(id: string) {
+    setSelected(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
+  }
+
+  async function mergeSelected() {
+    const [keep_id, remove_id] = [...selected]
+    if (!keep_id || !remove_id) return
+    await withBusy(keep_id, async () => {
+      const res = await fetch('/api/strikk/garnlager/merge', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ keep_id, remove_id }),
+      })
+      const j = await res.json()
+      if (!res.ok) throw new Error(j.error ?? 'Sammenslåing feilet')
+      setRows(rs => rs ? [j as StashRow, ...rs.filter(r => r.id !== keep_id && r.id !== remove_id)] : rs)
+      setSelected(new Set())
+    })
+  }
+
+  if (loadError) return <p className="max-w-5xl mx-auto px-4 sm:px-8 py-6 text-sm text-red-700">Klarte ikke hente garnlageret: {loadError}</p>
+  if (!rows) return <p className="max-w-5xl mx-auto px-4 sm:px-8 py-6 text-sm text-stone-500">Henter garnlageret …</p>
+
+  const approvedGrouped = groupApproved(approved)
+
+  return (
+    <div className="max-w-6xl mx-auto px-4 sm:px-8 py-6 flex flex-col lg:flex-row gap-8">
+      <div className="flex-1 min-w-0 flex flex-col gap-6">
+        <div>
+          <h1 className="font-serif text-2xl text-stone-800">Garnlager</h1>
+          <p className="text-sm text-stone-600 mt-1">
+            Registrert fra bilder: se <code>docs/garnlager-registrering.md</code>. Garn «Til gjennomgang» ligger øverst.
+          </p>
+        </div>
+
+        {selected.size === 2 && (
+          <div className="sticky top-2 z-10 flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5">
+            <span className="text-sm text-amber-900">2 rader valgt — slå dem sammen til én?</span>
+            <button onClick={() => void mergeSelected()} className="text-sm px-3 py-1 rounded-lg bg-stone-800 text-white">Slå sammen</button>
+            <button onClick={() => setSelected(new Set())} className="text-sm text-stone-500">Avbryt</button>
+          </div>
+        )}
+
+        {pending.length > 0 && (
+          <section className="flex flex-col gap-3">
+            <h2 className="font-serif text-lg text-stone-700">Til gjennomgang ({pending.length})</h2>
+            {pending.map(row => (
+              <PendingCard key={row.id} row={row} busy={busy.has(row.id)} selected={selected.has(row.id)}
+                onSelect={() => toggleSelect(row.id)} onField={(f, v) => void saveField(row, f, v)}
+                onApprove={() => void approve(row)} onDelete={() => void remove(row)} />
+            ))}
+          </section>
+        )}
+
+        <section className="flex flex-col gap-4">
+          <h2 className="font-serif text-lg text-stone-700">Godkjent garn ({approved.length})</h2>
+          {approvedGrouped.length === 0 && <p className="text-sm text-stone-400">Ingen godkjent garn ennå.</p>}
+          {approvedGrouped.map(([brand, byName]) => (
+            <div key={brand} className="flex flex-col gap-2">
+              <h3 className="text-sm font-semibold uppercase tracking-wide text-stone-500">{brand}</h3>
+              {byName.map(([name, colorRows]) => (
+                <div key={name} className="rounded-xl border border-stone-200 bg-white px-4 py-3">
+                  <div className="text-base text-stone-800">{name}</div>
+                  <ul className="mt-1 flex flex-col gap-1">
+                    {colorRows.map(row => (
+                      <li key={row.id} className="flex items-center gap-2 text-sm text-stone-600">
+                        <span className="flex-1 min-w-0 truncate">
+                          {[row.color_number, row.color_name].filter(Boolean).join(' · ') || 'Ukjent farge'}
+                        </span>
+                        <span className="font-medium text-stone-800">
+                          {row.skein_count > 0 && `${row.skein_count} nøste${row.skein_count === 1 ? '' : 'r'}`}
+                          {row.skein_count > 0 && row.leftover_g ? ' + ' : ''}
+                          {row.leftover_g ? `rest ~${row.leftover_g} g` : ''}
+                        </span>
+                        <button onClick={() => void unapprove(row)} title="Tilbake til gjennomgang" className="text-xs text-stone-400 hover:text-stone-600">↩</button>
+                        <button onClick={() => void remove(row)} title="Slett" className="text-xs text-stone-300 hover:text-red-500">✕</button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          ))}
+        </section>
+
+        <button onClick={() => void loadAll()} className="self-start text-sm text-stone-500 underline">Oppdater listen</button>
+      </div>
+
+      <aside className="w-full lg:w-72 shrink-0">
+        <div className="lg:sticky lg:top-4 rounded-2xl border border-[#D4A574] bg-[#F5EFE6] px-4 py-4">
+          <h2 className="font-serif text-lg text-stone-800">Hva vil du strikke?</h2>
+          {matches === null && <p className="text-sm text-stone-500 mt-2">Ser gjennom oppskriftene …</p>}
+          {matches?.length === 0 && <p className="text-sm text-stone-500 mt-2">Godkjenn garn for å se forslag her.</p>}
+          <ul className="mt-2 flex flex-col gap-2">
+            {matches?.slice(0, 20).map(m => (
+              <li key={m.id}>
+                <a href={`/strikk/oppskrifter/${m.id}`} className="block rounded-lg px-2.5 py-2 hover:bg-white/70 transition-colors">
+                  <div className="text-sm text-stone-800 truncate">{m.title}</div>
+                  <div className="text-xs text-stone-500">
+                    {m.designer && `${m.designer} · `}
+                    {m.have === m.of ? 'Alle garn på lager' : `${m.have} av ${m.of} garn på lager`}
+                  </div>
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </aside>
+    </div>
+  )
+}
+
+function groupApproved(rows: StashRow[]): [string, [string, StashRow[]][]][] {
+  const byBrand = new Map<string, Map<string, StashRow[]>>()
+  for (const r of rows) {
+    const brand = r.strikk_yarn?.brand || 'Ukjent merke'
+    const name = r.strikk_yarn?.name || 'Ukjent garn'
+    if (!byBrand.has(brand)) byBrand.set(brand, new Map())
+    const byName = byBrand.get(brand)!
+    if (!byName.has(name)) byName.set(name, [])
+    byName.get(name)!.push(r)
+  }
+  return [...byBrand.entries()].sort(([a], [b]) => a.localeCompare(b, 'nb'))
+    .map(([brand, byName]) => [brand, [...byName.entries()].sort(([a], [b]) => a.localeCompare(b, 'nb'))])
+}
+
+function PendingCard({ row, busy, selected, onSelect, onField, onApprove, onDelete }: {
+  row: StashRow
+  busy: boolean
+  selected: boolean
+  onSelect: () => void
+  onField: (field: keyof StashRow, value: unknown) => void
+  onApprove: () => void
+  onDelete: () => void
+}) {
+  const [colorNumber, setColorNumber] = useState(row.color_number ?? '')
+  const [colorName, setColorName] = useState(row.color_name ?? '')
+  const [skeinCount, setSkeinCount] = useState(String(row.skein_count))
+  const [leftoverG, setLeftoverG] = useState(row.leftover_g?.toString() ?? '')
+  const img = stashThumbnailUrl(row.thumbnail_path)
+  const uncertain = new Set(row.uncertain_fields)
+
+  const inputCls = (field: string) =>
+    `w-full px-2 py-1.5 rounded-lg border text-sm bg-white ${uncertain.has(field) ? 'border-amber-400 bg-amber-50' : 'border-stone-200'}`
+
+  return (
+    <div className={`rounded-2xl border bg-white p-3 flex gap-3 ${selected ? 'border-stone-500 ring-2 ring-stone-300' : 'border-stone-200'}`}>
+      <button onClick={onSelect} aria-pressed={selected} title="Velg for sammenslåing"
+        className={`w-5 h-5 mt-1 rounded border-2 shrink-0 ${selected ? 'bg-stone-800 border-stone-800' : 'border-stone-300'}`} />
+      <div className="w-20 h-20 rounded-lg bg-stone-50 overflow-hidden shrink-0">
+        {img ? <img src={img} alt="" className="w-full h-full object-cover" /> : null}
+      </div>
+      <div className="flex-1 min-w-0 grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <div className="col-span-2 sm:col-span-4 text-sm font-medium text-stone-800">{yarnLabel(row.strikk_yarn)}</div>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-xs text-stone-400">Fargenr.</span>
+          <input className={inputCls('color_number')} value={colorNumber} onChange={e => setColorNumber(e.target.value)}
+            onBlur={() => onField('color_number', colorNumber.trim() || null)} />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-xs text-stone-400">Fargenavn</span>
+          <input className={inputCls('color_name')} value={colorName} onChange={e => setColorName(e.target.value)}
+            onBlur={() => onField('color_name', colorName.trim() || null)} />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-xs text-stone-400">Antall nøster</span>
+          <input className={inputCls('skein_count')} inputMode="decimal" value={skeinCount} onChange={e => setSkeinCount(e.target.value)}
+            onBlur={() => onField('skein_count', Number(skeinCount.replace(',', '.')) || 0)} />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-xs text-stone-400">Rest (g)</span>
+          <input className={inputCls('leftover_g')} inputMode="decimal" value={leftoverG} onChange={e => setLeftoverG(e.target.value)}
+            onBlur={() => onField('leftover_g', leftoverG.trim() ? Number(leftoverG.replace(',', '.')) : null)} />
+        </label>
+        {row.uncertain_fields.length > 0 && (
+          <div className="col-span-2 sm:col-span-4 flex flex-wrap gap-1.5">
+            {row.uncertain_fields.map(f => (
+              <span key={f} className="text-xs rounded-full bg-amber-100 text-amber-900 px-2 py-0.5">
+                {FIELD_LABEL[f] ?? f}: {row.uncertain_reasons[f] || 'usikker'}
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="col-span-2 sm:col-span-4 flex gap-2 mt-1">
+          <button disabled={busy} onClick={onApprove} className="text-sm px-3 py-1.5 rounded-lg bg-[#2E5339] text-white disabled:opacity-40">Godkjenn</button>
+          <button disabled={busy} onClick={onDelete} className="text-sm px-3 py-1.5 rounded-lg border border-stone-200 text-stone-500">Slett</button>
+          {row.note && <span className="text-xs text-stone-400 self-center truncate">{row.note}</span>}
+        </div>
+      </div>
+    </div>
+  )
+}

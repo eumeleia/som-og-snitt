@@ -64,3 +64,10 @@ strikk/garn/
 
 # Bilder av garnbanderoler, til registrering i garnlageret
 strikk/Banderoler/
+strikk/garnbilder/
+
+# Lokal oppbygging av garnlager-gjennomgangen (konverterte bilder og funn per runde)
+strikk/garnlager-arbeid/
+
+# Innskannede strikkeoppskrifter under utskrift til PDF (kildebilder + arbeidsfiler)
+oppskrifter/

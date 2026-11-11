@@ -4,5 +4,6 @@
 export const STRIKK_SECTIONS: { label: string; href: string }[] = [
   { label: 'Oppskrifter', href: '/strikk/oppskrifter' },
   { label: 'Prosjekter', href: '/strikk/prosjekter' },
+  { label: 'Garnlager', href: '/strikk/garnlager' },
   { label: 'Gjennomgang', href: '/strikk/gjennomgang' },
 ]
