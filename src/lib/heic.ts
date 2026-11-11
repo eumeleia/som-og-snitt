@@ -35,6 +35,29 @@ export function sniffBildeformat(buf: Buffer): Bildeformat | null {
 export class UgyldigBildeError extends Error {}
 
 /**
+ * Et lite JPEG (under maxBytes) av et bilde i hvilket som helst støttet format — til
+ * garnlager-miniatyrer Maria laster opp selv. Samme kvalitet/størrelse-søk som
+ * scripts/strikk/stash.mjs bruker for de maskinleste miniatyrene.
+ */
+export async function makeThumbnail(buf: Buffer, format: Bildeformat, maxBytes = 50 * 1024): Promise<Buffer> {
+  let jpeg = buf
+  if (format === 'heic') {
+    try {
+      jpeg = Buffer.from(await convert({ buffer: buf, format: 'JPEG', quality: 0.9 }))
+    } catch (err) {
+      throw new UgyldigBildeError(`Klarte ikke lese HEIC-bildet: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+  for (const side of [800, 600, 450, 320, 220]) {
+    for (const quality of [80, 65, 50, 35, 20]) {
+      const out = await sharp(jpeg).rotate().resize({ width: side, height: side, fit: 'inside', withoutEnlargement: true }).jpeg({ quality }).toBuffer()
+      if (out.length <= maxBytes) return out
+    }
+  }
+  throw new UgyldigBildeError('Klarte ikke gjøre bildet lite nok')
+}
+
+/**
  * Konverterer HEIC til JPEG (heic-convert — ImageMagick og ffmpeg klarer ikke ekte
  * iPhone-HEIC, kun et libheif-basert bibliotek gjør det), skalerer ALLE bilder ned til
  * maks 1568px på lengste side (Claude skalerer uansett ned dit) og retter EXIF-rotasjon.

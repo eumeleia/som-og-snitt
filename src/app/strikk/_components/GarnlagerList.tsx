@@ -17,6 +17,18 @@ async function patchRow(id: string, body: Record<string, unknown>): Promise<Stas
   return j as StashRow
 }
 
+const THUMBNAIL_MAX_BYTES = 4.5 * 1024 * 1024 // Vercels grense for en API-rute uten streaming.
+
+async function uploadThumbnail(id: string, file: File): Promise<string> {
+  if (file.size > THUMBNAIL_MAX_BYTES) throw new Error(`Bildet er for stort (maks ${(THUMBNAIL_MAX_BYTES / 1024 / 1024).toFixed(1)} MB) — velg et mindre bilde.`)
+  const res = await fetch(`/api/strikk/garnlager/${id}/thumbnail`, {
+    method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file,
+  })
+  const j = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(j.error ?? `Opplasting feilet (${res.status})`)
+  return j.thumbnail_path as string
+}
+
 function yarnLabel(y: StashRow['strikk_yarn']): string {
   if (!y) return 'Ukjent garn'
   return [y.brand, y.name].filter(Boolean).join(' ') + (y.discontinued ? ' (utgått)' : '')
@@ -30,6 +42,8 @@ export default function GarnlagerList() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [busy, setBusy] = useState<Set<string>>(new Set())
+  const [errors, setErrors] = useState<Record<string, string>>({})
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null)
   const [matches, setMatches] = useState<PatternMatch[] | null>(null)
 
   const loadAll = useCallback(async () => {
@@ -83,7 +97,8 @@ export default function GarnlagerList() {
 
   async function withBusy(id: string, fn: () => Promise<void>) {
     setBusy(b => new Set(b).add(id))
-    try { await fn() } catch (err) { alert(err instanceof Error ? err.message : 'Noe gikk galt') }
+    setErrors(e => { const n = { ...e }; delete n[id]; return n })
+    try { await fn() } catch (err) { setErrors(e => ({ ...e, [id]: err instanceof Error ? err.message : 'Noe gikk galt' })) }
     finally { setBusy(b => { const n = new Set(b); n.delete(id); return n }) }
   }
 
@@ -108,11 +123,18 @@ export default function GarnlagerList() {
   }
 
   async function remove(row: StashRow) {
-    if (!confirm(`Slette ${yarnLabel(row.strikk_yarn)}${row.color_name ? ` (${row.color_name})` : ''}?`)) return
+    setConfirmingDelete(null)
     await withBusy(row.id, async () => {
       const res = await fetch(`/api/strikk/garnlager/${row.id}`, { method: 'DELETE' })
       if (!res.ok) throw new Error((await res.json()).error ?? 'Sletting feilet')
       setRows(rs => rs?.filter(r => r.id !== row.id) ?? rs)
+    })
+  }
+
+  async function changeThumbnail(row: StashRow, file: File) {
+    await withBusy(row.id, async () => {
+      const thumbnail_path = await uploadThumbnail(row.id, file)
+      updateLocal(row.id, { thumbnail_path })
     })
   }
 
@@ -162,8 +184,11 @@ export default function GarnlagerList() {
             <h2 className="font-serif text-lg text-stone-700">Til gjennomgang ({pending.length})</h2>
             {pending.map(row => (
               <PendingCard key={row.id} row={row} busy={busy.has(row.id)} selected={selected.has(row.id)}
+                error={errors[row.id]} confirmingDelete={confirmingDelete === row.id}
                 onSelect={() => toggleSelect(row.id)} onField={(f, v) => void saveField(row, f, v)}
-                onApprove={() => void approve(row)} onDelete={() => void remove(row)} />
+                onApprove={() => void approve(row)}
+                onRequestDelete={() => setConfirmingDelete(row.id)} onCancelDelete={() => setConfirmingDelete(null)}
+                onDelete={() => void remove(row)} onThumbnail={f => void changeThumbnail(row, f)} />
             ))}
           </section>
         )}
@@ -179,17 +204,30 @@ export default function GarnlagerList() {
                   <div className="text-base text-stone-800">{name}</div>
                   <ul className="mt-1 flex flex-col gap-1">
                     {colorRows.map(row => (
-                      <li key={row.id} className="flex items-center gap-2 text-sm text-stone-600">
-                        <span className="flex-1 min-w-0 truncate">
-                          {[row.color_number, row.color_name].filter(Boolean).join(' · ') || 'Ukjent farge'}
-                        </span>
-                        <span className="font-medium text-stone-800">
-                          {row.skein_count > 0 && `${row.skein_count} nøste${row.skein_count === 1 ? '' : 'r'}`}
-                          {row.skein_count > 0 && row.leftover_g ? ' + ' : ''}
-                          {row.leftover_g ? `rest ~${row.leftover_g} g` : ''}
-                        </span>
-                        <button onClick={() => void unapprove(row)} title="Tilbake til gjennomgang" className="text-xs text-stone-400 hover:text-stone-600">↩</button>
-                        <button onClick={() => void remove(row)} title="Slett" className="text-xs text-stone-300 hover:text-red-500">✕</button>
+                      <li key={row.id} className="flex flex-col gap-1 py-1">
+                        <div className="flex items-center gap-2 text-sm text-stone-600">
+                          <ThumbnailPicker img={stashThumbnailUrl(row.thumbnail_path)} size="w-9 h-9" busy={busy.has(row.id)}
+                            onUpload={f => void changeThumbnail(row, f)} />
+                          <span className="flex-1 min-w-0 truncate">
+                            {[row.color_number, row.color_name].filter(Boolean).join(' · ') || 'Ukjent farge'}
+                          </span>
+                          <span className="font-medium text-stone-800">
+                            {row.skein_count > 0 && `${row.skein_count} nøste${row.skein_count === 1 ? '' : 'r'}`}
+                            {row.skein_count > 0 && row.leftover_g ? ' + ' : ''}
+                            {row.leftover_g ? `rest ~${row.leftover_g} g` : ''}
+                          </span>
+                          <button onClick={() => void unapprove(row)} title="Tilbake til gjennomgang" className="text-xs text-stone-400 hover:text-stone-600">↩</button>
+                          {confirmingDelete === row.id ? (
+                            <span className="flex items-center gap-1 text-xs shrink-0">
+                              <span className="text-stone-500">Slette?</span>
+                              <button onClick={() => void remove(row)} className="text-red-600 font-medium">Ja</button>
+                              <button onClick={() => setConfirmingDelete(null)} className="text-stone-400">Nei</button>
+                            </span>
+                          ) : (
+                            <button onClick={() => setConfirmingDelete(row.id)} title="Slett" className="text-xs text-stone-300 hover:text-red-500">✕</button>
+                          )}
+                        </div>
+                        {errors[row.id] && <p className="text-xs text-red-600 pl-11">{errors[row.id]}</p>}
                       </li>
                     ))}
                   </ul>
@@ -240,14 +278,43 @@ function groupApproved(rows: StashRow[]): [string, [string, StashRow[]][]][] {
     .map(([brand, byName]) => [brand, [...byName.entries()].sort(([a], [b]) => a.localeCompare(b, 'nb'))])
 }
 
-function PendingCard({ row, busy, selected, onSelect, onField, onApprove, onDelete }: {
+// Bildet og et lite kamera-ikon over det, til å velge en ny fil med. Native <input type=file>
+// brukes rett fra en knapp i stedet for window.confirm/alert — de kan være slått av eller
+// bli hoppet over i enkelte nettlesere/apper, uten noen synlig feilmelding.
+function ThumbnailPicker({ img, size, busy, onUpload }: {
+  img: string | null
+  size: string
+  busy: boolean
+  onUpload: (file: File) => void
+}) {
+  return (
+    <label className={`relative ${size} rounded-lg bg-stone-50 overflow-hidden shrink-0 cursor-pointer group`} title="Bytt bilde">
+      {img ? <img src={img} alt="" className="w-full h-full object-cover" /> : null}
+      <span className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/30 transition-colors">
+        <svg className="w-4 h-4 text-white opacity-0 group-hover:opacity-100" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+            d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
+      </span>
+      <input type="file" accept="image/*,.heic,.heif" disabled={busy} className="sr-only"
+        onChange={e => { const f = e.target.files?.[0]; if (f) onUpload(f); e.target.value = '' }} />
+    </label>
+  )
+}
+
+function PendingCard({ row, busy, selected, error, confirmingDelete, onSelect, onField, onApprove, onRequestDelete, onCancelDelete, onDelete, onThumbnail }: {
   row: StashRow
   busy: boolean
   selected: boolean
+  error?: string
+  confirmingDelete: boolean
   onSelect: () => void
   onField: (field: keyof StashRow, value: unknown) => void
   onApprove: () => void
+  onRequestDelete: () => void
+  onCancelDelete: () => void
   onDelete: () => void
+  onThumbnail: (file: File) => void
 }) {
   const [colorNumber, setColorNumber] = useState(row.color_number ?? '')
   const [colorName, setColorName] = useState(row.color_name ?? '')
@@ -263,9 +330,7 @@ function PendingCard({ row, busy, selected, onSelect, onField, onApprove, onDele
     <div className={`rounded-2xl border bg-white p-3 flex gap-3 ${selected ? 'border-stone-500 ring-2 ring-stone-300' : 'border-stone-200'}`}>
       <button onClick={onSelect} aria-pressed={selected} title="Velg for sammenslåing"
         className={`w-5 h-5 mt-1 rounded border-2 shrink-0 ${selected ? 'bg-stone-800 border-stone-800' : 'border-stone-300'}`} />
-      <div className="w-20 h-20 rounded-lg bg-stone-50 overflow-hidden shrink-0">
-        {img ? <img src={img} alt="" className="w-full h-full object-cover" /> : null}
-      </div>
+      <ThumbnailPicker img={img} size="w-20 h-20" busy={busy} onUpload={onThumbnail} />
       <div className="flex-1 min-w-0 grid grid-cols-2 sm:grid-cols-4 gap-2">
         <div className="col-span-2 sm:col-span-4 text-sm font-medium text-stone-800">{yarnLabel(row.strikk_yarn)}</div>
         <label className="flex flex-col gap-0.5">
@@ -297,11 +362,20 @@ function PendingCard({ row, busy, selected, onSelect, onField, onApprove, onDele
             ))}
           </div>
         )}
-        <div className="col-span-2 sm:col-span-4 flex gap-2 mt-1">
+        <div className="col-span-2 sm:col-span-4 flex items-center gap-2 mt-1">
           <button disabled={busy} onClick={onApprove} className="text-sm px-3 py-1.5 rounded-lg bg-[#2E5339] text-white disabled:opacity-40">Godkjenn</button>
-          <button disabled={busy} onClick={onDelete} className="text-sm px-3 py-1.5 rounded-lg border border-stone-200 text-stone-500">Slett</button>
+          {confirmingDelete ? (
+            <span className="flex items-center gap-2 text-sm">
+              <span className="text-stone-500">Slette denne raden?</span>
+              <button onClick={onDelete} className="text-red-600 font-medium">Ja, slett</button>
+              <button onClick={onCancelDelete} className="text-stone-400">Avbryt</button>
+            </span>
+          ) : (
+            <button disabled={busy} onClick={onRequestDelete} className="text-sm px-3 py-1.5 rounded-lg border border-stone-200 text-stone-500">Slett</button>
+          )}
           {row.note && <span className="text-xs text-stone-400 self-center truncate">{row.note}</span>}
         </div>
+        {error && <p className="col-span-2 sm:col-span-4 text-xs text-red-600">{error}</p>}
       </div>
     </div>
   )
