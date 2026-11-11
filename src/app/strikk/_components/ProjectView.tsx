@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
@@ -14,7 +14,8 @@ import { applyOps, type Counter, type DocState, type Op, type Stroke, type Tool 
 import { enqueue, pendingOps, subscribe, subscribeServerCounters, type QueueStatus } from '../_lib/project-save-queue'
 import { DriveAuthExpiredError, DriveFileMissingError, downloadPdf } from '../_lib/drive'
 import type { YarnRow } from '../_lib/yarns'
-import PdfPages, { MARKER_OPACITY, type PageSize } from './PdfPages'
+import { findSizeMarks, type Measure, type PageText, type SizeMarks } from '../_lib/size-marks'
+import PdfPages, { MARKER_OPACITY, SIZE_MARK_COLOR, type PageSize } from './PdfPages'
 import { openPdf } from './PdfViewer'
 import Counters from './Counters'
 import YarnPicker from './YarnPicker'
@@ -43,7 +44,8 @@ const DEFAULT_SETTINGS: ToolSettings = {
 }
 
 const UI_KEY = 'strikk-project-ui'
-const DEFAULT_UI = { jsTwoFinger: false }
+const DEFAULT_UI = { jsTwoFinger: false, sizeMarks: true }
+const SIZE_MESSAGE_MS = 5000
 
 function readLocal<T>(key: string, fallback: T): T {
   try {
@@ -252,6 +254,7 @@ export default function ProjectView({ id }: { id: string }) {
           projectId={id}
           project={project}
           recipe={recipe}
+          sizeLabels={extraction?.sizes.map(s => s.label) ?? []}
           onBack={() => setView('info')}
         />
       )}
@@ -486,10 +489,35 @@ function InfoView({ project, recipe, extraction, yarns, combos, swatches, yarnLi
   )
 }
 
-function PdfView({ projectId, project, recipe, onBack }: {
+// Reads the text layer page by page, so the PDF is on screen before this is done.
+async function readSizeMarks(doc: PDFDocumentProxy, labels: string[], k: number, cancelled: () => boolean): Promise<SizeMarks | null> {
+  const ctx = document.createElement('canvas').getContext('2d')
+  const families = new Map<string, string>()
+  const measure: Measure = (text, fontName) => {
+    if (!ctx) return text.length
+    ctx.font = `100px ${(fontName && families.get(fontName)) || 'sans-serif'}`
+    return ctx.measureText(text).width
+  }
+  const pages: PageText[] = []
+  for (let i = 1; i <= doc.numPages; i++) {
+    if (cancelled()) return null
+    const page = await doc.getPage(i)
+    const vp = page.getViewport({ scale: 1 })
+    const tc = await page.getTextContent()
+    for (const [name, style] of Object.entries(tc.styles)) families.set(name, style.fontFamily)
+    pages.push({
+      items: tc.items.filter(it => 'str' in it),
+      viewport: { width: vp.width, height: vp.height, transform: vp.transform },
+    })
+  }
+  return findSizeMarks(pages, labels, k, measure)
+}
+
+function PdfView({ projectId, project, recipe, sizeLabels, onBack }: {
   projectId: string
   project: Project
   recipe: { title: string | null; drive_file_id: string; file_name: string } | null
+  sizeLabels: string[]
   onBack: () => void
 }) {
   const [pdf, setPdf] = useState<PdfState>(() => (
@@ -503,6 +531,9 @@ function PdfView({ projectId, project, recipe, onBack }: {
   const [countersVisible, setCountersVisible] = useState(false)
   const [counterHeight, setCounterHeight] = useState(0)
   const [jsTwoFinger, setJsTwoFinger] = useState(() => readLocal(UI_KEY, DEFAULT_UI).jsTwoFinger)
+  const [sizeMarksOn, setSizeMarksOn] = useState(() => readLocal(UI_KEY, DEFAULT_UI).sizeMarks)
+  const [sizeResult, setSizeResult] = useState<{ doc: PDFDocumentProxy; key: string; marks: SizeMarks } | null>(null)
+  const [sizeMessage, setSizeMessage] = useState<string | null>(null)
   const [queue, setQueue] = useState<QueueStatus>({ pending: 0, failed: false })
   const box = useVisualViewportBox()
   const wakeLock = useWakeLock(pdf.kind === 'ready')
@@ -513,7 +544,50 @@ function PdfView({ projectId, project, recipe, onBack }: {
     setState(s => ({ ...s, counters: applyOps({ strokes: [], counters }, pendingOps(docId)).counters }))
   }), [projectId])
   useEffect(() => { writeLocal('strikk-project-settings', settings) }, [settings])
-  useEffect(() => { writeLocal(UI_KEY, { jsTwoFinger }) }, [jsTwoFinger])
+  useEffect(() => { writeLocal(UI_KEY, { jsTwoFinger, sizeMarks: sizeMarksOn }) }, [jsTwoFinger, sizeMarksOn])
+
+  const sizeIndex = project.size_index
+  const canMarkSize = sizeIndex !== null && sizeIndex >= 0 && sizeIndex < sizeLabels.length && sizeLabels.length > 1
+  const sizeKey = canMarkSize ? `${sizeIndex}|${sizeLabels.join('|')}` : ''
+  const doc = pdf.kind === 'ready' ? pdf.doc : null
+  // A result for another PDF or size is never shown.
+  const sizeMarks = sizeResult && sizeResult.doc === doc && sizeResult.key === sizeKey ? sizeResult.marks : null
+  const sizeMarksOnRef = useRef(sizeMarksOn)
+  useLayoutEffect(() => { sizeMarksOnRef.current = sizeMarksOn })
+
+  function showSizeMessage(res: SizeMarks | null) {
+    if (res?.status === 'no-text') setSizeMessage('PDF-en har ikke tekstlag, så størrelsen kan ikke markeres')
+    else if (res?.status === 'none') setSizeMessage('Fant ingen tall for størrelsen i teksten')
+    else setSizeMessage(null)
+  }
+
+  useEffect(() => {
+    if (!doc || !sizeKey) return
+    let cancelled = false
+    const labels = sizeKey.split('|')
+    const k = Number(labels.shift())
+    readSizeMarks(doc, labels, k, () => cancelled)
+      .then(res => {
+        if (cancelled || !res) return
+        setSizeResult({ doc, key: sizeKey, marks: res })
+        if (sizeMarksOnRef.current) showSizeMessage(res)
+      })
+      .catch(err => console.error('[strikk] size marks', err))
+    return () => { cancelled = true }
+  }, [doc, sizeKey])
+
+  useEffect(() => {
+    if (!sizeMessage) return
+    const t = setTimeout(() => setSizeMessage(null), SIZE_MESSAGE_MS)
+    return () => clearTimeout(t)
+  }, [sizeMessage])
+
+  function toggleSizeMarks() {
+    const on = !sizeMarksOn
+    setSizeMarksOn(on)
+    if (on) showSizeMessage(sizeMarks)
+    else setSizeMessage(null)
+  }
 
   useEffect(() => {
     if (!recipe?.drive_file_id) return
@@ -560,6 +634,7 @@ function PdfView({ projectId, project, recipe, onBack }: {
           doc={pdf.doc}
           sizes={pdf.sizes}
           strokes={state.strokes}
+          sizeMarks={sizeMarksOn && sizeMarks?.status === 'ok' ? sizeMarks.pages : null}
           tool={tool}
           color={active.color}
           width={active.width}
@@ -603,11 +678,19 @@ function PdfView({ projectId, project, recipe, onBack }: {
             <span className="pointer-events-auto px-2.5 py-1 rounded-full bg-red-700 text-white text-xs">ikke lagret ({queue.pending})</span>
           )}
           {wakeLock === false && <span className="px-2.5 py-1 rounded-full bg-stone-700 text-white text-xs">skjermlås av</span>}
+          {sizeMessage && (
+            <span role="status" className="max-w-[16rem] px-2.5 py-1 rounded-2xl bg-stone-700 text-white text-xs">{sizeMessage}</span>
+          )}
         </div>
 
         {pdf.kind === 'ready' && (
           <div className="absolute right-3 flex flex-col gap-2 items-center" style={{ top: 'calc(env(safe-area-inset-top) + 12px)' }}>
             <div className="flex gap-2">
+              {canMarkSize && (
+                <RoundButton label={`Min størrelse (${sizeLabels[sizeIndex!]})`} on={sizeMarksOn} onClick={toggleSizeMarks}>
+                  <IconSizeMark />
+                </RoundButton>
+              )}
               <RoundButton label="Tellere" on={countersVisible} onClick={() => setCountersVisible(v => !v)}>
                 <IconCounter />
               </RoundButton>
@@ -719,6 +802,14 @@ function ToolIcon({ tool }: { tool: Tool }) {
 }
 function IconCounter() {
   return <svg {...iconProps}><rect x="3" y="5" width="18" height="14" rx="3" /><path d="M8 12h4" /><path d="M14.5 12h3" /><path d="M16 10.5v3" /></svg>
+}
+function IconSizeMark() {
+  return (
+    <svg {...iconProps}>
+      <rect x="3.5" y="7" width="17" height="10" rx="2.5" stroke={SIZE_MARK_COLOR} />
+      <path d="M8 12h8" />
+    </svg>
+  )
 }
 function IconMenu() {
   return <svg {...iconProps}><path d="M4 7h16" /><path d="M4 12h16" /><path d="M4 17h16" /></svg>

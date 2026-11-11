@@ -4,6 +4,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import type { PDFDocumentProxy, RenderTask } from 'pdfjs-dist'
 import type { Stroke, Tool } from '../_lib/markup-ops'
 import { eraseCircle } from '../_lib/erase'
+import type { Rect } from '../_lib/size-marks'
 
 const DPR_CAP = 2
 // iOS Safari refuses canvases above 16 777 216 pixels; stay well under, since two
@@ -26,11 +27,14 @@ export interface PageSize {
 }
 
 export const MARKER_OPACITY = 0.55
+// The chosen size, marked from the text layer. Violet, which no marker colour is.
+export const SIZE_MARK_COLOR = '#7C3AED'
 
 interface Props {
   doc: PDFDocumentProxy
   sizes: PageSize[]
   strokes: Stroke[]
+  sizeMarks: Map<number, Rect[]> | null
   tool: Tool | null
   color: string
   width: number
@@ -69,7 +73,7 @@ function isInVisualViewport(el: Element): boolean {
 // Strokes are regrouped on every change, so compare element-wise: a stroke on one page
 // must not re-render every other page.
 function samePageProps(a: PageProps, b: PageProps) {
-  return a.num === b.num && a.size === b.size && a.register === b.register &&
+  return a.num === b.num && a.size === b.size && a.register === b.register && a.marks === b.marks &&
     a.strokes.length === b.strokes.length && a.strokes.every((s, i) => s === b.strokes[i])
 }
 
@@ -77,11 +81,12 @@ interface PageProps {
   num: number
   size: PageSize
   strokes: Stroke[]
+  marks: Rect[] | undefined
   register: (num: number, el: HTMLDivElement | null) => void
 }
 
 const Page = memo(function Page({
-  num, size, strokes, register,
+  num, size, strokes, marks, register,
 }: PageProps) {
   const aspect = size.height / size.width
   const viewBox = `0 0 ${VB} ${VB * aspect}`
@@ -103,6 +108,15 @@ const Page = memo(function Page({
             strokeLinecap="round" strokeLinejoin="round" />
         ))}
       </svg>
+      {marks && (
+        <svg data-size-marks viewBox={viewBox} className="absolute inset-0 w-full h-full pointer-events-none"
+          style={{ mixBlendMode: 'multiply' }}>
+          {marks.map((r, i) => (
+            <rect key={i} x={r.x * VB} y={r.y * VB * aspect} width={r.w * VB} height={r.h * VB * aspect}
+              rx={2} fill={SIZE_MARK_COLOR} fillOpacity={0.16} stroke={SIZE_MARK_COLOR} strokeWidth={2} />
+          ))}
+        </svg>
+      )}
       <svg viewBox={viewBox} className="absolute inset-0 w-full h-full pointer-events-none">
         {pens.map(s => (
           <path key={s.id} d={pathFor(s.points, aspect)} fill="none" stroke={s.color}
@@ -129,7 +143,7 @@ interface Drawing {
 }
 
 export default function PdfPages({
-  doc, sizes, strokes, tool, color, width, jsTwoFingerScroll, bottomPadding,
+  doc, sizes, strokes, sizeMarks, tool, color, width, jsTwoFingerScroll, bottomPadding,
   onStrokeAdd, onStrokeSplit, onDrawStart,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -459,6 +473,7 @@ export default function PdfPages({
           num={i + 1}
           size={size}
           strokes={byPage.get(i + 1) ?? EMPTY}
+          marks={sizeMarks?.get(i + 1)}
           register={register}
         />
       ))}
