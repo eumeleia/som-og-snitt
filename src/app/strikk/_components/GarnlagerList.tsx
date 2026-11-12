@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { isVisibleInGarnlager, STASH_SELECT, stashThumbnailUrl, type StashRow } from '../_lib/stash'
 import { EXTRACTION_SELECT, storedToExtraction, type StoredRecipe } from '../_lib/extraction'
-import { sizeCoverage, type OwnedYarn, type SizeCoverage } from '../_lib/project-amounts'
+import { matchRecipes, type MatchRecipe, type MatchYarn, type RecipeMatch } from '../_lib/stash-match'
 
 interface ProjectOption { id: string; name: string; status: string }
 
@@ -13,8 +13,6 @@ const FIELD_LABEL: Record<string, string> = {
   brand: 'Merke', name: 'Garn', color_number: 'Fargenr.', color_name: 'Fargenavn', skein_count: 'Antall',
 }
 
-interface MatchYarn { yarnId: string; label: string; colors: string[] }
-interface PatternMatch { id: string; title: string; designer: string | null; yarns: MatchYarn[]; sizes: SizeCoverage[] }
 
 async function patchRow(id: string, body: Record<string, unknown>): Promise<StashRow> {
   const res = await fetch(`/api/strikk/garnlager/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -40,9 +38,6 @@ function yarnLabel(y: StashRow['strikk_yarn']): string {
   return [y.brand, y.name].filter(Boolean).join(' ') + (y.discontinued ? ' (utgått)' : '')
 }
 
-function coveredCount(sizes: SizeCoverage[]): number {
-  return sizes.filter(s => s.covered).length
-}
 
 // Garnlageret: raden som venter på gjennomgang øverst (bilde, rettbare felt, usikre merker),
 // godkjent garn gruppert produsent > garn > farge under, og «Hva vil du strikke?» i hjørnet —
@@ -55,7 +50,7 @@ export default function GarnlagerList() {
   const [busy, setBusy] = useState<Set<string>>(new Set())
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null)
-  const [matches, setMatches] = useState<PatternMatch[] | null>(null)
+  const [library, setLibrary] = useState<{ recipes: MatchRecipe[]; yarns: MatchYarn[] } | { error: string } | null>(null)
   const [projects, setProjects] = useState<ProjectOption[]>([])
 
   useEffect(() => {
@@ -85,62 +80,31 @@ export default function GarnlagerList() {
   const approved = useMemo(() => (rows ?? []).filter(r => r.status === 'godkjent' && isVisibleInGarnlager(r)), [rows])
   const pending = useMemo(() => (rows ?? []).filter(r => r.status === 'til_gjennomgang'), [rows])
 
-  // «Hva vil du strikke?»: godkjente oppskrifter som bruker garn Maria har godkjent i lageret,
-  // med hvilket garn/farge det er snakk om og hvilke størrelser garnet på lager rekker til.
+  // «Hva vil du strikke?»: every approved recipe and the catalogue, loaded once; which of
+  // them the stash can knit is worked out again whenever the stash changes.
   useEffect(() => {
-    const owned = new Set(approved.map(r => r.yarn_id).filter((x): x is string => !!x))
-    const ownedByYarn = new Map<string, OwnedYarn>()
-    for (const r of approved) {
-      if (!r.yarn_id) continue
-      const o = ownedByYarn.get(r.yarn_id) ?? { skein_count: 0, leftover_g: 0 }
-      o.skein_count += r.skein_count
-      o.leftover_g += r.leftover_g ?? 0
-      ownedByYarn.set(r.yarn_id, o)
-    }
-    const colorsByYarn = new Map<string, string[]>()
-    for (const r of approved) {
-      if (!r.yarn_id) continue
-      const label = [r.color_number, r.color_name].filter(Boolean).join(' ')
-      if (!label) continue
-      const list = colorsByYarn.get(r.yarn_id) ?? []
-      if (!list.includes(label)) list.push(label)
-      colorsByYarn.set(r.yarn_id, list)
-    }
-
     let cancelled = false
     Promise.all([
-      supabase.from('strikk_yarn_line').select('oppskrift_id, yarn_id'),
-      supabase.from('strikk_oppskrift').select('id, title, designer, extraction_status'),
-    ]).then(async ([{ data: lines }, { data: recipes }]) => {
-      if (cancelled || !lines || !recipes) return
-      const approvedRecipes = new Map(recipes.filter(r => r.extraction_status === 'approved').map(r => [r.id, r]))
-      const candidateIds = new Set<string>()
-      for (const l of lines) {
-        if (approvedRecipes.has(l.oppskrift_id) && l.yarn_id && owned.has(l.yarn_id)) candidateIds.add(l.oppskrift_id)
-      }
-      if (candidateIds.size === 0) { setMatches([]); return }
-
-      const { data: fullRecipes } = await supabase.from('strikk_oppskrift').select(EXTRACTION_SELECT).in('id', [...candidateIds])
-      if (cancelled || !fullRecipes) return
-
-      const out: PatternMatch[] = []
-      for (const raw of fullRecipes as unknown as StoredRecipe[]) {
-        const r = approvedRecipes.get(raw.id)
-        if (!r) continue
-        const d = storedToExtraction(raw)
-        const matchedYarnIds = [...new Set(d.yarn_lines.map(l => l.yarn_id).filter((x): x is string => !!x && owned.has(x)))]
-        if (matchedYarnIds.length === 0) continue
-        const yarns: MatchYarn[] = matchedYarnIds.map(yarnId => {
-          const line = d.yarn_lines.find(l => l.yarn_id === yarnId)!
-          return { yarnId, label: [line.brand, line.yarn_name].filter(Boolean).join(' '), colors: colorsByYarn.get(yarnId) ?? [] }
-        })
-        out.push({ id: raw.id, title: r.title, designer: r.designer, yarns, sizes: sizeCoverage(d, ownedByYarn) })
-      }
-      out.sort((a, b) => coveredCount(b.sizes) - coveredCount(a.sizes) || b.yarns.length - a.yarns.length)
-      setMatches(out)
+      supabase.from('strikk_oppskrift').select(`${EXTRACTION_SELECT}, mentions_leftover`).eq('extraction_status', 'approved'),
+      supabase.from('strikk_yarn').select('id, brand, name, meterage_m, skein_weight_g, gauge_stitches_min, gauge_stitches_max, fibers'),
+    ]).then(([r, y]) => {
+      if (cancelled) return
+      const error = r.error ?? y.error
+      if (error) { setLibrary({ error: error.message }); return }
+      const recipes = (r.data ?? []).map(raw => {
+        const stored = raw as unknown as StoredRecipe & { mentions_leftover: boolean | null }
+        return { id: stored.id, title: stored.title, designer: stored.designer, mentions_leftover: stored.mentions_leftover, data: storedToExtraction(stored) }
+      })
+      setLibrary({ recipes, yarns: (y.data ?? []) as MatchYarn[] })
     })
     return () => { cancelled = true }
-  }, [approved])
+  }, [])
+
+  const matches = useMemo<RecipeMatch[] | null>(() => {
+    if (!library || 'error' in library || !rows) return null
+    return matchRecipes(library.recipes, rows, library.yarns)
+  }, [library, rows])
+  const fromLeftovers = useMemo(() => matches?.filter(m => m.fromLeftovers) ?? [], [matches])
 
   async function withBusy(id: string, fn: () => Promise<void>) {
     setBusy(b => new Set(b).add(id))
@@ -191,15 +155,16 @@ export default function GarnlagerList() {
 
   // Lager et prosjekt fra oppskriften og tildeler garnet som ga treffet med én gang — garn
   // som allerede er tildelt et annet prosjekt, rører den ikke.
-  async function planProject(match: PatternMatch) {
+  async function planProject(match: RecipeMatch) {
     await withBusy(match.id, async () => {
       const res = await fetch('/api/strikk/projects', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ oppskriftId: match.id }),
       })
       const project = await res.json()
       if (!res.ok) throw new Error(project.error ?? 'Klarte ikke lage prosjektet')
-      const yarnIds = new Set(match.yarns.map(y => y.yarnId))
-      const toAssign = approved.filter(r => r.yarn_id && yarnIds.has(r.yarn_id) && !r.project_id)
+      // The rows of the first combination: the pattern's own yarn, in the most sizes.
+      const ids = new Set(match.groups[0]?.rowIds ?? [])
+      const toAssign = approved.filter(r => ids.has(r.id) && !r.project_id)
       await Promise.all(toAssign.map(r => patchRow(r.id, { project_id: project.id })))
       router.push(`/strikk/prosjekt/${project.id}`)
     })
@@ -317,39 +282,65 @@ export default function GarnlagerList() {
       <aside className="w-full lg:w-80 shrink-0">
         <div className="lg:sticky lg:top-4 rounded-2xl border border-[#D4A574] bg-[#F5EFE6] px-4 py-4">
           <h2 className="font-serif text-lg text-stone-800">Hva vil du strikke?</h2>
-          {matches === null && <p className="text-sm text-stone-500 mt-2">Ser gjennom oppskriftene …</p>}
-          {matches?.length === 0 && <p className="text-sm text-stone-500 mt-2">Godkjenn garn for å se forslag her.</p>}
+          {library && 'error' in library && <p className="text-sm text-red-700 mt-2 break-words">Kunne ikke hente oppskriftene: {library.error}</p>}
+          {matches === null && !(library && 'error' in library) && <p className="text-sm text-stone-500 mt-2">Ser gjennom oppskriftene …</p>}
+          {matches?.length === 0 && <p className="text-sm text-stone-500 mt-2">Ingen oppskrifter kan strikkes med garnet i lageret ennå.</p>}
+          {matches && matches.length > 0 && (
+            <p className="text-xs text-stone-500 mt-1">{matches.length} oppskrifter du har garn til, i minst én størrelse.</p>
+          )}
           <ul className="mt-2 flex flex-col gap-3">
-            {matches?.slice(0, 20).map(m => (
-              <li key={m.id} className="rounded-lg bg-white/70 px-2.5 py-2">
-                <a href={`/strikk/oppskrifter/${m.id}`} className="block hover:underline">
-                  <div className="text-sm text-stone-800 truncate">{m.title}</div>
-                  {m.designer && <div className="text-xs text-stone-500">{m.designer}</div>}
-                </a>
-                <p className="text-xs text-stone-600 mt-1">
-                  {m.yarns.map(y => `${y.label}${y.colors.length ? ` (${y.colors.join(', ')})` : ''}`).join(' · ')}
-                </p>
-                {m.sizes.length > 0 && (
-                  <p className="text-xs mt-1 flex flex-wrap gap-x-1.5 gap-y-0.5">
-                    {m.sizes.map(s => (
-                      <span key={s.label} className={s.covered ? 'text-emerald-700' : 'text-stone-400'}
-                        title={s.covered ? undefined : s.shortfalls.map(f => `${f.color_label ?? 'Garn'}: mangler ca. ${f.short_skeins} nøste${f.short_skeins === 1 ? '' : 'r'}`).join(', ')}>
-                        {s.label} {s.covered ? '✓' : '✗'}
-                      </span>
-                    ))}
-                  </p>
-                )}
-                <button disabled={busy.has(m.id)} onClick={() => void planProject(m)}
-                  className="mt-1.5 text-xs px-2.5 py-1 rounded-lg bg-[#2E5339] text-white disabled:opacity-40">
-                  Planlegg prosjekt →
-                </button>
-                {errors[m.id] && <p className="text-xs text-red-600 mt-1">{errors[m.id]}</p>}
-              </li>
+            {matches?.map(m => (
+              <MatchCard key={m.id} match={m} busy={busy.has(m.id)} error={errors[m.id]} onPlan={() => void planProject(m)} />
             ))}
           </ul>
+          {fromLeftovers.length > 0 && (
+            <section className="mt-5">
+              <h3 className="font-serif text-base text-stone-800">Kan strikkes av rester</h3>
+              <p className="text-xs text-stone-500">Små prosjekter som trenger høyst ett nøste av hvert garn.</p>
+              <ul className="mt-2 flex flex-col gap-3">
+                {fromLeftovers.map(m => (
+                  <MatchCard key={m.id} match={m} busy={busy.has(m.id)} error={errors[m.id]} onPlan={() => void planProject(m)} />
+                ))}
+              </ul>
+            </section>
+          )}
         </div>
       </aside>
     </div>
+  )
+}
+
+// One recipe in «Hva vil du strikke?»: which yarn in the stash knits which sizes, the pattern's
+// own yarn first and alternatives (swatch first) after, and what the other sizes lack.
+function MatchCard({ match: m, busy, error, onPlan }: { match: RecipeMatch; busy: boolean; error?: string; onPlan: () => void }) {
+  return (
+    <li className="rounded-lg bg-white/70 px-2.5 py-2">
+      <a href={`/strikk/oppskrifter/${m.id}`} className="block hover:underline">
+        <div className="text-sm text-stone-800">{m.title}</div>
+        {m.designer && <div className="text-xs text-stone-500">{m.designer}</div>}
+      </a>
+      <ul className="mt-1 flex flex-col gap-1">
+        {m.groups.map((g, i) => (
+          <li key={i} className={`text-xs ${g.alternative ? 'text-stone-600' : 'text-emerald-800'}`}>
+            {g.alternative && <span className="mr-1 px-1.5 py-0.5 rounded bg-amber-100 text-amber-900">Alternativ – strikk prøvelapp</span>}
+            {g.text}
+          </li>
+        ))}
+      </ul>
+      {m.missing.length > 0 && (
+        <details className="mt-1 text-xs text-stone-500">
+          <summary className="cursor-pointer">Går ikke i {m.missing.length === 1 ? '1 størrelse' : `${m.missing.length} størrelser`}</summary>
+          <ul className="mt-1 flex flex-col gap-0.5">
+            {m.missing.map(x => <li key={x.size}><span className="text-stone-700">{x.size}:</span> {x.lines.join('; ')}</li>)}
+          </ul>
+        </details>
+      )}
+      <button disabled={busy} onClick={onPlan}
+        className="mt-1.5 text-xs px-2.5 py-1 rounded-lg bg-[#2E5339] text-white disabled:opacity-40">
+        Planlegg prosjekt →
+      </button>
+      {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
+    </li>
   )
 }
 

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { normalizeExtraction } from './extraction'
 import { SIMULATED_ANSWER } from './extraction.fixture'
-import { amountForLine, estimatedCost, formatAmountForLine, sizeCoverage, skeinsNeeded, type OwnedYarn } from './project-amounts'
+import { amountForLine, estimatedCost, formatAmountForLine, skeinsNeeded } from './project-amounts'
 
 // SIMULATED_ANSWER (Rein genser): yarn_line 0 (Sunday) and 1 (Tynn Silk Mohair) are held
 // together in color_group 0, each with its own per-size amount. yarn_line 2 (Peer Gynt) is
@@ -30,33 +30,6 @@ describe('amountForLine', () => {
   it('returns null for a line or size that does not exist', () => {
     expect(amountForLine(d, 0, 99)).toBeNull()
     expect(formatAmountForLine(null)).toBe('')
-  })
-})
-
-describe('sizeCoverage', () => {
-  const line = (yarn_id: string | null, skein_weight_g: number) => ({
-    yarn_id, yarn_link_uncertain: false, yarn_link_reason: null,
-    color_group: 0, color_label: 'Hoveddel', yarn_name: 'Sunday', brand: 'Sandnes Garn',
-    meterage_m: 160, skein_weight_g, fiber: null, strands: 1, uncertain_fields: [], uncertain_reasons: {},
-  })
-  const amount = (size: number, amt: number) => ({
-    size, color_group: 0, yarn_line: 0, amount: amt, amount_max: null, unit: 'g' as const,
-    candidates: [], needs_choice: false, uncertain: false, uncertain_reason: null,
-  })
-  const sizes = [{ label: 'S', uncertain: false, uncertain_reason: null }, { label: 'L', uncertain: false, uncertain_reason: null }]
-
-  it('covers a size when owned skeins and leftover grams reach the needed amount', () => {
-    const d = { sizes, yarn_lines: [line('y1', 50)], amounts: [amount(0, 150), amount(1, 300)] }
-    const owned = new Map<string, OwnedYarn>([['y1', { skein_count: 3, leftover_g: 20 }]]) // 3*50+20 = 170 g
-    const result = sizeCoverage(d, owned)
-    expect(result[0]).toMatchObject({ label: 'S', covered: true })
-    expect(result[1].covered).toBe(false)
-    expect(result[1].shortfalls).toEqual([{ color_label: 'Hoveddel', short_skeins: 3 }]) // needs 6, have 3.4 -> short 2.6 -> ceil 3
-  })
-
-  it('does not block a size on a yarn line with no catalogue link or a shared choice', () => {
-    const d = { sizes: [sizes[0]], yarn_lines: [line(null, 50)], amounts: [amount(0, 150)] }
-    expect(sizeCoverage(d, new Map())[0].covered).toBe(true)
   })
 })
 
