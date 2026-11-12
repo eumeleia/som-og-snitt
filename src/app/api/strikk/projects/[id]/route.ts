@@ -23,12 +23,15 @@ export async function PATCH(req: NextRequest, ctx: RouteContext<'/api/strikk/pro
     // touching updated_at and without reading the whole project (its strokes) back.
     const position = parsePositionPatch(body as Record<string, unknown>)
     if (position && 'error' in position) return NextResponse.json({ error: position.error }, { status: 400 })
-    const others = Object.keys(body).filter(k => !['last_page', 'last_offset', 'current_page'].includes(k))
-    if (position && others.length === 0) {
-      const { data, error } = await supabaseAdmin.from('strikk_project').update(position.patch).eq('id', id).select('id')
+    // { opened: true } when the project is opened, for «sist åpnet» on Hjem: same quiet path.
+    const opened = (body as Record<string, unknown>).opened === true
+    const others = Object.keys(body).filter(k => !['last_page', 'last_offset', 'current_page', 'opened'].includes(k))
+    if ((position || opened) && others.length === 0) {
+      const quiet = { ...(position && 'patch' in position ? position.patch : {}), ...(opened ? { last_opened_at: new Date().toISOString() } : {}) }
+      const { data, error } = await supabaseAdmin.from('strikk_project').update(quiet).eq('id', id).select('id')
       if (error) return NextResponse.json({ error: `Klarte ikke lagre: ${error.message}` }, { status: 500 })
       if (!data?.length) return NextResponse.json({ error: 'Fant ikke prosjektet' }, { status: 404 })
-      return NextResponse.json({ ok: true, ...position.patch })
+      return NextResponse.json({ ok: true, ...quiet })
     }
     const patch: Record<string, unknown> = { updated_at: new Date().toISOString(), ...(position?.patch ?? {}) }
 

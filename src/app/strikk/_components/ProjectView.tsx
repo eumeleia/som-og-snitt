@@ -186,6 +186,8 @@ export default function ProjectView({ id, initialView }: { id: string; initialVi
       if (!p) { setLoad({ kind: 'error', text: 'Fant ikke prosjektet. Det kan være slettet.' }); return }
       const proj = p as unknown as Project
       setProject(proj)
+      // For «sist åpnet» on Hjem. Quiet: does not count as editing the project.
+      patchProject(id, { opened: true }).catch(err => console.error('[strikk] opened', err))
       setYarnLines(sortedYarn(proj).map(l => ({ position: l.position, yarn_id: l.yarn_id, color_label: l.color_label })))
 
       if (proj.oppskrift_id) {

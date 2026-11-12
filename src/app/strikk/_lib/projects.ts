@@ -36,13 +36,14 @@ export interface Project {
   current_page: number | null
   cover_path: string | null
   cover_at: string | null
+  last_opened_at: string | null
   strikk_project_yarn: ProjectYarn[]
 }
 
 export const PROJECT_SELECT =
   'id, name, oppskrift_id, size_index, size_label, needles, status, start_date, end_date, notes, ' +
   'sort_order, strokes, counters, version, created_at, updated_at, ' +
-  'last_page, last_offset, current_page, cover_path, cover_at, ' +
+  'last_page, last_offset, current_page, cover_path, cover_at, last_opened_at, ' +
   'strikk_project_yarn(id, position, yarn_id, color_label)'
 
 export function sortedYarn(p: Pick<Project, 'strikk_project_yarn'>): ProjectYarn[] {
@@ -52,7 +53,7 @@ export function sortedYarn(p: Pick<Project, 'strikk_project_yarn'>): ProjectYarn
 // For prosjektlista: ikke streker/tellere (kan bli store), men oppskriftens titel for
 // visning på kortet.
 export const PROJECT_LIST_SELECT =
-  'id, name, oppskrift_id, size_label, status, sort_order, created_at, cover_path, cover_at, ' +
+  'id, name, oppskrift_id, size_label, status, sort_order, created_at, updated_at, last_opened_at, cover_path, cover_at, ' +
   'strikk_oppskrift(title, thumbnail_path, thumbnail_at)'
 
 export interface ProjectListRow {
@@ -63,6 +64,8 @@ export interface ProjectListRow {
   status: ProjectStatus
   sort_order: number
   created_at: string
+  updated_at: string
+  last_opened_at: string | null
   cover_path: string | null
   cover_at: string | null
   strikk_oppskrift: { title: string; thumbnail_path: string | null; thumbnail_at: string | null } | null
@@ -77,6 +80,13 @@ export function startPosition(p: Pick<Project, 'current_page' | 'last_page' | 'l
   if (p.current_page) return { page: p.current_page, offset: p.last_page === p.current_page ? p.last_offset ?? 0 : 0 }
   if (p.last_page) return { page: p.last_page, offset: p.last_offset ?? 0 }
   return null
+}
+
+// Most recently opened first. A project not opened since this was recorded counts by when
+// it was last changed (fallback), or else created.
+export function sortByLastOpened<T extends { last_opened_at: string | null; created_at: string }>(list: T[], fallback: (p: T) => string | null = () => null): T[] {
+  const when = (p: T) => p.last_opened_at ?? fallback(p) ?? p.created_at
+  return [...list].sort((a, b) => Number(!a.last_opened_at) - Number(!b.last_opened_at) || when(b).localeCompare(when(a)))
 }
 
 // The reading position and «Gjeldende side» from a PATCH body. These are not edits of the

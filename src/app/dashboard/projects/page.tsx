@@ -3297,6 +3297,14 @@ function ProjectsPageInner() {
 
   useEffect(() => { load() }, [load])
 
+  // For «sist åpnet» on Hjem: a column of its own, so saving data never overwrites it.
+  const openedId = showDetail ? currentProject?.id : undefined
+  useEffect(() => {
+    if (!openedId) return
+    void supabase.from('projects').update({ last_opened_at: new Date().toISOString() }).eq('id', openedId)
+      .then(({ error }) => { if (error) console.error('[projects] last_opened_at', error) })
+  }, [openedId])
+
   // Åpne prosjekt viderekoblet fra en annen side (f.eks. "Start prosjekt" i oppskrifter) —
   // egen effekt (ikke inni load()) fordi den må kalle pushVisning, som selv IKKE kan
   // deklareres før load (onNavigate-callbacken over trenger load) — å legge denne logikken
