@@ -3,11 +3,21 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
-import { isVisibleInGarnlager, STASH_SELECT, stashThumbnailUrl, type StashRow } from '../_lib/stash'
+import { LAGER_STATUS_LABEL, LAGER_STATUSES, STASH_SELECT, stashStatus, stashThumbnailUrl, type LagerStatus, type StashRow } from '../_lib/stash'
 import { EXTRACTION_SELECT, storedToExtraction, type StoredRecipe } from '../_lib/extraction'
 import { STATUS_LABEL, type ProjectStatus } from '../_lib/projects'
-import { matchRecipes, type MatchRecipe, type MatchYarn, type RecipeMatch } from '../_lib/stash-match'
+import { matchRecipes, type MatchRecipe, type RecipeMatch } from '../_lib/stash-match'
+import { mainFibre, type YarnRow } from '../_lib/yarns'
+import YarnFavoriteStar from './YarnFavoriteStar'
+import YarnAlternatives from './YarnAlternatives'
 
+const TABS = ['lager', 'strikke', 'alternativ'] as const
+type Tab = typeof TABS[number]
+const TAB_LABEL: Record<Tab, string> = { lager: 'Lager', strikke: 'Hva vil du strikke nå', alternativ: 'Finn alternativt garn' }
+
+const SORTS = ['navn', 'mengde', 'nylig'] as const
+type Sort = typeof SORTS[number]
+const SORT_LABEL: Record<Sort, string> = { navn: 'Navn', mengde: 'Mengde', nylig: 'Sist lagt til' }
 
 const FIELD_LABEL: Record<string, string> = {
   brand: 'Merke', name: 'Garn', color_number: 'Fargenr.', color_name: 'Fargenavn', skein_count: 'Antall',
@@ -50,9 +60,20 @@ export default function GarnlagerList() {
   const [busy, setBusy] = useState<Set<string>>(new Set())
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null)
-  const [library, setLibrary] = useState<{ recipes: MatchRecipe[]; yarns: MatchYarn[] } | { error: string } | null>(null)
+  const [library, setLibrary] = useState<{ recipes: MatchRecipe[] } | { error: string } | null>(null)
+  const [yarns, setYarns] = useState<YarnRow[]>([])
   // The row whose ✱ is open, showing which project the yarn is set aside for.
   const [assignedOpen, setAssignedOpen] = useState<string | null>(null)
+
+  const [tab, setTab] = useState<Tab>('lager')
+  const [search, setSearch] = useState('')
+  const [gaugeMin, setGaugeMin] = useState('')
+  const [gaugeMax, setGaugeMax] = useState('')
+  const [fiberFilter, setFiberFilter] = useState('')
+  const [onlyLeftover, setOnlyLeftover] = useState(false)
+  const [onlyFavorite, setOnlyFavorite] = useState(false)
+  const [statusFilter, setStatusFilter] = useState<Set<LagerStatus>>(new Set(LAGER_STATUSES))
+  const [sort, setSort] = useState<Sort>('navn')
 
   const loadAll = useCallback(async () => {
     const { data, error } = await supabase.from('strikk_yarn_stash').select(STASH_SELECT).order('created_at')
@@ -70,8 +91,11 @@ export default function GarnlagerList() {
     return () => { cancelled = true }
   }, [])
 
-  const approved = useMemo(() => (rows ?? []).filter(r => r.status === 'godkjent' && isVisibleInGarnlager(r)), [rows])
+  // Alt godkjent garn, uansett status (ledig/planlagt/brukes) — Lager-fanen filtrerer selv.
+  // Tildelt et «ferdig» prosjekt (stashStatus null) er brukt opp og vises aldri.
+  const approved = useMemo(() => (rows ?? []).filter(r => r.status === 'godkjent' && stashStatus(r) !== null), [rows])
   const pending = useMemo(() => (rows ?? []).filter(r => r.status === 'til_gjennomgang'), [rows])
+  const yarnById = useMemo(() => new Map(yarns.map(y => [y.id, y])), [yarns])
 
   // «Hva vil du strikke?»: every approved recipe and the catalogue, loaded once; which of
   // them the stash can knit is worked out again whenever the stash changes.
@@ -79,7 +103,7 @@ export default function GarnlagerList() {
     let cancelled = false
     Promise.all([
       supabase.from('strikk_oppskrift').select(`${EXTRACTION_SELECT}, mentions_leftover`).eq('extraction_status', 'approved'),
-      supabase.from('strikk_yarn').select('id, brand, name, meterage_m, skein_weight_g, gauge_stitches_min, gauge_stitches_max, fibers'),
+      supabase.from('strikk_yarn').select('*'),
     ]).then(([r, y]) => {
       if (cancelled) return
       const error = r.error ?? y.error
@@ -88,15 +112,16 @@ export default function GarnlagerList() {
         const stored = raw as unknown as StoredRecipe & { mentions_leftover: boolean | null }
         return { id: stored.id, title: stored.title, designer: stored.designer, mentions_leftover: stored.mentions_leftover, data: storedToExtraction(stored) }
       })
-      setLibrary({ recipes, yarns: (y.data ?? []) as MatchYarn[] })
+      setLibrary({ recipes })
+      setYarns((y.data ?? []) as YarnRow[])
     })
     return () => { cancelled = true }
   }, [])
 
   const matches = useMemo<RecipeMatch[] | null>(() => {
     if (!library || 'error' in library || !rows) return null
-    return matchRecipes(library.recipes, rows, library.yarns)
-  }, [library, rows])
+    return matchRecipes(library.recipes, rows, yarns)
+  }, [library, rows, yarns])
   const fromLeftovers = useMemo(() => matches?.filter(m => m.fromLeftovers) ?? [], [matches])
 
   async function withBusy(id: string, fn: () => Promise<void>) {
@@ -146,6 +171,14 @@ export default function GarnlagerList() {
     })
   }
 
+  function onYarnUpdated(yarnId: string, patch: { favorite?: boolean | null; price_per_skein?: number | null }) {
+    setYarns(ys => ys.map(y => (y.id === yarnId ? { ...y, ...patch } : y)))
+  }
+
+  function onYarnAdded(yarn: YarnRow) {
+    setYarns(ys => [...ys, yarn])
+  }
+
   // Lager et prosjekt fra oppskriften og tildeler garnet som ga treffet med én gang — garn
   // som allerede er tildelt et annet prosjekt, rører den ikke.
   async function planProject(match: RecipeMatch) {
@@ -184,112 +217,156 @@ export default function GarnlagerList() {
   if (loadError) return <p className="max-w-5xl mx-auto px-4 sm:px-8 py-6 text-sm text-red-700">Klarte ikke hente garnlageret: {loadError}</p>
   if (!rows) return <p className="max-w-5xl mx-auto px-4 sm:px-8 py-6 text-sm text-stone-500">Henter garnlageret …</p>
 
-  const approvedGrouped = groupApproved(approved)
+  const fiberOptions = [...new Set(yarns.map(y => mainFibre(y.fibers)).filter((f): f is string => !!f))].sort((a, b) => a.localeCompare(b, 'nb'))
+  const gMin = gaugeMin.trim() ? Number(gaugeMin.replace(',', '.')) : null
+  const gMax = gaugeMax.trim() ? Number(gaugeMax.replace(',', '.')) : null
+  const q = search.trim().toLowerCase()
+  const visibleApproved = approved.filter(row => {
+    const y = row.yarn_id ? yarnById.get(row.yarn_id) : undefined
+    const st = stashStatus(row)
+    if (!st || !statusFilter.has(st)) return false
+    if (onlyLeftover && !(row.leftover_g && row.leftover_g > 0)) return false
+    if (onlyFavorite && !y?.favorite) return false
+    if (fiberFilter && mainFibre(y?.fibers ?? []) !== fiberFilter) return false
+    if (gMin !== null || gMax !== null) {
+      if (!y || y.gauge_stitches_min === null) return false
+      const hi = y.gauge_stitches_max ?? y.gauge_stitches_min
+      if (gMin !== null && hi < gMin) return false
+      if (gMax !== null && y.gauge_stitches_min > gMax) return false
+    }
+    if (q) {
+      const hay = [y?.brand, y?.name, row.color_number, row.color_name].filter(Boolean).join(' ').toLowerCase()
+      if (!hay.includes(q)) return false
+    }
+    return true
+  })
+  const metersOf = (row: StashRow) => {
+    const y = row.yarn_id ? yarnById.get(row.yarn_id) : undefined
+    if (!y?.meterage_m) return row.skein_count
+    const leftover = row.leftover_g && y.skein_weight_g ? (row.leftover_g / y.skein_weight_g) * y.meterage_m : 0
+    return row.skein_count * y.meterage_m + leftover
+  }
+  const approvedGrouped = sort === 'navn' ? groupApproved(visibleApproved) : null
+  const approvedFlat = sort === 'navn' ? null : [...visibleApproved].sort((a, b) =>
+    sort === 'nylig' ? b.created_at.localeCompare(a.created_at) : metersOf(b) - metersOf(a))
+
+  const rowProps = (row: StashRow) => ({
+    row, busy: busy.has(row.id), error: errors[row.id], assignedOpen: assignedOpen === row.id,
+    confirmingDelete: confirmingDelete === row.id, yarn: row.yarn_id ? yarnById.get(row.yarn_id) : undefined,
+    onToggleAssigned: () => setAssignedOpen(o => (o === row.id ? null : row.id)),
+    onUnassign: () => void assignProject(row, null).then(() => setAssignedOpen(null)),
+    onUnapprove: () => void unapprove(row), onRequestDelete: () => setConfirmingDelete(row.id),
+    onCancelDelete: () => setConfirmingDelete(null), onDelete: () => void remove(row),
+    onThumbnail: (f: File) => void changeThumbnail(row, f), onYarnUpdated,
+  })
 
   return (
-    <div className="max-w-6xl mx-auto px-4 sm:px-8 py-6 flex flex-col lg:flex-row gap-8">
-      <div className="flex-1 min-w-0 flex flex-col gap-6">
-        <div>
-          <h1 className="font-serif text-2xl text-stone-800">Garnlager</h1>
-          <p className="text-sm text-stone-600 mt-1">
-            Registrert fra bilder: se <code>docs/garnlager-registrering.md</code>. Garn «Til gjennomgang» ligger øverst.
-          </p>
-        </div>
-
-        {selected.size === 2 && (
-          <div className="sticky top-2 z-10 flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5">
-            <span className="text-sm text-amber-900">2 rader valgt — slå dem sammen til én?</span>
-            <button onClick={() => void mergeSelected()} className="text-sm px-3 py-1 rounded-lg bg-stone-800 text-white">Slå sammen</button>
-            <button onClick={() => setSelected(new Set())} className="text-sm text-stone-500">Avbryt</button>
-          </div>
-        )}
-
-        {pending.length > 0 && (
-          <section className="flex flex-col gap-3">
-            <h2 className="font-serif text-lg text-stone-700">Til gjennomgang ({pending.length})</h2>
-            {pending.map(row => (
-              <PendingCard key={row.id} row={row} busy={busy.has(row.id)} selected={selected.has(row.id)}
-                error={errors[row.id]} confirmingDelete={confirmingDelete === row.id}
-                onSelect={() => toggleSelect(row.id)} onField={(f, v) => void saveField(row, f, v)}
-                onApprove={() => void approve(row)}
-                onRequestDelete={() => setConfirmingDelete(row.id)} onCancelDelete={() => setConfirmingDelete(null)}
-                onDelete={() => void remove(row)} onThumbnail={f => void changeThumbnail(row, f)} />
-            ))}
-          </section>
-        )}
-
-        <section className="flex flex-col gap-4">
-          <h2 className="font-serif text-lg text-stone-700">Godkjent garn ({approved.length})</h2>
-          {approvedGrouped.length === 0 && <p className="text-sm text-stone-400">Ingen godkjent garn ennå.</p>}
-          {approvedGrouped.map(([brand, byName]) => (
-            <div key={brand} className="flex flex-col gap-2">
-              <h3 className="text-sm font-semibold uppercase tracking-wide text-stone-500">{brand}</h3>
-              {byName.map(([name, colorRows]) => (
-                <div key={name} className="rounded-xl border border-stone-200 bg-white px-4 py-3">
-                  <div className="text-base text-stone-800">{name}</div>
-                  <ul className="mt-1 flex flex-col gap-1">
-                    {colorRows.map(row => (
-                      <li key={row.id} className="flex flex-col gap-1 py-1">
-                        <div className="flex items-center gap-2 text-sm text-stone-600">
-                          <ThumbnailPicker img={stashThumbnailUrl(row.thumbnail_path)} size="w-9 h-9" busy={busy.has(row.id)}
-                            onUpload={f => void changeThumbnail(row, f)} />
-                          {row.project_id ? (
-                            // The whole colour label is the tap target, not just the ✱: a phone
-                            // can hit it, and a miss does not land on the thumbnail beside it.
-                            <button onClick={() => setAssignedOpen(o => (o === row.id ? null : row.id))} aria-expanded={assignedOpen === row.id}
-                              aria-label={`${[row.color_number, row.color_name].filter(Boolean).join(' · ') || 'Ukjent farge'}, tildelt ${row.strikk_project?.name ?? 'et prosjekt'}. Vis`}
-                              className="flex-1 min-w-0 min-h-11 -my-2 py-2 text-left truncate rounded-md hover:bg-amber-50">
-                              <span className="text-amber-600 mr-1 font-medium">✱</span>
-                              {[row.color_number, row.color_name].filter(Boolean).join(' · ') || 'Ukjent farge'}
-                            </button>
-                          ) : (
-                            <span className="flex-1 min-w-0 truncate">
-                              {[row.color_number, row.color_name].filter(Boolean).join(' · ') || 'Ukjent farge'}
-                            </span>
-                          )}
-                          <span className="font-medium text-stone-800">
-                            {row.skein_count > 0 && `${row.skein_count} nøste${row.skein_count === 1 ? '' : 'r'}`}
-                            {row.skein_count > 0 && row.leftover_g ? ' + ' : ''}
-                            {row.leftover_g ? `rest ~${row.leftover_g} g` : ''}
-                          </span>
-                          <button onClick={() => void unapprove(row)} title="Tilbake til gjennomgang" className="text-xs text-stone-400 hover:text-stone-600">↩</button>
-                          {confirmingDelete === row.id ? (
-                            <span className="flex items-center gap-1 text-xs shrink-0">
-                              <span className="text-stone-500">Slette?</span>
-                              <button onClick={() => void remove(row)} className="text-red-600 font-medium">Ja</button>
-                              <button onClick={() => setConfirmingDelete(null)} className="text-stone-400">Nei</button>
-                            </span>
-                          ) : (
-                            <button onClick={() => setConfirmingDelete(row.id)} title="Slett" className="text-xs text-stone-300 hover:text-red-500">✕</button>
-                          )}
-                        </div>
-                        {assignedOpen === row.id && row.project_id && (
-                          <div className="ml-11 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-stone-700 flex flex-wrap items-center gap-x-3 gap-y-1">
-                            <span>
-                              Tildelt <span className="font-medium">{row.strikk_project?.name || 'et prosjekt'}</span>
-                              {row.strikk_project && STATUS_LABEL[row.strikk_project.status as ProjectStatus] && ` (${STATUS_LABEL[row.strikk_project.status as ProjectStatus].toLowerCase()})`}
-                            </span>
-                            <a href={`/strikk/prosjekt/${row.project_id}`} className="text-[#2E5339] underline">Åpne prosjektet</a>
-                            <button disabled={busy.has(row.id)} onClick={() => void assignProject(row, null).then(() => setAssignedOpen(null))}
-                              className="text-stone-600 underline disabled:opacity-50">Fjern tildeling</button>
-                          </div>
-                        )}
-                        {errors[row.id] && <p className="text-xs text-red-600 pl-11">{errors[row.id]}</p>}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ))}
-            </div>
-          ))}
-        </section>
-
-        <button onClick={() => void loadAll()} className="self-start text-sm text-stone-500 underline">Oppdater listen</button>
+    <div className="max-w-6xl mx-auto px-4 sm:px-8 py-6 flex flex-col gap-6">
+      <div>
+        <h1 className="font-serif text-2xl text-stone-800">Garnlager</h1>
+        <p className="text-sm text-stone-600 mt-1">
+          Registrert fra bilder: se <code>docs/garnlager-registrering.md</code>.
+        </p>
       </div>
 
-      <aside className="w-full lg:w-80 shrink-0">
-        <div className="lg:sticky lg:top-4 rounded-2xl border border-[#D4A574] bg-[#F5EFE6] px-4 py-4">
-          <h2 className="font-serif text-lg text-stone-800">Hva vil du strikke?</h2>
+      <nav className="flex gap-1 overflow-x-auto border-b border-stone-200" aria-label="Garnlager">
+        {TABS.map(t => (
+          <button key={t} onClick={() => setTab(t)} aria-current={tab === t ? 'page' : undefined}
+            className={`shrink-0 px-3 py-2.5 text-sm whitespace-nowrap border-b-2 -mb-px transition-colors ${
+              tab === t ? 'border-[#8B6340] text-stone-800 font-medium' : 'border-transparent text-stone-500 hover:text-stone-700'
+            }`}>
+            {TAB_LABEL[t]}
+          </button>
+        ))}
+      </nav>
+
+      {tab === 'lager' && (
+        <div className="flex flex-col gap-6">
+          {selected.size === 2 && (
+            <div className="sticky top-2 z-10 flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5">
+              <span className="text-sm text-amber-900">2 rader valgt — slå dem sammen til én?</span>
+              <button onClick={() => void mergeSelected()} className="text-sm px-3 py-1 rounded-lg bg-stone-800 text-white">Slå sammen</button>
+              <button onClick={() => setSelected(new Set())} className="text-sm text-stone-500">Avbryt</button>
+            </div>
+          )}
+
+          {pending.length > 0 && (
+            <section className="flex flex-col gap-3">
+              <h2 className="font-serif text-lg text-stone-700">Til gjennomgang ({pending.length})</h2>
+              {pending.map(row => (
+                <PendingCard key={row.id} row={row} busy={busy.has(row.id)} selected={selected.has(row.id)}
+                  error={errors[row.id]} confirmingDelete={confirmingDelete === row.id}
+                  onSelect={() => toggleSelect(row.id)} onField={(f, v) => void saveField(row, f, v)}
+                  onApprove={() => void approve(row)}
+                  onRequestDelete={() => setConfirmingDelete(row.id)} onCancelDelete={() => setConfirmingDelete(null)}
+                  onDelete={() => void remove(row)} onThumbnail={f => void changeThumbnail(row, f)} />
+              ))}
+            </section>
+          )}
+
+          <section className="flex flex-col gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Søk på garn, produsent eller farge"
+                className="flex-1 min-w-[12rem] px-3 py-2 rounded-lg border border-stone-200 bg-white text-sm" />
+              <select value={sort} onChange={e => setSort(e.target.value as Sort)} className="px-2 py-2 rounded-lg border border-stone-200 bg-white text-sm">
+                {SORTS.map(s => <option key={s} value={s}>{SORT_LABEL[s]}</option>)}
+              </select>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              {LAGER_STATUSES.map(s => (
+                <button key={s} onClick={() => setStatusFilter(f => { const n = new Set(f); if (n.has(s)) n.delete(s); else n.add(s); return n })}
+                  className={`px-2.5 py-1 rounded-full border text-xs ${statusFilter.has(s) ? 'bg-stone-800 text-white border-stone-800' : 'bg-white text-stone-600 border-stone-200'}`}>
+                  {LAGER_STATUS_LABEL[s]}
+                </button>
+              ))}
+              <select value={fiberFilter} onChange={e => setFiberFilter(e.target.value)} className="px-2 py-1.5 rounded-lg border border-stone-200 bg-white text-xs">
+                <option value="">Alle fiber</option>
+                {fiberOptions.map(f => <option key={f} value={f}>{f}</option>)}
+              </select>
+              <input value={gaugeMin} onChange={e => setGaugeMin(e.target.value)} placeholder="Fasthet fra" inputMode="decimal"
+                className="w-24 px-2 py-1.5 rounded-lg border border-stone-200 bg-white text-xs" />
+              <input value={gaugeMax} onChange={e => setGaugeMax(e.target.value)} placeholder="til" inputMode="decimal"
+                className="w-20 px-2 py-1.5 rounded-lg border border-stone-200 bg-white text-xs" />
+              <label className="flex items-center gap-1.5 text-xs text-stone-600">
+                <input type="checkbox" checked={onlyLeftover} onChange={e => setOnlyLeftover(e.target.checked)} /> Bare rester
+              </label>
+              <label className="flex items-center gap-1.5 text-xs text-stone-600">
+                <input type="checkbox" checked={onlyFavorite} onChange={e => setOnlyFavorite(e.target.checked)} /> Bare favoritter
+              </label>
+            </div>
+
+            <h2 className="font-serif text-lg text-stone-700 mt-1">Godkjent garn ({visibleApproved.length} av {approved.length})</h2>
+            {visibleApproved.length === 0 && <p className="text-sm text-stone-400">Ingen garn matcher.</p>}
+
+            {approvedGrouped && approvedGrouped.map(([brand, byName]) => (
+              <div key={brand} className="flex flex-col gap-2">
+                <h3 className="text-sm font-semibold uppercase tracking-wide text-stone-500">{brand}</h3>
+                {byName.map(([name, colorRows]) => (
+                  <div key={name} className="rounded-xl border border-stone-200 bg-white px-4 py-3">
+                    <div className="text-base text-stone-800">{name}</div>
+                    <ul className="mt-1 flex flex-col gap-1">
+                      {colorRows.map(row => <StashListRow key={row.id} {...rowProps(row)} />)}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            ))}
+
+            {approvedFlat && (
+              <div className="rounded-xl border border-stone-200 bg-white px-4 py-3">
+                <ul className="flex flex-col gap-1">
+                  {approvedFlat.map(row => <StashListRow key={row.id} {...rowProps(row)} showYarn />)}
+                </ul>
+              </div>
+            )}
+          </section>
+
+          <button onClick={() => void loadAll()} className="self-start text-sm text-stone-500 underline">Oppdater listen</button>
+        </div>
+      )}
+
+      {tab === 'strikke' && (
+        <div className="rounded-2xl border border-[#D4A574] bg-[#F5EFE6] px-4 py-4 max-w-2xl">
           {library && 'error' in library && <p className="text-sm text-red-700 mt-2 break-words">Kunne ikke hente oppskriftene: {library.error}</p>}
           {matches === null && !(library && 'error' in library) && <p className="text-sm text-stone-500 mt-2">Ser gjennom oppskriftene …</p>}
           {matches?.length === 0 && <p className="text-sm text-stone-500 mt-2">Ingen oppskrifter kan strikkes med garnet i lageret ennå.</p>}
@@ -313,8 +390,84 @@ export default function GarnlagerList() {
             </section>
           )}
         </div>
-      </aside>
+      )}
+
+      {tab === 'alternativ' && (
+        <YarnAlternatives yarns={yarns} stash={rows} onYarnUpdated={onYarnUpdated} onYarnAdded={onYarnAdded} />
+      )}
     </div>
+  )
+}
+
+// En rad i «Godkjent garn»: bildet, tildelings-stjernen (åpner hvilket prosjekt og lar
+// Maria fjerne tildelingen), mengde, favoritt/pris på garnet, og angre/slett.
+function StashListRow({ row, busy, error, assignedOpen, confirmingDelete, yarn, showYarn, onToggleAssigned, onUnassign, onUnapprove, onRequestDelete, onCancelDelete, onDelete, onThumbnail, onYarnUpdated }: {
+  row: StashRow
+  busy: boolean
+  error?: string
+  assignedOpen: boolean
+  confirmingDelete: boolean
+  yarn?: YarnRow
+  showYarn?: boolean
+  onToggleAssigned: () => void
+  onUnassign: () => void
+  onUnapprove: () => void
+  onRequestDelete: () => void
+  onCancelDelete: () => void
+  onDelete: () => void
+  onThumbnail: (file: File) => void
+  onYarnUpdated: (yarnId: string, patch: { favorite?: boolean | null; price_per_skein?: number | null }) => void
+}) {
+  const colourText = [row.color_number, row.color_name].filter(Boolean).join(' · ') || 'Ukjent farge'
+  const text = showYarn ? `${yarnLabel(row.strikk_yarn)} — ${colourText}` : colourText
+  return (
+    <li className="flex flex-col gap-1 py-1">
+      <div className="flex items-center gap-2 text-sm text-stone-600">
+        <ThumbnailPicker img={stashThumbnailUrl(row.thumbnail_path)} size="w-9 h-9" busy={busy} onUpload={onThumbnail} />
+        {row.project_id ? (
+          // The whole colour label is the tap target, not just the ✱: a phone
+          // can hit it, and a miss does not land on the thumbnail beside it.
+          <button onClick={onToggleAssigned} aria-expanded={assignedOpen}
+            aria-label={`${colourText}, tildelt ${row.strikk_project?.name ?? 'et prosjekt'}. Vis`}
+            className="flex-1 min-w-0 min-h-11 -my-2 py-2 text-left truncate rounded-md hover:bg-amber-50">
+            <span className="text-amber-600 mr-1 font-medium">✱</span>
+            {text}
+          </button>
+        ) : (
+          <span className="flex-1 min-w-0 truncate">{text}</span>
+        )}
+        <span className="font-medium text-stone-800">
+          {row.skein_count > 0 && `${row.skein_count} nøste${row.skein_count === 1 ? '' : 'r'}`}
+          {row.skein_count > 0 && row.leftover_g ? ' + ' : ''}
+          {row.leftover_g ? `rest ~${row.leftover_g} g` : ''}
+        </span>
+        {yarn && (
+          <YarnFavoriteStar yarnId={yarn.id} favorite={yarn.favorite} pricePerSkein={yarn.price_per_skein}
+            onChange={patch => onYarnUpdated(yarn.id, patch)} />
+        )}
+        <button onClick={onUnapprove} title="Tilbake til gjennomgang" className="text-xs text-stone-400 hover:text-stone-600">↩</button>
+        {confirmingDelete ? (
+          <span className="flex items-center gap-1 text-xs shrink-0">
+            <span className="text-stone-500">Slette?</span>
+            <button onClick={onDelete} className="text-red-600 font-medium">Ja</button>
+            <button onClick={onCancelDelete} className="text-stone-400">Nei</button>
+          </span>
+        ) : (
+          <button onClick={onRequestDelete} title="Slett" className="text-xs text-stone-300 hover:text-red-500">✕</button>
+        )}
+      </div>
+      {assignedOpen && row.project_id && (
+        <div className="ml-11 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-stone-700 flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span>
+            Tildelt <span className="font-medium">{row.strikk_project?.name || 'et prosjekt'}</span>
+            {row.strikk_project && STATUS_LABEL[row.strikk_project.status as ProjectStatus] && ` (${STATUS_LABEL[row.strikk_project.status as ProjectStatus].toLowerCase()})`}
+          </span>
+          <a href={`/strikk/prosjekt/${row.project_id}`} className="text-[#2E5339] underline">Åpne prosjektet</a>
+          <button disabled={busy} onClick={onUnassign} className="text-stone-600 underline disabled:opacity-50">Fjern tildeling</button>
+        </div>
+      )}
+      {error && <p className="text-xs text-red-600 pl-11">{error}</p>}
+    </li>
   )
 }
 

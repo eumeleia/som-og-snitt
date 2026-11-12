@@ -39,11 +39,18 @@ export const STASH_SELECT =
   'uncertain_fields, uncertain_reasons, status, approved_at, created_at, updated_at, project_id, ' +
   'strikk_yarn(id, brand, name, discontinued), strikk_project(id, name, status)'
 
-// Tildelt et prosjekt som er «pågående» eller «ferdig»: garnet vises bare der, ikke i
-// Garnlageret. Tildelt et «planlagt» prosjekt (eller ikke tildelt i det hele tatt) vises det
-// fortsatt i Garnlageret — med en stjerne når det er tildelt.
-export function isVisibleInGarnlager(row: Pick<StashRow, 'strikk_project'>): boolean {
-  return !row.strikk_project || row.strikk_project.status === 'planned'
+export const LAGER_STATUSES = ['ledig', 'planlagt', 'brukes'] as const
+export type LagerStatus = typeof LAGER_STATUSES[number]
+export const LAGER_STATUS_LABEL: Record<LagerStatus, string> = { ledig: 'Ledig', planlagt: 'Planlagt', brukes: 'Brukes' }
+
+// Lagerets eget statusfilter (ledig/planlagt/brukes), ut fra prosjektet garnet er tildelt —
+// null for et garn tildelt et «ferdig» prosjekt: det er brukt opp og vises ikke i lageret
+// (restegarn Maria oppgir ved fullføring kommer tilbake som sin egen, nye rad).
+export function stashStatus(row: Pick<StashRow, 'strikk_project'>): LagerStatus | null {
+  if (!row.strikk_project) return 'ledig'
+  if (row.strikk_project.status === 'planned') return 'planlagt'
+  if (row.strikk_project.status === 'in_progress') return 'brukes'
+  return null
 }
 
 export const THUMBNAIL_PREFIX = 'garnlager/'

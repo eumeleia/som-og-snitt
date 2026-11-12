@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { FINDING_SCHEMA, isVisibleInGarnlager, mergeStashData, normalizeFinding, stashThumbnailUrl } from './stash'
+import { FINDING_SCHEMA, mergeStashData, normalizeFinding, stashStatus, stashThumbnailUrl } from './stash'
 import { schemaErrors } from './extraction'
 
 describe('normalizeFinding', () => {
@@ -49,16 +49,18 @@ describe('mergeStashData', () => {
   })
 })
 
-describe('isVisibleInGarnlager', () => {
-  it('is visible when not tied to any project', () => {
-    expect(isVisibleInGarnlager({ strikk_project: null })).toBe(true)
+describe('stashStatus', () => {
+  it('is ledig when not tied to any project', () => {
+    expect(stashStatus({ strikk_project: null })).toBe('ledig')
   })
-  it('is visible while the project is still planned', () => {
-    expect(isVisibleInGarnlager({ strikk_project: { id: '1', name: 'Genser', status: 'planned' } })).toBe(true)
+  it('is planlagt while the project is still planned', () => {
+    expect(stashStatus({ strikk_project: { id: '1', name: 'Genser', status: 'planned' } })).toBe('planlagt')
   })
-  it('is hidden once the project is in progress or done', () => {
-    expect(isVisibleInGarnlager({ strikk_project: { id: '1', name: 'Genser', status: 'in_progress' } })).toBe(false)
-    expect(isVisibleInGarnlager({ strikk_project: { id: '1', name: 'Genser', status: 'done' } })).toBe(false)
+  it('is brukes while the project is in progress', () => {
+    expect(stashStatus({ strikk_project: { id: '1', name: 'Genser', status: 'in_progress' } })).toBe('brukes')
+  })
+  it('is null (hidden) once the project is done', () => {
+    expect(stashStatus({ strikk_project: { id: '1', name: 'Genser', status: 'done' } })).toBeNull()
   })
 })
 
