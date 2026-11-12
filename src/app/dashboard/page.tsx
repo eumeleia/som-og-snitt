@@ -44,11 +44,29 @@ interface Card {
 
 interface ShortcutLink { href: string; icon: IconName; title: string; text: string }
 
+type Side = 'strikk' | 'sy'
+// On a phone one side is shown at a time; remembered on this device.
+const SIDE_KEY = 'hjem-side'
+
 export default function DashboardHomePage() {
   const router = useRouter()
   const [sying, setSying] = useState<LandingProject[]>([])
   const [strikk, setStrikk] = useState<ProjectListRow[]>([])
   const [loading, setLoading] = useState(true)
+  const [side, setSide] = useState<Side>('strikk')
+
+  useEffect(() => {
+    try {
+      // Browser storage can only be read after the first render.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      if (localStorage.getItem(SIDE_KEY) === 'sy') setSide('sy')
+    } catch { /* no storage: start on Strikk */ }
+  }, [])
+
+  function chooseSide(s: Side) {
+    setSide(s)
+    try { localStorage.setItem(SIDE_KEY, s) } catch { /* not remembered */ }
+  }
 
   useEffect(() => {
     Promise.all([
@@ -100,8 +118,18 @@ export default function DashboardHomePage() {
       <p className="text-stone-500 mb-8">Hva vil du jobbe med i dag?</p>
 
       {!loading && (
+        <>
+        <div role="tablist" aria-label="Strikk eller sying" className="lg:hidden flex gap-1 bg-white rounded-xl p-1 border border-stone-200 shadow-sm mb-5">
+          {(['strikk', 'sy'] as const).map(s => (
+            <button key={s} role="tab" aria-selected={side === s} onClick={() => chooseSide(s)}
+              className={`flex-1 h-10 rounded-lg text-sm font-medium transition-colors ${side === s ? 'bg-stone-800 text-white' : 'text-stone-500'}`}>
+              {s === 'strikk' ? 'Strikk' : 'Sying'}
+            </button>
+          ))}
+        </div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-10 lg:gap-8">
           <Column
+            hidden={side !== 'strikk'}
             title="Strikk"
             icon="yarn"
             allHref="/strikk/prosjekter"
@@ -113,6 +141,7 @@ export default function DashboardHomePage() {
             ]}
           />
           <Column
+            hidden={side !== 'sy'}
             title="Sying"
             icon="scissors"
             allHref="/dashboard/projects"
@@ -124,12 +153,15 @@ export default function DashboardHomePage() {
             ]}
           />
         </div>
+        </>
       )}
     </div>
   )
 }
 
-function Column({ title, icon, allHref, emptyText, cards, links }: {
+function Column({ hidden, title, icon, allHref, emptyText, cards, links }: {
+  // Hidden on a phone when the other tab is chosen; both always show on a wide screen.
+  hidden: boolean
   title: string
   icon: IconName
   allHref: string
@@ -139,7 +171,7 @@ function Column({ title, icon, allHref, emptyText, cards, links }: {
 }) {
   const [first, ...rest] = cards
   return (
-    <section className="flex flex-col gap-4 min-w-0">
+    <section className={`${hidden ? 'hidden' : 'flex'} lg:flex flex-col gap-4 min-w-0`}>
       <div className="flex items-center justify-between gap-3">
         <h2 className="font-serif text-2xl text-stone-800 flex items-center gap-2">
           <NavIcon name={icon} className="w-5 h-5 text-[#8B6340]" />
