@@ -233,13 +233,20 @@ export default function GarnlagerList() {
                         <div className="flex items-center gap-2 text-sm text-stone-600">
                           <ThumbnailPicker img={stashThumbnailUrl(row.thumbnail_path)} size="w-9 h-9" busy={busy.has(row.id)}
                             onUpload={f => void changeThumbnail(row, f)} />
-                          <span className="flex-1 min-w-0 truncate">
-                            {row.project_id && (
-                              <button onClick={() => setAssignedOpen(o => (o === row.id ? null : row.id))} aria-expanded={assignedOpen === row.id}
-                                aria-label={`Tildelt ${row.strikk_project?.name ?? 'et prosjekt'}. Vis`} className="text-amber-600 mr-1 font-medium">✱</button>
-                            )}
-                            {[row.color_number, row.color_name].filter(Boolean).join(' · ') || 'Ukjent farge'}
-                          </span>
+                          {row.project_id ? (
+                            // The whole colour label is the tap target, not just the ✱: a phone
+                            // can hit it, and a miss does not land on the thumbnail beside it.
+                            <button onClick={() => setAssignedOpen(o => (o === row.id ? null : row.id))} aria-expanded={assignedOpen === row.id}
+                              aria-label={`${[row.color_number, row.color_name].filter(Boolean).join(' · ') || 'Ukjent farge'}, tildelt ${row.strikk_project?.name ?? 'et prosjekt'}. Vis`}
+                              className="flex-1 min-w-0 min-h-11 -my-2 py-2 text-left truncate rounded-md hover:bg-amber-50">
+                              <span className="text-amber-600 mr-1 font-medium">✱</span>
+                              {[row.color_number, row.color_name].filter(Boolean).join(' · ') || 'Ukjent farge'}
+                            </button>
+                          ) : (
+                            <span className="flex-1 min-w-0 truncate">
+                              {[row.color_number, row.color_name].filter(Boolean).join(' · ') || 'Ukjent farge'}
+                            </span>
+                          )}
                           <span className="font-medium text-stone-800">
                             {row.skein_count > 0 && `${row.skein_count} nøste${row.skein_count === 1 ? '' : 'r'}`}
                             {row.skein_count > 0 && row.leftover_g ? ' + ' : ''}
