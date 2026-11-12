@@ -220,7 +220,9 @@ export default function GarnlagerList() {
   const fiberOptions = [...new Set(yarns.map(y => mainFibre(y.fibers)).filter((f): f is string => !!f))].sort((a, b) => a.localeCompare(b, 'nb'))
   const gMin = gaugeMin.trim() ? Number(gaugeMin.replace(',', '.')) : null
   const gMax = gaugeMax.trim() ? Number(gaugeMax.replace(',', '.')) : null
-  const q = search.trim().toLowerCase()
+  // Every word in the query must be somewhere in the text, in any order — so a search like
+  // «Sandnes Sunday» still finds «Sandnes Garn Sunday».
+  const qWords = search.trim().toLowerCase().split(' ').filter(Boolean)
   const visibleApproved = approved.filter(row => {
     const y = row.yarn_id ? yarnById.get(row.yarn_id) : undefined
     const st = stashStatus(row)
@@ -234,9 +236,9 @@ export default function GarnlagerList() {
       if (gMin !== null && hi < gMin) return false
       if (gMax !== null && y.gauge_stitches_min > gMax) return false
     }
-    if (q) {
+    if (qWords.length > 0) {
       const hay = [y?.brand, y?.name, row.color_number, row.color_name].filter(Boolean).join(' ').toLowerCase()
-      if (!hay.includes(q)) return false
+      if (!qWords.every(w => hay.includes(w))) return false
     }
     return true
   })

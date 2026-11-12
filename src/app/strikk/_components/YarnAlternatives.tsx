@@ -65,11 +65,16 @@ export default function YarnAlternatives({ yarns, stash, onYarnUpdated, onYarnAd
     return m
   }, [stash])
 
-  const q = spellingKey(query)
+  // Every word in the query must be somewhere in brand + name, in any order — so «Sandnes
+  // Sunday» still finds «Sandnes Garn Sunday» even though «Garn» comes between them.
+  const qWords = useMemo(() => spellingKey(query).split(' ').filter(Boolean), [query])
   const nameMatches = useMemo(() => {
-    if (mode !== 'yarn' || !q || picked) return []
-    return yarns.filter(y => spellingKey(`${y.brand} ${y.name}`).includes(q)).slice(0, 8)
-  }, [yarns, q, mode, picked])
+    if (mode !== 'yarn' || qWords.length === 0 || picked) return []
+    return yarns.filter(y => {
+      const hay = spellingKey(`${y.brand} ${y.name}`)
+      return qWords.every(w => hay.includes(w))
+    }).slice(0, 8)
+  }, [yarns, qWords, mode, picked])
 
   const alternatives = useMemo<Alternative[] | null>(() => {
     if (mode === 'yarn') {
