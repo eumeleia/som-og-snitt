@@ -49,6 +49,31 @@ function yarnLabel(y: StashRow['strikk_yarn']): string {
   return [y.brand, y.name].filter(Boolean).join(' ') + (y.discontinued ? ' (utgått)' : '')
 }
 
+// Patterns spell the same size in a dozen ways: «3-6 mnd.», «3/6 mnd», «3–6 mnd», «3-6mnd».
+// Folds the punctuation and spacing together so the size filter has one option for all of
+// them, not a near-duplicate per pattern. The sizes shown on an open card keep the
+// pattern's own original spelling — only the filter's own list is normalized.
+function normalizeSizeKey(label: string): string {
+  return label.toLowerCase()
+    .replace(/måneder|måned|mdr\.?/g, 'mnd')
+    .replace(/[–—/]/g, '-')
+    .replace(/\s*-\s*/g, '-')
+    .replace(/(\d)\s*(mnd|år)/g, '$1 $2')
+    .replace(/\.$/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// Roughly youngest-to-oldest: months as themselves, years as months (×12), anything
+// without a number (S/M/L, Dame, Onesize …) last, in whatever order it was found.
+function sizeSortKey(key: string): number {
+  if (/prematur|nyfødt/.test(key)) return -1
+  const m = key.match(/(\d+(?:[.,]\d+)?)/)
+  if (!m) return Number.POSITIVE_INFINITY
+  const n = Number(m[1].replace(',', '.'))
+  return /år/.test(key) ? n * 12 : n
+}
+
 
 // Garnlageret: raden som venter på gjennomgang øverst (bilde, rettbare felt, usikre merker),
 // godkjent garn gruppert produsent > garn > farge under, og «Hva vil du strikke?» i hjørnet —
@@ -129,23 +154,21 @@ export default function GarnlagerList() {
     return matchRecipes(library.recipes, rows, yarns)
   }, [library, rows, yarns])
 
-  // Every size label that can actually be knitted in at least one recipe, in the order
-  // patterns themselves list their sizes (baby months before years, usually) — so Maria can
-  // pick «3 år» and hide the 0–1 mnd patterns when she is knitting for an older child.
+  // Every size label that can actually be knitted in at least one recipe, folded together
+  // so «3-6 mnd.», «3/6 mnd» and «3–6 mnd» (one pattern's own spelling against another's)
+  // become the same option — in rough age order, so Maria can pick «3 år» and hide the
+  // 0–1 mnd patterns when she is knitting for an older child.
   const sizeOptions = useMemo(() => {
-    const seen: string[] = []
+    const seen = new Set<string>()
     for (const m of matches ?? []) {
-      for (const g of m.groups) for (const s of g.sizes) {
-        const label = m.sizeLabels[s]
-        if (!seen.includes(label)) seen.push(label)
-      }
+      for (const g of m.groups) for (const s of g.sizes) seen.add(normalizeSizeKey(m.sizeLabels[s]))
     }
-    return seen
+    return [...seen].sort((a, b) => sizeSortKey(a) - sizeSortKey(b))
   }, [matches])
 
   const filteredMatches = useMemo(() => {
     if (!sizeFilter) return matches
-    return matches?.filter(m => m.groups.some(g => g.sizes.some(s => m.sizeLabels[s] === sizeFilter))) ?? null
+    return matches?.filter(m => m.groups.some(g => g.sizes.some(s => normalizeSizeKey(m.sizeLabels[s]) === sizeFilter))) ?? null
   }, [matches, sizeFilter])
   const fromLeftovers = useMemo(() => filteredMatches?.filter(m => m.fromLeftovers) ?? [], [filteredMatches])
 
