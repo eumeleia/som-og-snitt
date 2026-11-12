@@ -5,9 +5,9 @@ import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { isVisibleInGarnlager, STASH_SELECT, stashThumbnailUrl, type StashRow } from '../_lib/stash'
 import { EXTRACTION_SELECT, storedToExtraction, type StoredRecipe } from '../_lib/extraction'
+import { STATUS_LABEL, type ProjectStatus } from '../_lib/projects'
 import { matchRecipes, type MatchRecipe, type MatchYarn, type RecipeMatch } from '../_lib/stash-match'
 
-interface ProjectOption { id: string; name: string; status: string }
 
 const FIELD_LABEL: Record<string, string> = {
   brand: 'Merke', name: 'Garn', color_number: 'Fargenr.', color_name: 'Fargenavn', skein_count: 'Antall',
@@ -51,15 +51,8 @@ export default function GarnlagerList() {
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null)
   const [library, setLibrary] = useState<{ recipes: MatchRecipe[]; yarns: MatchYarn[] } | { error: string } | null>(null)
-  const [projects, setProjects] = useState<ProjectOption[]>([])
-
-  useEffect(() => {
-    let cancelled = false
-    supabase.from('strikk_project').select('id, name, status').neq('status', 'done').order('name').then(({ data }) => {
-      if (!cancelled && data) setProjects(data as ProjectOption[])
-    })
-    return () => { cancelled = true }
-  }, [])
+  // The row whose ✱ is open, showing which project the yarn is set aside for.
+  const [assignedOpen, setAssignedOpen] = useState<string | null>(null)
 
   const loadAll = useCallback(async () => {
     const { data, error } = await supabase.from('strikk_yarn_stash').select(STASH_SELECT).order('created_at')
@@ -241,7 +234,10 @@ export default function GarnlagerList() {
                           <ThumbnailPicker img={stashThumbnailUrl(row.thumbnail_path)} size="w-9 h-9" busy={busy.has(row.id)}
                             onUpload={f => void changeThumbnail(row, f)} />
                           <span className="flex-1 min-w-0 truncate">
-                            {row.project_id && <span className="text-amber-600" title={`Tildelt ${row.strikk_project?.name}`}>* </span>}
+                            {row.project_id && (
+                              <button onClick={() => setAssignedOpen(o => (o === row.id ? null : row.id))} aria-expanded={assignedOpen === row.id}
+                                aria-label={`Tildelt ${row.strikk_project?.name ?? 'et prosjekt'}. Vis`} className="text-amber-600 mr-1 font-medium">✱</button>
+                            )}
                             {[row.color_number, row.color_name].filter(Boolean).join(' · ') || 'Ukjent farge'}
                           </span>
                           <span className="font-medium text-stone-800">
@@ -249,12 +245,6 @@ export default function GarnlagerList() {
                             {row.skein_count > 0 && row.leftover_g ? ' + ' : ''}
                             {row.leftover_g ? `rest ~${row.leftover_g} g` : ''}
                           </span>
-                          <select value={row.project_id ?? ''} disabled={busy.has(row.id)}
-                            onChange={e => void assignProject(row, e.target.value || null)}
-                            title="Tildel til prosjekt" className="text-xs rounded-md border border-stone-200 bg-white text-stone-600 max-w-[7rem]">
-                            <option value="">Ikke tildelt</option>
-                            {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                          </select>
                           <button onClick={() => void unapprove(row)} title="Tilbake til gjennomgang" className="text-xs text-stone-400 hover:text-stone-600">↩</button>
                           {confirmingDelete === row.id ? (
                             <span className="flex items-center gap-1 text-xs shrink-0">
@@ -266,6 +256,17 @@ export default function GarnlagerList() {
                             <button onClick={() => setConfirmingDelete(row.id)} title="Slett" className="text-xs text-stone-300 hover:text-red-500">✕</button>
                           )}
                         </div>
+                        {assignedOpen === row.id && row.project_id && (
+                          <div className="ml-11 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-stone-700 flex flex-wrap items-center gap-x-3 gap-y-1">
+                            <span>
+                              Tildelt <span className="font-medium">{row.strikk_project?.name || 'et prosjekt'}</span>
+                              {row.strikk_project && STATUS_LABEL[row.strikk_project.status as ProjectStatus] && ` (${STATUS_LABEL[row.strikk_project.status as ProjectStatus].toLowerCase()})`}
+                            </span>
+                            <a href={`/strikk/prosjekt/${row.project_id}`} className="text-[#2E5339] underline">Åpne prosjektet</a>
+                            <button disabled={busy.has(row.id)} onClick={() => void assignProject(row, null).then(() => setAssignedOpen(null))}
+                              className="text-stone-600 underline disabled:opacity-50">Fjern tildeling</button>
+                          </div>
+                        )}
                         {errors[row.id] && <p className="text-xs text-red-600 pl-11">{errors[row.id]}</p>}
                       </li>
                     ))}
