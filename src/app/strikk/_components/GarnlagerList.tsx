@@ -296,7 +296,7 @@ export default function GarnlagerList() {
           {fromLeftovers.length > 0 && (
             <section className="mt-5">
               <h3 className="font-serif text-base text-stone-800">Kan strikkes av rester</h3>
-              <p className="text-xs text-stone-500">Små prosjekter som trenger høyst ett nøste av hvert garn.</p>
+              <p className="text-xs text-stone-500">Oppskrifter som selv nevner restegarn, og små prosjekter som trenger høyst ett nøste av hvert garn.</p>
               <ul className="mt-2 flex flex-col gap-3">
                 {fromLeftovers.map(m => (
                   <MatchCard key={m.id} match={m} busy={busy.has(m.id)} error={errors[m.id]} onPlan={() => void planProject(m)} />
