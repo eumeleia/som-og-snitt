@@ -47,6 +47,9 @@ COL_W = (CONTENT_W - GAP) / 2
 # The original stops content 10 mm above the bottom margin, where the footer rule is.
 FRAME_BOTTOM = MARGIN + 10 * mm
 TOP = base.PAGE_H - MARGIN
+# Column text that would end up alone on a page in less than this height (a few lines)
+# takes its whole section along instead.
+MIN_TAIL = 30 * mm
 
 # Patterns whose body starts with general text and techniques before the pattern itself.
 COLUMNS_FROM = {
@@ -361,7 +364,20 @@ class Layout:
     def _used(placed):
         return max((off + h for _, off, h in placed), default=0)
 
-    def columns(self, fs):
+    def _balanced(self, fs, ah):
+        """The lowest column height that holds all of fs in two columns (at most ah)."""
+        lo, hi = 0.0, ah
+        for _ in range(24):
+            mid = (lo + hi) / 2
+            l2, r2 = fill(fs, COL_W, mid)
+            rr, left_over = fill(r2, COL_W, mid)
+            if left_over or self._used(l2) > mid + 0.01 or self._used(rr) > mid + 0.01:
+                lo = mid
+            else:
+                hi = mid
+        return hi
+
+    def columns(self, fs, page_ends_after=False):
         fs = list(fs)
         right_x = MARGIN + COL_W + GAP
         while fs:
@@ -371,6 +387,16 @@ class Layout:
                 continue
             left, rest = fill(fs, COL_W, ah)
             right, rest2 = fill(rest, COL_W, ah)
+            if rest2 and page_ends_after and self._balanced(rest2, TOP - FRAME_BOTTOM) < MIN_TAIL:
+                # Only a few lines would go on a page of their own: move the whole last
+                # section (from its heading) to the next page instead.
+                on_page = [f for f, _, _ in left + right]
+                cut = max((k for k, f in enumerate(fs) if k > 0 and _keeps(f) and any(f is p for p in on_page)), default=None)
+                if cut is not None:
+                    self.columns(fs[:cut])
+                    self.new_page()
+                    fs = fs[cut:]
+                    continue
             if rest2:
                 self._draw(left, MARGIN)
                 self._draw(right, right_x)
@@ -378,15 +404,7 @@ class Layout:
                 self.new_page()
                 continue
             # The rest fits on this page: balance the two columns, left column first.
-            lo, hi = 0.0, ah
-            for _ in range(24):
-                mid = (lo + hi) / 2
-                l2, r2 = fill(fs, COL_W, mid)
-                rr, left_over = fill(r2, COL_W, mid)
-                if left_over or self._used(l2) > mid + 0.01 or self._used(rr) > mid + 0.01:
-                    lo = mid
-                else:
-                    hi = mid
+            hi = self._balanced(fs, ah)
             left, rest = fill(fs, COL_W, hi)
             right, _ = fill(rest, COL_W, hi)
             self._draw(left, MARGIN)
@@ -522,7 +540,8 @@ def build(data, out_path, key=None):
                     lay.new_page()
             lay.full(seg[1])
         else:
-            lay.columns(seg[1])
+            nxt = s.segments[k + 1] if k + 1 < len(s.segments) else None
+            lay.columns(seg[1], page_ends_after=nxt is None or nxt[0] == "break")
     footer(c, lay.page)
     c.showPage()
     c.save()
