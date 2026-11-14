@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
-import { LAGER_STATUS_LABEL, LAGER_STATUSES, STASH_SELECT, stashStatus, stashThumbnailUrl, type LagerStatus, type StashRow } from '../_lib/stash'
+import { LAGER_STATUS_LABEL, LAGER_STATUSES, MISSING_COLUMN, STASH_SELECT, STASH_SELECT_WITH_LOT, dyeLotOf, stashStatus, stashThumbnailUrl, type LagerStatus, type StashRow } from '../_lib/stash'
 import { EXTRACTION_SELECT, storedToExtraction, type StoredRecipe } from '../_lib/extraction'
 import { STATUS_LABEL, type ProjectStatus } from '../_lib/projects'
 import { matchRecipes, sizeRangeText, type MatchRecipe, type RecipeMatch } from '../_lib/stash-match'
@@ -11,6 +11,7 @@ import { thumbnailUrl } from '../_lib/recipes'
 import { mainFibre, type YarnRow } from '../_lib/yarns'
 import YarnFavoriteStar from './YarnFavoriteStar'
 import YarnAlternatives from './YarnAlternatives'
+import AddStashForm from './AddStashForm'
 
 const TABS = ['lager', 'strikke', 'alternativ'] as const
 type Tab = typeof TABS[number]
@@ -24,6 +25,13 @@ const FIELD_LABEL: Record<string, string> = {
   brand: 'Merke', name: 'Garn', color_number: 'Fargenr.', color_name: 'Fargenavn', skein_count: 'Antall',
 }
 
+
+// The stash with its parti (migration 028), or without it until that migration is run.
+async function fetchStash(): Promise<{ data: StashRow[] | null; error: string | null }> {
+  let res = await supabase.from('strikk_yarn_stash').select(STASH_SELECT_WITH_LOT).order('created_at')
+  if (res.error?.code === MISSING_COLUMN) res = await supabase.from('strikk_yarn_stash').select(STASH_SELECT).order('created_at')
+  return { data: (res.data ?? null) as unknown as StashRow[] | null, error: res.error?.message ?? null }
+}
 
 async function patchRow(id: string, body: Record<string, unknown>): Promise<StashRow> {
   const res = await fetch(`/api/strikk/garnlager/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -103,18 +111,31 @@ export default function GarnlagerList() {
   const [sort, setSort] = useState<Sort>('navn')
   const [sizeFilter, setSizeFilter] = useState('')
 
+  const [addOpen, setAddOpen] = useState(false)
+  const [addNotice, setAddNotice] = useState<string | null>(null)
+  // A link from a recipe opens «Finn alternativt garn» on a pair: ?tab=alternativ&pair=…&recipe=…
+  const [link, setLink] = useState<{ pair: string | null; recipe: string | null; group: string | null }>({ pair: null, recipe: null, group: null })
+
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search)
+    const t = q.get('tab')
+    // The address can only be read after the first render.
+    if (t && (TABS as readonly string[]).includes(t)) setTab(t as Tab)
+    setLink({ pair: q.get('pair'), recipe: q.get('recipe'), group: q.get('group') })
+  }, [])
+
   const loadAll = useCallback(async () => {
-    const { data, error } = await supabase.from('strikk_yarn_stash').select(STASH_SELECT).order('created_at')
-    if (error) setLoadError(error.message)
-    else setRows((data ?? []) as unknown as StashRow[])
+    const { data, error } = await fetchStash()
+    if (error) setLoadError(error)
+    else setRows(data ?? [])
   }, [])
 
   useEffect(() => {
     let cancelled = false
-    supabase.from('strikk_yarn_stash').select(STASH_SELECT).order('created_at').then(({ data, error }) => {
+    fetchStash().then(({ data, error }) => {
       if (cancelled) return
-      if (error) setLoadError(error.message)
-      else setRows((data ?? []) as unknown as StashRow[])
+      if (error) setLoadError(error)
+      else setRows(data ?? [])
     })
     return () => { cancelled = true }
   }, [])
@@ -332,6 +353,19 @@ export default function GarnlagerList() {
 
       {tab === 'lager' && (
         <div className="flex flex-col gap-6">
+          {addOpen ? (
+            <AddStashForm yarns={yarns} onClose={() => setAddOpen(false)}
+              onAdded={(row, yarn, warning) => {
+                setRows(rs => [...(rs ?? []), row])
+                if (yarn) onYarnAdded(yarn)
+                setAddOpen(false)
+                setAddNotice(`La til ${yarnLabel(row.strikk_yarn)}${row.color_name || row.color_number ? ` (${[row.color_number, row.color_name].filter(Boolean).join(' · ')})` : ''}.${warning ? ` ${warning}` : ''}`)
+              }} />
+          ) : (
+            <button onClick={() => { setAddOpen(true); setAddNotice(null) }}
+              className="self-start px-3 py-2 rounded-lg border border-stone-300 bg-white text-sm text-stone-800">+ Legg til garn</button>
+          )}
+          {addNotice && <p role="status" className="text-sm text-emerald-700">{addNotice}</p>}
           {selected.size === 2 && (
             <div className="sticky top-2 z-10 flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5">
               <span className="text-sm text-amber-900">2 rader valgt — slå dem sammen til én?</span>
@@ -456,7 +490,8 @@ export default function GarnlagerList() {
       )}
 
       {tab === 'alternativ' && (
-        <YarnAlternatives yarns={yarns} stash={rows} onYarnUpdated={onYarnUpdated} onYarnAdded={onYarnAdded} />
+        <YarnAlternatives yarns={yarns} stash={rows} onYarnUpdated={onYarnUpdated} onYarnAdded={onYarnAdded}
+          initialPair={link.pair} pairRecipeId={link.recipe} pairGroup={link.group} />
       )}
     </div>
   )
@@ -481,8 +516,10 @@ function StashListRow({ row, busy, error, assignedOpen, confirmingDelete, yarn, 
   onThumbnail: (file: File) => void
   onYarnUpdated: (yarnId: string, patch: { favorite?: boolean | null; price_per_skein?: number | null }) => void
 }) {
-  const colourText = [row.color_number, row.color_name].filter(Boolean).join(' · ') || 'Ukjent farge'
+  const lot = dyeLotOf(row)
+  const colourText = ([row.color_number, row.color_name].filter(Boolean).join(' · ') || 'Ukjent farge') + (lot ? ` · parti ${lot}` : '')
   const text = showYarn ? `${yarnLabel(row.strikk_yarn)} — ${colourText}` : colourText
+  const notLookedUp = (yarn?.status ?? row.strikk_yarn?.status) === 'draft'
   return (
     <li className="flex flex-col gap-1 py-1">
       <div className="flex items-center gap-2 text-sm text-stone-600">
@@ -498,6 +535,9 @@ function StashListRow({ row, busy, error, assignedOpen, confirmingDelete, yarn, 
           </button>
         ) : (
           <span className="flex-1 min-w-0 truncate">{text}</span>
+        )}
+        {notLookedUp && (
+          <span title="Fiber, løpelengde og strikkefasthet er ikke slått opp ennå" className="shrink-0 text-[11px] rounded-full bg-stone-100 text-stone-600 px-2 py-0.5">Ikke slått opp</span>
         )}
         <span className="font-medium text-stone-800">
           {row.skein_count > 0 && `${row.skein_count} nøste${row.skein_count === 1 ? '' : 'r'}`}

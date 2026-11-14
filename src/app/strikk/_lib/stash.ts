@@ -5,7 +5,8 @@
 export const STASH_STATUSES = ['til_gjennomgang', 'godkjent'] as const
 export type StashStatus = typeof STASH_STATUSES[number]
 
-export interface StashYarnRef { id: string; brand: string; name: string; discontinued: boolean }
+// status: 'draft' is «Ikke slått opp» (strikk_yarn, migration 017).
+export interface StashYarnRef { id: string; brand: string; name: string; discontinued: boolean; status?: string }
 // Status er en av strikk_project sine ('planned', 'in_progress', 'done') — holdt som ren
 // tekst her (ikke importert fra _lib/projects) for å beholde denne fila uten avhengigheter.
 export interface StashProjectRef { id: string; name: string; status: string }
@@ -15,6 +16,8 @@ export interface StashData {
   color_name: string | null
   skein_count: number
   leftover_g: number | null
+  // Parti; migration 028. Missing from rows read before it was run.
+  dye_lot?: string | null
   note: string | null
   uncertain_fields: string[]
   uncertain_reasons: Record<string, string>
@@ -37,7 +40,49 @@ export interface StashRow extends StashData {
 export const STASH_SELECT =
   'id, yarn_id, color_number, color_name, skein_count, leftover_g, thumbnail_path, source_images, note, ' +
   'uncertain_fields, uncertain_reasons, status, approved_at, created_at, updated_at, project_id, ' +
-  'strikk_yarn(id, brand, name, discontinued), strikk_project(id, name, status)'
+  'strikk_yarn(id, brand, name, discontinued, status), strikk_project(id, name, status)'
+
+// The same with the dye lot (parti), once migration 028 has added the column.
+export const STASH_SELECT_WITH_LOT = STASH_SELECT.replace('note, ', 'note, dye_lot, ')
+
+// PostgREST's code for a column that does not exist (yet).
+export const MISSING_COLUMN = '42703'
+
+export const AMOUNT_UNITS = ['skeins', 'grams'] as const
+export type AmountUnit = typeof AMOUNT_UNITS[number]
+
+export interface NewStashInput {
+  yarn_id: string | null
+  brand: string
+  name: string
+  color_name: string | null
+  color_number: string | null
+  dye_lot: string | null
+  amount: number
+  unit: AmountUnit
+}
+
+// A yarn Maria adds herself in Lager: from the catalogue (yarn_id) or a new yarn by
+// brand and name. Amount in skeins or grams; grams go in leftover_g.
+export function parseNewStash(body: unknown): NewStashInput | { error: string } {
+  const r = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>
+  const text = (k: string) => (typeof r[k] === 'string' ? (r[k] as string).trim() || null : null)
+  const yarn_id = text('yarn_id')
+  const brand = text('brand') ?? ''
+  const name = text('name') ?? ''
+  if (!yarn_id && !name) return { error: 'Velg et garn fra katalogen, eller skriv inn navnet på et nytt garn' }
+  const amount = typeof r.amount === 'number' ? r.amount : Number(String(r.amount ?? '').replace(',', '.'))
+  if (!Number.isFinite(amount) || amount <= 0) return { error: 'Skriv inn hvor mange nøster eller gram' }
+  const unit = r.unit === 'grams' ? 'grams' : r.unit === 'skeins' ? 'skeins' : null
+  if (!unit) return { error: 'Velg nøster eller gram' }
+  return { yarn_id, brand, name, color_name: text('color_name'), color_number: text('color_number'), dye_lot: text('dye_lot'), amount, unit }
+}
+
+// The parti, from its own column or, before migration 028, from the note it was put in.
+export function dyeLotOf(row: Pick<StashData, 'dye_lot' | 'note'>): string | null {
+  if (row.dye_lot) return row.dye_lot
+  return row.note?.match(/(?:^|\n)Parti: (.+)/)?.[1]?.trim() ?? null
+}
 
 export const LAGER_STATUSES = ['ledig', 'planlagt', 'brukes'] as const
 export type LagerStatus = typeof LAGER_STATUSES[number]

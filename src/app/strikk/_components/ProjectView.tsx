@@ -26,6 +26,18 @@ import DriveExpired from './DriveExpired'
 import AssignedYarnStash from './AssignedYarnStash'
 import CompleteProjectModal from './CompleteProjectModal'
 import { PinToMenuButton, usePinState } from '@/components/PinToMenuButton'
+import { formatPair, type PairMember } from '../_lib/yarn-recipes'
+
+// Colours knitted with a carry-along yarn whose yarns are all in the catalogue, as pairs
+// «Finn alternativt garn» can look up.
+function heldTogetherPairs(extraction: ExtractionData): { group: number; label: string | null; members: PairMember[] }[] {
+  const groups = [...new Set(extraction.yarn_lines.map(l => l.color_group))]
+  return groups.flatMap(group => {
+    const lines = extraction.yarn_lines.filter(l => l.color_group === group)
+    if (lines.length < 2 || lines.some(l => !l.yarn_id)) return []
+    return [{ group, label: lines[0].color_label, members: lines.map(l => ({ yarnId: l.yarn_id!, strands: l.strands })) }]
+  })
+}
 
 const COLORS = [
   { name: 'Gul', hex: '#FFD84D' },
@@ -477,6 +489,12 @@ function InfoView({ project, recipe, extraction, yarns, combos, swatches, yarnLi
               {!extraction && (
                 <button onClick={addLine} className="self-start text-sm text-stone-600 underline">Legg til garnlinje</button>
               )}
+              {project.oppskrift_id && extraction && heldTogetherPairs(extraction).map(p => (
+                <Link key={p.group} href={`/strikk/garnlager?tab=alternativ&pair=${formatPair(p.members)}&recipe=${project.oppskrift_id}&group=${p.group}`}
+                  className="self-start text-sm text-[#8B6340] underline">
+                  Finn alternativer til paret{p.label ? ` (${p.label})` : ''}
+                </Link>
+              ))}
             </div>
           </div>
         )}

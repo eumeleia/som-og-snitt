@@ -1,13 +1,15 @@
 // Filtering and sorting in Strikk › Oppskrifter. Pure: the list component loads the rows
 // (RECIPE_FILTER_SELECT) and the catalogue, and keeps the filter state.
 import type { Audience, StoredRecipe } from './extraction'
-import { discontinuedSuggestions, spellingKey, type YarnRow } from './yarns'
+import { spellingKey, type YarnRow } from './yarns'
+import type { RawCombo, RawSwatch } from './yarn-alternatives'
+import { recipeHitsForYarn, type RecipeHit } from './yarn-recipes'
 
 export const RECIPE_FILTER_SELECT =
   'id, title, designer, drive_file_id, file_name, source, created_at, updated_at, extraction_status, ' +
   'audience, garment_type, is_collection, gauge_stitches_10cm, mentions_leftover, leftover_note, rating, favorite, ' +
   'strikk_size(id, position, label), ' +
-  'strikk_yarn_line(id, position, color_group, yarn_id, skein_weight_g), ' +
+  'strikk_yarn_line(id, position, color_group, yarn_id, skein_weight_g, yarn_name, brand, fiber, strands), ' +
   'strikk_yarn_amount(size_id, color_group, yarn_line_id, amount, amount_max, unit), ' +
   'strikk_yarn_alternative(yarn_line_id, color_group, yarn_id, source)'
 
@@ -30,7 +32,10 @@ export interface FilterRecipe {
   rating: number | null
   favorite: boolean
   strikk_size: { id: string; position: number; label: string }[]
-  strikk_yarn_line: { id: string; position: number; color_group: number; yarn_id: string | null; skein_weight_g: number | string | null }[]
+  strikk_yarn_line: {
+    id: string; position: number; color_group: number; yarn_id: string | null; skein_weight_g: number | string | null
+    yarn_name?: string | null; brand?: string | null; fiber?: string | null; strands?: number | null
+  }[]
   strikk_yarn_amount: { size_id: string; color_group: number; yarn_line_id: string | null; amount: number | string | null; amount_max: number | string | null; unit: 'g' | 'skeins' }[]
   strikk_yarn_alternative: { yarn_line_id: string | null; color_group: number | null; yarn_id?: string | null; source: 'pattern' | 'app' }[]
 }
@@ -70,26 +75,15 @@ export const yarnLabel = (y: Pick<YarnRow, 'brand' | 'name' | 'discontinued'>) =
 
 // ── Yarn ────────────────────────────────────────────────────────────────────────────
 
-export type YarnHit =
-  | { kind: 'uses' }
-  | { kind: 'alternative' }
-  | { kind: 'suggested'; instead: string }
+// How a recipe matches one catalogue yarn: the same rule as «Finn alternativt garn» in
+// Garnlager (yarn-recipes.ts), so both give the same recipes.
+export type YarnHit = RecipeHit
 
-// How a recipe matches one catalogue yarn: it uses the yarn, names it as one of its own
-// alternatives, or the app suggests it instead of a discontinued yarn. A discontinued yarn
-// is never an alternative.
-export function yarnHits(r: FilterRecipe, yarnId: string, catalogue: Map<string, YarnRow>, all: YarnRow[]): YarnHit[] {
-  const hits: YarnHit[] = []
-  if (r.strikk_yarn_line.some(l => l.yarn_id === yarnId)) hits.push({ kind: 'uses' })
-  const alts = r.strikk_yarn_alternative.filter(a => a.source === 'pattern')
-  if (!catalogue.get(yarnId)?.discontinued && alts.some(a => a.yarn_id === yarnId)) hits.push({ kind: 'alternative' })
-  const lines = [...r.strikk_yarn_line].sort((a, b) => a.position - b.position)
-  const index = new Map(lines.map((l, i) => [l.id, i]))
-  const linked = alts.map(a => ({ yarn_id: a.yarn_id ?? null, color_group: a.color_group, yarn_line: a.yarn_line_id ? index.get(a.yarn_line_id) ?? null : null }))
-  for (const s of discontinuedSuggestions(lines, linked, catalogue, all)) {
-    if (s.suggestions.some(y => y.id === yarnId)) hits.push({ kind: 'suggested', instead: [s.gone.brand, s.gone.name].filter(Boolean).join(' ') })
-  }
-  return hits
+export interface YarnSources { combos: RawCombo[]; swatches: RawSwatch[] }
+const NO_SOURCES: YarnSources = { combos: [], swatches: [] }
+
+export function yarnHits(r: FilterRecipe, yarnId: string, catalogue: Map<string, YarnRow>, sources: YarnSources = NO_SOURCES): YarnHit[] {
+  return recipeHitsForYarn(r, yarnId, { catalogue, ...sources })
 }
 
 // ── Leftover yarn ───────────────────────────────────────────────────────────────────
@@ -137,7 +131,7 @@ const read = (r: FilterRecipe) => r.extraction_status === 'extracted' || r.extra
 
 // Categories combine with «and»; choices within one category with «or». Collections take
 // part in garment type and audience, but not in gauge or yarn.
-export function applyFilter(recipes: FilterRecipe[], f: RecipeFilter, yarns: YarnRow[]): FilterResult[] {
+export function applyFilter(recipes: FilterRecipe[], f: RecipeFilter, yarns: YarnRow[], sources: YarnSources = NO_SOURCES): FilterResult[] {
   const catalogue = new Map(yarns.map(y => [y.id, y]))
   const q = spellingKey(f.query)
   const types = new Set(f.garmentTypes.map(garmentKey))
@@ -154,7 +148,7 @@ export function applyFilter(recipes: FilterRecipe[], f: RecipeFilter, yarns: Yar
       if (f.gaugeMin !== null && g < f.gaugeMin) continue
       if (f.gaugeMax !== null && g > f.gaugeMax) continue
     }
-    const yarnHitList = f.yarnIds.map(yarnId => ({ yarnId, hits: r.is_collection ? [] : yarnHits(r, yarnId, catalogue, yarns) }))
+    const yarnHitList = f.yarnIds.map(yarnId => ({ yarnId, hits: r.is_collection ? [] : yarnHits(r, yarnId, catalogue, sources) }))
     if (f.yarnIds.length && !yarnHitList.some(h => h.hits.length)) continue
     const leftover = read(r) ? leftoverReason(r, catalogue) : null
     if (f.leftover && !leftover) continue

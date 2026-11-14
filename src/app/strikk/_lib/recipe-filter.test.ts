@@ -4,6 +4,7 @@ import {
   EMPTY_FILTER, activeChips, applyFilter, garmentTypes, leftoverReason, removeChip, yarnHits,
   type FilterRecipe, type RecipeFilter,
 } from './recipe-filter'
+import { recipesForYarn } from './yarn-recipes'
 
 const yarn = (id: string, name: string, data: Record<string, unknown> = {}): YarnRow => ({
   ...normalizeYarn({ brand: 'Sandnes Garn', name, fibers: [{ fiber: 'merinoull', percent: 100 }], skein_weight_g: 50, meterage_m: 110, gauge_stitches_min: 22, gauge_stitches_max: 22, ...data }),
@@ -63,26 +64,32 @@ describe('combining filters', () => {
 describe('yarn filter', () => {
   const uses = recipe({ id: 'Bruker', colours: [{ yarn_id: 'merino', grams: 300 }] })
   const alternative = recipe({ id: 'Alternativ', colours: [{ yarn_id: 'smart', grams: 300 }], strikk_yarn_alternative: [{ yarn_line_id: 'Alternativ-l0', color_group: 0, yarn_id: 'merino', source: 'pattern' }] })
-  const suggested = recipe({ id: 'Forslag', colours: [{ yarn_id: 'mandarin', grams: 300 }] })
-  const keptAlt = recipe({ id: 'Har eget alternativ', colours: [{ yarn_id: 'mandarin', grams: 300 }], strikk_yarn_alternative: [{ yarn_line_id: 'Har eget alternativ-l0', color_group: 0, yarn_id: 'smart', source: 'pattern' }] })
+  const sameGauge = recipe({ id: 'Samme fasthet', gauge_stitches_10cm: 22, colours: [{ yarn_id: 'mandarin', grams: 300 }] })
+  const noGauge = recipe({ id: 'Uten fasthet', colours: [{ yarn_id: 'mandarin', grams: 300 }] })
   const goneAlt = recipe({ id: 'Utgått alternativ', colours: [{ yarn_id: 'sunday', grams: 300 }], strikk_yarn_alternative: [{ yarn_line_id: 'Utgått alternativ-l0', color_group: 0, yarn_id: 'mandarin', source: 'pattern' }] })
   const catalogue = new Map(YARNS.map(y => [y.id, y]))
 
-  it('tells using the yarn, naming it as an alternative and the app suggesting it apart', () => {
-    expect(yarnHits(uses, 'merino', catalogue, YARNS)).toEqual([{ kind: 'uses' }])
-    expect(yarnHits(alternative, 'merino', catalogue, YARNS)).toEqual([{ kind: 'alternative' }])
-    expect(yarnHits(suggested, 'merino', catalogue, YARNS)).toEqual([{ kind: 'suggested', instead: 'Sandnes Garn Mandarin Merino' }])
-    const res = applyFilter([uses, alternative, suggested, keptAlt], f({ yarnIds: ['merino'] }), YARNS)
-    expect(res.map(r => [r.recipe.title, r.yarnHits[0].hits[0].kind])).toEqual([['Alternativ', 'alternative'], ['Bruker', 'uses'], ['Forslag', 'suggested']])
+  it('tells the recipe yarn, the recipe\'s own alternative and a catalogue match apart', () => {
+    expect(yarnHits(uses, 'merino', catalogue).map(h => h.source)).toEqual(['recommended'])
+    expect(yarnHits(alternative, 'merino', catalogue).map(h => h.source)).toEqual(['pattern'])
+    expect(yarnHits(sameGauge, 'merino', catalogue).map(h => [h.source, h.instead])).toEqual([['same_gauge', ['Sandnes Garn Mandarin Merino']]])
+    expect(yarnHits(noGauge, 'merino', catalogue)).toEqual([])
+    const res = applyFilter([uses, alternative, sameGauge, noGauge], f({ yarnIds: ['merino'] }), YARNS)
+    expect(res.map(r => [r.recipe.title, r.yarnHits[0].hits[0].source])).toEqual([['Alternativ', 'pattern'], ['Bruker', 'recommended'], ['Samme fasthet', 'same_gauge']])
+  })
+  it('gives the same recipes as «Finn alternativt garn»', () => {
+    const all = [uses, alternative, sameGauge, noGauge, goneAlt]
+    const fromFilter = applyFilter(all, f({ yarnIds: ['merino'] }), YARNS).map(r => r.recipe.id).sort()
+    const fromGarnlager = recipesForYarn(all, 'merino', { catalogue, combos: [], swatches: [] }).map(r => r.recipe.id).sort()
+    expect(fromFilter).toEqual(fromGarnlager)
   })
   it('leaves collections out', () => {
     const collection = recipe({ id: 'Katalog', is_collection: true, colours: [{ yarn_id: 'merino', grams: 300 }] })
     expect(titles([uses, collection], f({ yarnIds: ['merino'] }))).toEqual(['Bruker'])
   })
-  it('suggests nothing when the pattern has an alternative still made, and never offers a discontinued yarn', () => {
-    expect(yarnHits(keptAlt, 'merino', catalogue, YARNS)).toEqual([])
-    expect(yarnHits(goneAlt, 'mandarin', catalogue, YARNS)).toEqual([])
-    expect(yarnHits(suggested, 'mandarin', catalogue, YARNS)).toEqual([{ kind: 'uses' }])
+  it('never offers a discontinued yarn as an alternative', () => {
+    expect(yarnHits(goneAlt, 'mandarin', catalogue)).toEqual([])
+    expect(yarnHits(sameGauge, 'mandarin', catalogue).map(h => h.source)).toEqual(['recommended'])
   })
 })
 

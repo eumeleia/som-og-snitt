@@ -4,14 +4,19 @@ import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { AUDIENCES, type Audience } from '../_lib/extraction'
 import { spellingKey, type YarnRow } from '../_lib/yarns'
+import { COMBO_SELECT, SWATCH_SELECT, comboFromRow, swatchFromRow, type ComboRow, type SwatchRow } from '../_lib/combos'
+import { HIT_SOURCE_LABEL, type RecipeHit } from '../_lib/yarn-recipes'
 import YarnFavoriteStar from './YarnFavoriteStar'
 import {
   AUDIENCE_LABEL, EMPTY_FILTER, RECIPE_FILTER_SELECT, SORTS, SORT_LABEL,
   activeChips, garmentTypes, removeChip, yarnLabel,
-  type FilterRecipe, type FilterResult, type RecipeFilter, type Sort,
+  type FilterRecipe, type FilterResult, type RecipeFilter, type Sort, type YarnSources,
 } from '../_lib/recipe-filter'
 
-export type FilterData = { kind: 'loading' } | { kind: 'ready'; recipes: FilterRecipe[]; yarns: YarnRow[] } | { kind: 'error'; text: string }
+export type FilterData =
+  | { kind: 'loading' }
+  | { kind: 'ready'; recipes: FilterRecipe[]; yarns: YarnRow[]; sources: YarnSources }
+  | { kind: 'error'; text: string }
 
 // The rows the filters need, loaded beside the plain list so the list still shows if this
 // fails. onYarnUpdated lets a favorite/price edit anywhere in the filter sheet update this
@@ -23,11 +28,18 @@ export function useFilterData(reload: number): [FilterData, (yarnId: string, pat
     Promise.all([
       supabase.from('strikk_oppskrift').select(RECIPE_FILTER_SELECT),
       supabase.from('strikk_yarn').select('*'),
-    ]).then(([r, y]) => {
+      supabase.from('strikk_yarn_combo').select(COMBO_SELECT),
+      supabase.from('strikk_swatch').select(SWATCH_SELECT),
+    ]).then(([r, y, c, s]) => {
       if (cancelled) return
       const error = r.error ?? y.error
-      if (error) setData({ kind: 'error', text: error.message })
-      else setData({ kind: 'ready', recipes: (r.data ?? []) as unknown as FilterRecipe[], yarns: (y.data ?? []) as YarnRow[] })
+      if (error) { setData({ kind: 'error', text: error.message }); return }
+      // Combinations and swatches only add hits; without them the filter still works.
+      const sources: YarnSources = {
+        combos: c.error ? [] : ((c.data ?? []) as unknown as ComboRow[]).map(comboFromRow),
+        swatches: s.error ? [] : ((s.data ?? []) as unknown as SwatchRow[]).map(swatchFromRow),
+      }
+      setData({ kind: 'ready', recipes: (r.data ?? []) as unknown as FilterRecipe[], yarns: (y.data ?? []) as YarnRow[], sources })
     })
     return () => { cancelled = true }
   }, [reload])
@@ -107,6 +119,14 @@ export function FilterBar({ filter, onChange, yarns, shown, total, unread, onOpe
   )
 }
 
+export function hitText(name: string, h: RecipeHit): string {
+  const swatch = h.needsSwatch ? ' · krever prøvelapp' : ''
+  if (h.source === 'recommended') return `Bruker ${name}`
+  if (h.source === 'pattern') return `${name} er oppskriftens eget alternativ${swatch}`
+  const together = h.with.length ? `, sammen med ${h.with.join(' + ')}` : ''
+  return `${name} kan erstatte ${h.instead.join(' + ')} (${HIT_SOURCE_LABEL[h.source].toLowerCase()}${together})${swatch}`
+}
+
 // What a recipe matched on, for the active yarn and leftover filters.
 export function HitInfo({ result, yarns, filter }: { result: FilterResult; yarns: YarnRow[]; filter: RecipeFilter }) {
   const byId = new Map(yarns.map(y => [y.id, y]))
@@ -114,8 +134,12 @@ export function HitInfo({ result, yarns, filter }: { result: FilterResult; yarns
   for (const { yarnId, hits } of result.yarnHits) {
     const y = byId.get(yarnId)
     const name = y ? yarnLabel(y) : 'garnet'
+    // The best hit per colour; hits come sorted by trust.
+    const seen = new Set<number>()
     for (const h of hits) {
-      lines.push(h.kind === 'uses' ? `Bruker ${name}` : h.kind === 'alternative' ? `${name} er oppskriftens eget alternativ` : `Appen foreslår ${name} i stedet for ${h.instead} (utgått)`)
+      if (seen.has(h.colorGroup)) continue
+      seen.add(h.colorGroup)
+      lines.push(hitText(name, h))
     }
   }
   if (filter.leftover && result.leftover) {

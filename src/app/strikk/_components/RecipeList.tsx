@@ -199,7 +199,7 @@ export default function RecipeList() {
       const l = byId.get(r.id)
       return l ? { ...r, rating: l.rating, favorite: l.favorite } : r
     })
-    const items = applyFilter(current, filter, filterData.yarns)
+    const items = applyFilter(current, filter, filterData.yarns, filterData.sources)
       .filter(x => byId.has(x.recipe.id))
       .map(x => ({ recipe: byId.get(x.recipe.id)!, result: x as FilterResult | null }))
     // A recipe added after the filter data loaded shows while no filter is set.
