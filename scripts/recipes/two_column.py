@@ -57,6 +57,14 @@ COLUMNS_FROM = {
     "butterscotch-sweater-adult": "Pattern",
 }
 
+# Layout choices Maria has asked for on a single pattern (or "layout" in its data.py):
+# spec_on_cover: the spec table goes on the cover under a smaller photo, and the pattern
+#   starts on page 2;
+# drop_back_image: no back page with the photo.
+LAYOUT = {
+    "chunky-selbugenser": {"spec_on_cover": True, "drop_back_image": True},
+}
+
 HEADING = copy.copy(base.STYLE_HEADING)
 HEADING.keepWithNext = 1
 TITLE_LOGO = ParagraphStyle("logo", fontName="Poppins-Bold", fontSize=15, leading=18, alignment=1,
@@ -428,34 +436,52 @@ def pattern_range(data, key):
     return start, end
 
 
+def _height(fs):
+    total = 0
+    for f in fs:
+        total += f.getSpaceBefore() + f.wrap(CONTENT_W, TOP)[1] + f.getSpaceAfter()
+    return total
+
+
 def build(data, out_path, key=None):
     s = Story()
+    opts = {**LAYOUT.get(key, {}), **(data.get("layout") or {})}
+    spec_on_cover = opts.get("spec_on_cover", False)
+    info = [spec_table(data["spec"], CONTENT_W)]
+    if data.get("spec_note"):
+        info += [Rule(3, 4), Paragraph(data["spec_note"], base.STYLE_NOTE)]
 
     # ---------- Cover (across the page) ----------
+    head = []
     if data.get("logo_text"):
-        s.full(Paragraph(data["logo_text"], TITLE_LOGO))
-    s.full(Paragraph(data["title"].upper(), TITLE))
+        head.append(Paragraph(data["logo_text"], TITLE_LOGO))
+    head.append(Paragraph(data["title"].upper(), TITLE))
     if data.get("designer_handle"):
-        s.full(Paragraph(data["designer_handle"], HANDLE))
+        head.append(Paragraph(data["designer_handle"], HANDLE))
+    intro = [Paragraph(p, base.STYLE_INTRO) for p in data.get("intro") or []]
+    photo_h, photo_h2 = 150 * mm, 130 * mm
+    if spec_on_cover:
+        # The photo shrinks so the title, photo and spec all fit on the cover.
+        room = TOP - FRAME_BOTTOM - _height(head + intro + info) - 12 * mm
+        photo_h = photo_h2 = min(photo_h, room)
+    s.full(*head)
     covers = data["cover_images"]
     if len(covers) == 1:
-        s.full(Picture(covers[0], 150 * mm))
+        s.full(Picture(covers[0], photo_h))
     else:
         each_w = (CONTENT_W - 4 * mm) / 2
-        row = [[Picture(p, 130 * mm, max_w=each_w) for p in covers]]
+        row = [[Picture(p, photo_h2, max_w=each_w) for p in covers]]
         t = Table(row, colWidths=[each_w + 2 * mm] * len(covers))
         t.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
                                ("VALIGN", (0, 0), (-1, -1), "TOP")]))
         s.full(t)
-    for para in data.get("intro") or []:
-        s.full(Paragraph(para, base.STYLE_INTRO))
-    s.full(PAGEBREAK)
-
-    # ---------- Info page: title, spec and what comes before the pattern, one column ----------
-    s.full(Paragraph(f"<b>{data['title']}</b>", base.STYLE_HEADING))
-    s.full(spec_table(data["spec"], CONTENT_W))
-    if data.get("spec_note"):
-        s.full(Rule(3, 4), Paragraph(data["spec_note"], base.STYLE_NOTE))
+    s.full(*intro)
+    if spec_on_cover:
+        s.full(Spacer(1, 6 * mm), *info)
+    else:
+        s.full(PAGEBREAK)
+        # ---------- Info page: title, spec and what comes before the pattern, one column ----------
+        s.full(Paragraph(f"<b>{data['title']}</b>", base.STYLE_HEADING), *info)
 
     start, end = pattern_range(data, key)
     for i, block in enumerate(data["body"]):
@@ -486,7 +512,7 @@ def build(data, out_path, key=None):
             raise ValueError(f"unknown block kind {kind}")
 
     # ---------- Back page ----------
-    if data.get("back_image"):
+    if data.get("back_image") and not opts.get("drop_back_image"):
         s.full(PAGEBREAK, Picture(data["back_image"], base.PAGE_H - 2 * MARGIN - 16 * mm),
                Spacer(1, 6), Paragraph(data["back_credit"], CREDIT))
 
