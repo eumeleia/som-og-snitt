@@ -45,7 +45,24 @@ Resultatet havner i `oppskrifter/To spalter/` med samme filnavn som originalen i
   To spalter slutter ved første sideskift (`pagebreak`) etter start, eller ved
   `"columns_to": "<overskrift>"`. For Charlotte Jacket Mini og Butterscotch Sweater Adult står
   startpunktet i `COLUMNS_FROM` i skriptet, så kildene ikke endres.
+- **Oppsett for én oppskrift:** `"layout": {"spec_on_cover": true, "drop_back_image": true}` i
+  `data.py` (eller i `LAYOUT` i skriptet) gir garn og størrelser på forsiden under et mindre
+  bilde, oppskriften fra side 2, og ingen bildeside bakerst. Brukt på Chunkyselbugenser, etter
+  Marias ønske. Bildeteksten på den bildesiden forsvinner da sammen med bildet.
 - **Mangler `oppskrifter/_work`:** si fra til Maria i stedet for å bygge på noe annet.
+
+## Legge den inn i appen
+
+En oppskrift som allerede ligger i appen, får den nye PDF-en med samme Disk-fil-id. Prosjekter
+og lenker fortsetter da å peke til den, og Disk tar vare på den gamle versjonen.
+
+```bash
+set -a && source .env.local && set +a && curl -s -X POST "https://som-og-snitt.vercel.app/api/strikk/oppskrifter/<oppskrift-id>/pdf" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" -H "Content-Type: application/pdf" --data-binary @"oppskrifter/To spalter/<fil>.pdf"
+```
+
+Svaret har `"ok": true` når Disk har fått nøyaktig samme fil (md5). Oppskrift-id-en finnes i
+`strikk_oppskrift`. Har oppskriften et pågående prosjekt med tusj, flytter teksten seg i den
+nye PDF-en, og markeringene havner feil. Si fra til Maria før den byttes.
 
 ## Sjekk før den regnes som ferdig
 
