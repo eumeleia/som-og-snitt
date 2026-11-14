@@ -1,6 +1,17 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // The service worker must never be cached itself, or a new deploy's version would
+  // not be picked up (node_modules/next/dist/docs/01-app/02-guides/progressive-web-apps.md).
+  async headers() {
+    return [{
+      source: '/sw.js',
+      headers: [
+        { key: 'Content-Type', value: 'application/javascript; charset=utf-8' },
+        { key: 'Cache-Control', value: 'no-cache, no-store, must-revalidate' },
+      ],
+    }]
+  },
   // sharp laster sitt native bibliotek via en optional dependency Next sin egen
   // filsporing ikke fanger opp i produksjon — funksjonen kræsjer i kjøretid med
   // "libvips-cpp.so.8.18.6: cannot open shared object file", bygget sier ingenting.

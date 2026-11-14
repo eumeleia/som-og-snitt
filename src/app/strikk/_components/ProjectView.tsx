@@ -5,10 +5,10 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import { supabase } from '@/lib/supabase'
-import { EXTRACTION_SELECT, storedToExtraction, type ExtractionData, type StoredRecipe } from '../_lib/extraction'
-import { PROJECT_SELECT, STATUSES, STATUS_LABEL, sortedYarn, startPosition, type Project, type ProjectStatus } from '../_lib/projects'
+import { storedToExtraction, type ExtractionData } from '../_lib/extraction'
+import { STATUSES, STATUS_LABEL, sortedYarn, startPosition, type Project, type ProjectStatus } from '../_lib/projects'
 import { amountForLine, formatAmountForLine } from '../_lib/project-amounts'
-import { COMBO_SELECT, SWATCH_SELECT, comboFromRow, swatchFromRow, type ComboRow, type SwatchRow } from '../_lib/combos'
+import { comboFromRow, swatchFromRow } from '../_lib/combos'
 import { rankAlternatives, mainFibre, type Alternative, type RawCombo, type RawSwatch } from '../_lib/yarn-alternatives'
 import { applyOps, undoOps, type Counter, type DocState, type Op, type Stroke, type Tool } from '../_lib/markup-ops'
 import { popStep, pushStep, readStack, writeStack, type UndoStep } from '../_lib/undo-stack'
@@ -26,6 +26,9 @@ import DriveExpired from './DriveExpired'
 import AssignedYarnStash from './AssignedYarnStash'
 import CompleteProjectModal from './CompleteProjectModal'
 import { PinToMenuButton, usePinState } from '@/components/PinToMenuButton'
+import { signedInOrOffline } from '@/lib/offline-auth'
+import { idbStore, hasIndexedDb, type ProjectBundle } from '../_lib/offline'
+import { fetchProjectBundle, OFFLINE_EVENT, ProjectMissingError } from '../_lib/project-bundle'
 import { formatPair, type PairMember } from '../_lib/yarn-recipes'
 
 // Colours knitted with a carry-along yarn whose yarns are all in the catalogue, as pairs
@@ -135,6 +138,24 @@ function useWakeLock(active: boolean) {
 }
 
 // keepalive lets a position saved as the page is left still arrive.
+// With a network the PDF always comes from Disk (and replaces the stored copy of a
+// project in progress); without one, the copy stored on this device.
+async function pdfOnlineOrStored(fileId: string, fileName: string, inProgress: boolean): Promise<Uint8Array> {
+  try {
+    const bytes = await downloadPdf(fileId, fileName)
+    if (inProgress && hasIndexedDb()) {
+      idbStore.putPdf({ fileId, bytes: bytes.slice().buffer as ArrayBuffer, savedAt: new Date().toISOString() })
+        .catch(err => console.error('[offline] pdf', err))
+    }
+    return bytes
+  } catch (err) {
+    if (err instanceof DriveFileMissingError || !hasIndexedDb()) throw err
+    const stored = await idbStore.getPdf(fileId).catch(() => null)
+    if (!stored) throw err
+    return new Uint8Array(stored.bytes)
+  }
+}
+
 async function patchProject(id: string, body: Record<string, unknown>, keepalive = false) {
   const res = await fetch(`/api/strikk/projects/${id}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), keepalive,
@@ -179,11 +200,32 @@ export default function ProjectView({ id, initialView }: { id: string; initialVi
   const [swatches, setSwatches] = useState<RawSwatch[]>([])
   const [yarnLines, setYarnLines] = useState<YarnLine[]>([])
   const [view, setView] = useState<'info' | 'pdf'>(initialView ?? 'info')
+  // Without a network the page comes from the service worker, stored without its query
+  // string, so ?view=pdf is read from the address here as well.
+  useEffect(() => {
+    // The address can only be read after the first render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (new URLSearchParams(window.location.search).get('view') === 'pdf') setView('pdf')
+  }, [])
   const [error, setError] = useState('')
+  // Shown from the copy on this device, because the network failed.
+  const [offline, setOffline] = useState(false)
+
+  // Keeps the stored copy up to date with what changes here (strokes, counters, name), so
+  // a later visit without a network shows it. Only for a project that is stored.
+  useEffect(() => {
+    if (!project || project.status !== 'in_progress' || !hasIndexedDb()) return
+    const t = setTimeout(() => {
+      idbStore.getBundle(id).then(b => {
+        if (b) return idbStore.putBundle({ ...b, project, savedAt: new Date().toISOString() })
+      }).catch(err => console.error('[offline] update', err))
+    }, 1000)
+    return () => clearTimeout(t)
+  }, [project, id])
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session) setAuthed(true)
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (signedInOrOffline(data.session, error)) setAuthed(true)
       else router.replace('/login')
     })
   }, [router])
@@ -191,46 +233,38 @@ export default function ProjectView({ id, initialView }: { id: string; initialVi
   useEffect(() => {
     if (!authed) return
     let cancelled = false
+    const show = (b: ProjectBundle) => {
+      setProject(b.project)
+      setYarnLines(sortedYarn(b.project).map(l => ({ position: l.position, yarn_id: l.yarn_id, color_label: l.color_label })))
+      setRecipe(b.recipe)
+      setExtraction(b.stored ? storedToExtraction(b.stored) : null)
+      setYarns(b.yarns)
+      setCombos(b.combos.map(comboFromRow))
+      setSwatches(b.swatches.map(swatchFromRow))
+      setLoad({ kind: 'ready' })
+    }
     ;(async () => {
       setLoad({ kind: 'loading' })
-      const { data: p, error: pErr } = await supabase.from('strikk_project').select(PROJECT_SELECT).eq('id', id).maybeSingle()
-      if (cancelled) return
-      if (pErr) { setLoad({ kind: 'error', text: pErr.message }); return }
-      if (!p) { setLoad({ kind: 'error', text: 'Fant ikke prosjektet. Det kan være slettet.' }); return }
-      const proj = p as unknown as Project
-      setProject(proj)
-      // For «sist åpnet» on Hjem. Quiet: does not count as editing the project.
-      patchProject(id, { opened: true }).catch(err => console.error('[strikk] opened', err))
-      setYarnLines(sortedYarn(proj).map(l => ({ position: l.position, yarn_id: l.yarn_id, color_label: l.color_label })))
-
-      if (proj.oppskrift_id) {
-        const [{ data: r, error: rErr }, { data: thumb }] = await Promise.all([
-          supabase.from('strikk_oppskrift').select(EXTRACTION_SELECT).eq('id', proj.oppskrift_id).maybeSingle(),
-          supabase.from('strikk_oppskrift').select('thumbnail_path, thumbnail_at').eq('id', proj.oppskrift_id).maybeSingle(),
-        ])
+      try {
+        const b = await fetchProjectBundle(id)
         if (cancelled) return
-        if (rErr) { setLoad({ kind: 'error', text: rErr.message }); return }
-        if (r) {
-          const stored = r as unknown as StoredRecipe
-          setRecipe({
-            title: stored.title, drive_file_id: stored.drive_file_id, file_name: stored.file_name,
-            thumbnail_path: thumb?.thumbnail_path ?? null, thumbnail_at: thumb?.thumbnail_at ?? null,
-          })
-          setExtraction(storedToExtraction(stored))
+        setOffline(false)
+        show(b)
+        // For «sist åpnet» on Hjem. Quiet: does not count as editing the project.
+        patchProject(id, { opened: true }).catch(err => console.error('[strikk] opened', err))
+        if (b.project.status === 'in_progress' && hasIndexedDb()) {
+          idbStore.putBundle({ ...b, projectId: id, savedAt: new Date().toISOString() })
+            .then(() => window.dispatchEvent(new Event(OFFLINE_EVENT)))
+            .catch(err => console.error('[offline] save', err))
         }
+      } catch (err) {
+        if (cancelled) return
+        // Without a network: the copy stored on this device, if the project is in progress.
+        const stored = err instanceof ProjectMissingError || !hasIndexedDb() ? null : await idbStore.getBundle(id).catch(() => null)
+        if (cancelled) return
+        if (stored) { setOffline(true); show(stored); return }
+        setLoad({ kind: 'error', text: err instanceof Error ? err.message : String(err) })
       }
-
-      const [yRes, comboRes, swatchRes] = await Promise.all([
-        supabase.from('strikk_yarn').select('*'),
-        supabase.from('strikk_yarn_combo').select(COMBO_SELECT),
-        supabase.from('strikk_swatch').select(SWATCH_SELECT),
-      ])
-      if (cancelled) return
-      if (yRes.error) { setLoad({ kind: 'error', text: yRes.error.message }); return }
-      setYarns((yRes.data ?? []) as YarnRow[])
-      if (!comboRes.error) setCombos((comboRes.data as unknown as ComboRow[] ?? []).map(comboFromRow))
-      if (!swatchRes.error) setSwatches((swatchRes.data as unknown as SwatchRow[] ?? []).map(swatchFromRow))
-      setLoad({ kind: 'ready' })
     })()
     return () => { cancelled = true }
   }, [authed, id])
@@ -272,6 +306,11 @@ export default function ProjectView({ id, initialView }: { id: string; initialVi
 
   return (
     <div className="min-h-screen bg-[#FAF7F4]">
+      {offline && view === 'info' && (
+        <p role="status" className="max-w-xl mx-auto px-4 pt-3 text-xs text-stone-600">
+          Uten nett: viser prosjektet slik det er lagret på enheten. Endringer i tusj og tellere sendes når nettet er tilbake.
+        </p>
+      )}
       {view === 'info' ? (
         <InfoView
           project={project} recipe={recipe} extraction={extraction} yarns={yarns} combos={combos} swatches={swatches}
@@ -589,7 +628,11 @@ function PdfView({ projectId, project, recipe, sizeLabels, onSaved, onBack }: {
   const [pdf, setPdf] = useState<PdfState>(() => (
     recipe?.drive_file_id ? { kind: 'idle' } : { kind: 'error', text: 'Prosjektet har ingen oppskrift.' }
   ))
-  const [state, setState] = useState<DocState>({ strokes: project.strokes as Stroke[], counters: project.counters as Counter[] })
+  // Changes not yet sent (made without a network, or still on their way) on top of the
+  // saved project, so they show again when the project is reopened.
+  const [state, setState] = useState<DocState>(() => applyOps(
+    { strokes: project.strokes as Stroke[], counters: project.counters as Counter[] }, pendingOps(projectId),
+  ))
   const stateRef = useRef(state)
   useLayoutEffect(() => { stateRef.current = state })
   const [undoStack, setUndoStack] = useState<UndoStep[]>(() => readStack(projectId))
@@ -689,7 +732,7 @@ function PdfView({ projectId, project, recipe, sizeLabels, onSaved, onBack }: {
     ;(async () => {
       try {
         setPdf({ kind: 'loading', text: 'Henter PDF fra Disk …' })
-        const bytes = await downloadPdf(recipe.drive_file_id, recipe.file_name)
+        const bytes = await pdfOnlineOrStored(recipe.drive_file_id, recipe.file_name, project.status === 'in_progress')
         if (cancelled) return
         setPdf({ kind: 'loading', text: 'Åpner PDF …' })
         const opened = await openPdf(bytes)

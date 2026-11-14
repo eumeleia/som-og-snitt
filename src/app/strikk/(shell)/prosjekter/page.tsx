@@ -14,6 +14,7 @@ import { PROJECT_LIST_SELECT, STATUSES, STATUS_LABEL, type ProjectListRow, type 
 import ProjectRecipePicker from '../../_components/ProjectRecipePicker'
 import type { KnitRecipe } from '../../_lib/recipes'
 import { coverUrl } from '../../_lib/cover'
+import { OfflineBadge, useOfflineReady } from '../../_components/OfflineReady'
 
 const STATUS_STYLE: Record<ProjectStatus, string> = {
   planned: 'bg-amber-50 text-amber-700 border-amber-200',
@@ -60,6 +61,7 @@ function ProjectsPageInner() {
   const searchParams = useSearchParams()
 
   const [projects, setProjects] = useState<ProjectListRow[]>([])
+  const offlineIds = useOfflineReady()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [status, setStatusState] = useState<ProjectStatus>(() => statusFromQuery(searchParams.get('status')) ?? 'in_progress')
@@ -151,7 +153,7 @@ function ProjectsPageInner() {
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
           <SortableContext items={sorted.map(p => p.id)} strategy={rectSortingStrategy}>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-              {sorted.map(p => <ProjectCard key={p.id} project={p} />)}
+              {sorted.map(p => <ProjectCard key={p.id} project={p} offline={offlineIds.has(p.id)} />)}
             </div>
           </SortableContext>
         </DndContext>
@@ -179,7 +181,7 @@ function ProjectsPageInner() {
 // Planned and ongoing projects show their cover: Maria's own photo, or the recipe's first page.
 const SHOWS_COVER: ProjectStatus[] = ['planned', 'in_progress']
 
-function ProjectCard({ project }: { project: ProjectListRow }) {
+function ProjectCard({ project, offline }: { project: ProjectListRow; offline: boolean }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: project.id })
   const cover = SHOWS_COVER.includes(project.status)
   const url = cover ? coverUrl(project) : null
@@ -208,6 +210,7 @@ function ProjectCard({ project }: { project: ProjectListRow }) {
         <span className={`inline-flex mt-2 items-center px-2 py-0.5 rounded border text-xs font-medium ${STATUS_STYLE[project.status]}`}>
           {STATUS_LABEL[project.status]}
         </span>
+        {offline && <OfflineBadge className="ml-1 align-middle" />}
       </Link>
       {/* Straight to the recipe in the project, next to the status. A sibling of the card
           link, since one link cannot hold another. */}

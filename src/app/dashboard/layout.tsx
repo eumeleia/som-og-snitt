@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { NavIcon } from './_shared/DashboardIcons'
 import { SidebarContent } from './_shared/DashboardNav'
+import { runOfflineSync } from '@/app/strikk/_lib/project-bundle'
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const menuRef = useRef<HTMLDivElement>(null)
@@ -30,6 +31,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       const emailPrefix = user.email?.split('@')[0] ?? ''
       if (emailPrefix) setUserName(emailPrefix)
     })
+  }, [])
+
+  // Keeps the knitting projects in progress on this device for use without a network:
+  // when the app opens, and when the network comes back.
+  useEffect(() => {
+    void runOfflineSync()
+    const again = () => { void runOfflineSync() }
+    window.addEventListener('online', again)
+    return () => window.removeEventListener('online', again)
   }, [])
 
   useEffect(() => {

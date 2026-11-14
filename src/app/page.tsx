@@ -3,13 +3,14 @@
 import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { signedInOrOffline } from '@/lib/offline-auth'
 
 export default function Home() {
   const router = useRouter()
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      router.replace(session ? '/dashboard' : '/login')
+    supabase.auth.getSession().then(({ data: { session }, error }) => {
+      router.replace(signedInOrOffline(session, error) ? '/dashboard' : '/login')
     })
   }, [router])
 

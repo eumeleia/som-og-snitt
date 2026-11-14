@@ -9,6 +9,8 @@ import { supabase } from '@/lib/supabase'
 import { NavIcon, type IconName } from './_shared/DashboardIcons'
 import { PROJECT_LIST_SELECT, sortByLastOpened, type ProjectListRow } from '@/app/strikk/_lib/projects'
 import { coverUrl } from '@/app/strikk/_lib/cover'
+import { hasIndexedDb, idbStore } from '@/app/strikk/_lib/offline'
+import { OfflineBadge, useOfflineReady } from '@/app/strikk/_components/OfflineReady'
 
 // Hjem: strikk til venstre, sying til høyre. Hver side viser de aktive prosjektene, det
 // sist åpnede øverst, og under dem lenkene til den sidens oppskrifter og verktøy.
@@ -40,6 +42,8 @@ interface Card {
   details: string | null
   recipe: { name: string; open: () => void } | null
   open: () => void
+  // Stored on this device and ready to open without a network.
+  offline?: boolean
 }
 
 interface ShortcutLink { href: string; icon: IconName; title: string; text: string }
@@ -54,6 +58,7 @@ export default function DashboardHomePage() {
   const [strikk, setStrikk] = useState<ProjectListRow[]>([])
   const [loading, setLoading] = useState(true)
   const [side, setSide] = useState<Side>('strikk')
+  const offlineIds = useOfflineReady()
 
   useEffect(() => {
     try {
@@ -75,8 +80,16 @@ export default function DashboardHomePage() {
     ]).then(([syRes, strikkRes]) => {
       if (syRes.error) console.error('[dashboard] henting av syprosjekter feilet', syRes.error)
       else setSying((syRes.data as LandingProject[]) ?? [])
-      if (strikkRes.error) console.error('[dashboard] henting av strikkeprosjekter feilet', strikkRes.error)
-      else setStrikk((strikkRes.data as unknown as ProjectListRow[]) ?? [])
+      if (strikkRes.error) {
+        console.error('[dashboard] henting av strikkeprosjekter feilet', strikkRes.error)
+        // Without a network: the projects in progress stored on this device.
+        if (hasIndexedDb()) {
+          void idbStore.listBundles().then(bundles => setStrikk(bundles.map(b => ({
+            ...b.project,
+            strikk_oppskrift: b.recipe ? { title: b.recipe.title ?? '', thumbnail_path: b.recipe.thumbnail_path, thumbnail_at: b.recipe.thumbnail_at } : null,
+          }) as unknown as ProjectListRow))).catch(() => undefined)
+        }
+      } else setStrikk((strikkRes.data as unknown as ProjectListRow[]) ?? [])
       setLoading(false)
     })
   }, [])
@@ -100,6 +113,7 @@ export default function DashboardHomePage() {
     details: [p.strikk_oppskrift?.title && p.strikk_oppskrift.title !== p.name ? p.strikk_oppskrift.title : null, p.size_label].filter(Boolean).join(' · ') || null,
     recipe: null,
     open: () => router.push(`/strikk/prosjekt/${p.id}?view=pdf`),
+    offline: offlineIds.has(p.id),
   }))
 
   const syCards: Card[] = sortByLastOpened(sying.filter(p => p.data.status === 'Aktiv')).map(p => ({
@@ -192,7 +206,7 @@ function Column({ hidden, title, icon, allHref, emptyText, cards, links }: {
             <img src={first.imageUrl} alt="" className="absolute inset-0 w-full h-full object-cover" style={{ objectPosition: first.objectPosition }} />
           )}
           <div className={`relative p-3 lg:p-5 ${first.imageUrl ? 'bg-gradient-to-t from-white via-white/90 to-transparent pt-10 lg:pt-20' : ''}`}>
-            <p className="text-xs uppercase tracking-wide text-stone-500 mb-0.5 lg:mb-1">Sist åpnet</p>
+            <p className="text-xs uppercase tracking-wide text-stone-500 mb-0.5 lg:mb-1">Sist åpnet {first.offline && <OfflineBadge className="ml-1 normal-case tracking-normal" />}</p>
             <h3 className="font-serif text-xl lg:text-2xl text-stone-800 break-words">{first.name}</h3>
             {first.details && <p className="text-sm text-stone-500 mt-0.5">{first.details}</p>}
             {first.recipe && (
@@ -221,7 +235,7 @@ function Column({ hidden, title, icon, allHref, emptyText, cards, links }: {
                 )}
               </div>
               <div className="min-w-0 flex-1">
-                <p className="font-medium text-stone-800 text-sm truncate">{card.name}</p>
+                <p className="font-medium text-stone-800 text-sm truncate">{card.name} {card.offline && <OfflineBadge className="ml-1" />}</p>
                 {card.details && <p className="text-xs text-stone-400 truncate">{card.details}</p>}
                 {card.recipe && (
                   <button onClick={card.recipe.open} className="text-xs text-[#C9A57A] hover:text-[#8B6340] hover:underline truncate block">
