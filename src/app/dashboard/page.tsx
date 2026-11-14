@@ -113,16 +113,17 @@ export default function DashboardHomePage() {
   }))
 
   return (
-    <div className="w-full max-w-6xl mx-auto px-4 sm:px-8 py-8 sm:py-10">
-      <h1 className="font-serif text-4xl sm:text-5xl text-stone-800 mb-2">Hei Maria!</h1>
-      <p className="text-stone-500 mb-8">Hva vil du jobbe med i dag?</p>
+        // Tight on a phone so at least four project cards fit above the fold on an iPhone.
+    <div className="w-full max-w-6xl mx-auto px-4 sm:px-8 pt-3 pb-6 sm:py-10">
+      <h1 className="font-serif text-2xl sm:text-5xl text-stone-800 mb-3 sm:mb-2">Hei Maria!</h1>
+      <p className="hidden sm:block text-stone-500 mb-8">Hva vil du jobbe med i dag?</p>
 
       {!loading && (
         <>
-        <div role="tablist" aria-label="Strikk eller sying" className="lg:hidden flex gap-1 bg-white rounded-xl p-1 border border-stone-200 shadow-sm mb-5">
+        <div role="tablist" aria-label="Strikk eller sying" className="lg:hidden flex gap-1 bg-white rounded-xl p-1 border border-stone-200 shadow-sm mb-3">
           {(['strikk', 'sy'] as const).map(s => (
             <button key={s} role="tab" aria-selected={side === s} onClick={() => chooseSide(s)}
-              className={`flex-1 h-10 rounded-lg text-sm font-medium transition-colors ${side === s ? 'bg-stone-800 text-white' : 'text-stone-500'}`}>
+              className={`flex-1 h-9 rounded-lg text-sm font-medium transition-colors ${side === s ? 'bg-stone-800 text-white' : 'text-stone-500'}`}>
               {s === 'strikk' ? 'Strikk' : 'Sying'}
             </button>
           ))}
@@ -171,9 +172,9 @@ function Column({ hidden, title, icon, allHref, emptyText, cards, links }: {
 }) {
   const [first, ...rest] = cards
   return (
-    <section className={`${hidden ? 'hidden' : 'flex'} lg:flex flex-col gap-4 min-w-0`}>
+    <section className={`${hidden ? 'hidden' : 'flex'} lg:flex flex-col gap-2.5 lg:gap-4 min-w-0`}>
       <div className="flex items-center justify-between gap-3">
-        <h2 className="font-serif text-2xl text-stone-800 flex items-center gap-2">
+        <h2 className="font-serif text-xl lg:text-2xl text-stone-800 flex items-center gap-2">
           <NavIcon name={icon} className="w-5 h-5 text-[#8B6340]" />
           {title}
         </h2>
@@ -185,14 +186,14 @@ function Column({ hidden, title, icon, allHref, emptyText, cards, links }: {
       {!first && <p className="text-sm text-stone-400">{emptyText}</p>}
 
       {first && (
-        <div className="relative rounded-2xl border border-stone-200 bg-white overflow-hidden min-h-[260px] flex flex-col justify-end">
+        <div className="relative rounded-2xl border border-stone-200 bg-white overflow-hidden min-h-[150px] lg:min-h-[260px] flex flex-col justify-end">
           {first.imageUrl && (
             // eslint-disable-next-line @next/next/no-img-element -- a stored photo; next/image would only add a resize step
             <img src={first.imageUrl} alt="" className="absolute inset-0 w-full h-full object-cover" style={{ objectPosition: first.objectPosition }} />
           )}
-          <div className={`relative p-5 ${first.imageUrl ? 'bg-gradient-to-t from-white via-white/90 to-transparent pt-20' : ''}`}>
-            <p className="text-xs uppercase tracking-wide text-stone-500 mb-1">Sist åpnet</p>
-            <h3 className="font-serif text-2xl text-stone-800 break-words">{first.name}</h3>
+          <div className={`relative p-3 lg:p-5 ${first.imageUrl ? 'bg-gradient-to-t from-white via-white/90 to-transparent pt-10 lg:pt-20' : ''}`}>
+            <p className="text-xs uppercase tracking-wide text-stone-500 mb-0.5 lg:mb-1">Sist åpnet</p>
+            <h3 className="font-serif text-xl lg:text-2xl text-stone-800 break-words">{first.name}</h3>
             {first.details && <p className="text-sm text-stone-500 mt-0.5">{first.details}</p>}
             {first.recipe && (
               <button onClick={first.recipe.open} className="text-sm text-[#C9A57A] hover:text-[#8B6340] hover:underline">
@@ -201,7 +202,7 @@ function Column({ hidden, title, icon, allHref, emptyText, cards, links }: {
             )}
             <div>
               <button onClick={first.open}
-                className="mt-3 inline-flex items-center gap-2 px-5 py-2.5 bg-[#C9A57A] text-white text-sm font-medium rounded-xl hover:bg-[#b8946a] transition-colors">
+                className="mt-2 lg:mt-3 inline-flex items-center gap-2 px-4 lg:px-5 py-2 lg:py-2.5 bg-[#C9A57A] text-white text-sm font-medium rounded-xl hover:bg-[#b8946a] transition-colors">
                 Fortsett <NavIcon name="chevronRight" className="w-4 h-4" />
               </button>
             </div>
@@ -212,8 +213,8 @@ function Column({ hidden, title, icon, allHref, emptyText, cards, links }: {
       {rest.length > 0 && (
         <ul className="flex flex-col gap-2">
           {rest.map(card => (
-            <li key={card.id} className="rounded-2xl border border-stone-200 bg-white flex items-center gap-3 p-3">
-              <div className="w-14 h-14 rounded-xl overflow-hidden bg-stone-100 flex-shrink-0">
+            <li key={card.id} className="rounded-2xl border border-stone-200 bg-white flex items-center gap-3 p-2 lg:p-3">
+              <div className="w-12 h-12 lg:w-14 lg:h-14 rounded-xl overflow-hidden bg-stone-100 flex-shrink-0">
                 {card.imageUrl && (
                   // eslint-disable-next-line @next/next/no-img-element -- a stored photo; next/image would only add a resize step
                   <img src={card.imageUrl} alt="" className="w-full h-full object-cover" style={{ objectPosition: card.objectPosition }} />

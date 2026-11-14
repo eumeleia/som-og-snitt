@@ -25,6 +25,7 @@ import YarnPicker from './YarnPicker'
 import DriveExpired from './DriveExpired'
 import AssignedYarnStash from './AssignedYarnStash'
 import CompleteProjectModal from './CompleteProjectModal'
+import { PinToMenuButton, usePinState } from '@/components/PinToMenuButton'
 
 const COLORS = [
   { name: 'Gul', hex: '#FFD84D' },
@@ -380,11 +381,15 @@ function InfoView({ project, recipe, extraction, yarns, combos, swatches, yarnLi
             <path d="M15 19l-7-7 7-7" />
           </svg>
         </Link>
-        {recipe?.drive_file_id && (
-          <button onClick={onOpenPdf} className="h-10 px-4 rounded-xl bg-[#2E5339] text-white text-sm font-medium">
-            Åpne oppskrift
-          </button>
-        )}
+        <div className="flex items-start gap-2">
+          <PinToMenuButton kind="strikk" projectId={project.id}
+            className="h-10 px-3 rounded-xl border border-stone-300 bg-white text-stone-700 text-sm font-medium disabled:opacity-50" />
+          {recipe?.drive_file_id && (
+            <button onClick={onOpenPdf} className="h-10 px-4 rounded-xl bg-[#2E5339] text-white text-sm font-medium">
+              Åpne oppskrift
+            </button>
+          )}
+        </div>
       </div>
 
       {error && <p className="text-sm text-red-700 mb-3">{error}</p>}
@@ -570,6 +575,7 @@ function PdfView({ projectId, project, recipe, sizeLabels, onSaved, onBack }: {
   const stateRef = useRef(state)
   useLayoutEffect(() => { stateRef.current = state })
   const [undoStack, setUndoStack] = useState<UndoStep[]>(() => readStack(projectId))
+  const pin = usePinState('strikk', projectId)
   const [start] = useState(() => startPosition(project))
   const [placed, setPlaced] = useState(false)
   const onPlaced = useCallback(() => setPlaced(true), [])
@@ -820,6 +826,8 @@ function PdfView({ projectId, project, recipe, sizeLabels, onSaved, onBack }: {
                     <MenuButton onClick={() => { void markCurrentPage(null); setMenuOpen(false) }} title="Fjern gjeldende side" />
                   </>
                 )}
+                <MenuButton onClick={() => { void pin.toggle() }} title={pin.label}
+                  note={pin.error ?? 'Snarvei øverst i sidemenyen. Erstatter forrige festede strikkeprosjekt.'} />
                 <div className="h-px w-8 bg-stone-400 my-1 mr-1.5" />
                 <button aria-pressed={jsTwoFinger} onClick={() => setJsTwoFinger(v => !v)}
                   className="pointer-events-auto w-52 rounded-2xl px-3 py-2 text-left shadow-md border bg-white/95 border-stone-300">

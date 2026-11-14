@@ -9,6 +9,8 @@ import ReactMarkdown from 'react-markdown'
 import { supabase } from '@/lib/supabase'
 import { useHistoryVisning } from '../_shared/useHistoryVisning'
 import { deepClone } from '@/lib/deep-clone'
+import { OPEN_SY_PROJECT_EVENT } from '@/lib/menu-pin'
+import { PinToMenuButton } from '@/components/PinToMenuButton'
 import { hentTekstFraSide } from '@/lib/pdf-text'
 import {
   hentArbeidskopi, slettArbeidskopi, annotasjonerSomTekst, NOTAT_OVERSKRIFT,
@@ -2248,6 +2250,10 @@ function ProjectDetail({ project, onBack, onSaved, onDelete, onCopy, initialOpen
             {saveStatus === 'error' && (
               <span className="text-xs text-red-400">Feil ved lagring</span>
             )}
+            {project && (
+              <PinToMenuButton kind="sy" projectId={project.id}
+                className="text-sm text-stone-400 hover:text-stone-700 transition-colors whitespace-nowrap disabled:opacity-50" />
+            )}
             {onCopy && project && (
               <button onClick={onCopy} className="text-sm text-stone-400 hover:text-stone-700 transition-colors whitespace-nowrap">
                 Kopier
@@ -3309,6 +3315,15 @@ function ProjectsPageInner() {
   // egen effekt (ikke inni load()) fordi den må kalle pushVisning, som selv IKKE kan
   // deklareres før load (onNavigate-callbacken over trenger load) — å legge denne logikken
   // inni load() ville gitt en sirkulær erklæringsrekkefølge én enkelt useCallback ikke kan løse.
+  // openRequest: the pinned project in the side menu asks again while this page is open.
+  const [openRequest, setOpenRequest] = useState(0)
+  // ProjectDetail keeps its form in state; a new key makes it show the newly opened project.
+  const [detailKey, setDetailKey] = useState(0)
+  useEffect(() => {
+    const ask = () => setOpenRequest(n => n + 1)
+    window.addEventListener(OPEN_SY_PROJECT_EVENT, ask)
+    return () => window.removeEventListener(OPEN_SY_PROJECT_EVENT, ask)
+  }, [])
   useEffect(() => {
     const openId = typeof window !== 'undefined' ? sessionStorage.getItem('openProjectId') : null
     if (!openId) return
@@ -3316,9 +3331,10 @@ function ProjectsPageInner() {
     if (!p) return
     sessionStorage.removeItem('openProjectId')
     setCurrentProject(p)
+    setDetailKey(k => k + 1)
     setShowDetail(true)
     pushVisning({ v: 'item', id: p.id })
-  }, [projects, pushVisning])
+  }, [projects, pushVisning, openRequest])
 
   async function deleteProject(id: string) {
     await supabase.from('projects').delete().eq('id', id)
@@ -3486,6 +3502,7 @@ function ProjectsPageInner() {
     return (
       <>
         <ProjectDetail
+          key={detailKey}
           project={currentProject}
           onBack={handleBack}
           onSaved={load}

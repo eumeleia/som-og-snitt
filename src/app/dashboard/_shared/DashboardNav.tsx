@@ -1,8 +1,9 @@
 'use client'
 
-import { Suspense, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import Link from 'next/link'
-import { usePathname, useSearchParams } from 'next/navigation'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { loadPins, OPEN_SY_PROJECT_EVENT, PIN_EVENT, type MenuPin } from '@/lib/menu-pin'
 import { NavIcon, type IconName } from './DashboardIcons'
 import { STRIKK_SECTIONS } from '@/app/strikk/sections'
 
@@ -131,6 +132,47 @@ function NavRow({ section, isActive, isOpen, onToggle, onNavigate, search }: {
   )
 }
 
+// «Fest til meny»: the pinned knitting and sewing project, at the very top of the menu.
+function PinnedShortcuts({ onNavigate }: { onNavigate: () => void }) {
+  const router = useRouter()
+  const pathname = usePathname()
+  const [pins, setPins] = useState<MenuPin[]>([])
+
+  useEffect(() => {
+    let alive = true
+    const read = () => { void loadPins().then(p => { if (alive) setPins(p) }) }
+    read()
+    window.addEventListener(PIN_EVENT, read)
+    return () => { alive = false; window.removeEventListener(PIN_EVENT, read) }
+  }, [])
+
+  if (!pins.length) return null
+
+  function open(pin: MenuPin) {
+    onNavigate()
+    if (pin.kind === 'strikk') {
+      router.push(`/strikk/prosjekt/${pin.projectId}?view=pdf`)
+      return
+    }
+    sessionStorage.setItem('openProjectId', pin.projectId)
+    if (pathname === '/dashboard/projects') window.dispatchEvent(new Event(OPEN_SY_PROJECT_EVENT))
+    else router.push('/dashboard/projects')
+  }
+
+  return (
+    <div data-pinned-shortcuts className="pb-2 mb-2 border-b border-stone-200 space-y-1">
+      <p className="px-3 pt-1 text-[11px] uppercase tracking-wide text-stone-400">Festet</p>
+      {pins.map(pin => (
+        <button key={pin.kind} onClick={() => open(pin)}
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left text-stone-700 hover:bg-stone-100 transition-colors">
+          <NavIcon name={pin.kind === 'strikk' ? 'yarn' : 'scissors'} className="w-5 h-5 flex-shrink-0 text-[#8B6340]" />
+          <span className="text-sm font-medium truncate">{pin.name}</span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export function SidebarContent({ onNavigate, onClose, onLogout, userName }: {
   onNavigate: () => void
   onClose: () => void
@@ -155,6 +197,7 @@ export function SidebarContent({ onNavigate, onClose, onLogout, userName }: {
       </div>
 
       <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
+        <PinnedShortcuts onNavigate={onNavigate} />
         <Suspense fallback={
           MENU.map(section => (
             <NavRow key={section.label} section={section} isActive={isSectionActive(section, pathname)}
