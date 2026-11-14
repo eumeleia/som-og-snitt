@@ -38,6 +38,8 @@ export interface MatchStashRow {
   leftover_g: number | null
   status: string
   project_id: string | null
+  // Skeins set aside for project_id; null = the whole row (migration 029).
+  project_skeins?: number | null
 }
 
 export interface MatchRecipe {
@@ -96,8 +98,19 @@ export function rowMetres(row: Pick<MatchStashRow, 'skein_count' | 'leftover_g'>
   return skeins * m + (left > 0 ? (left / w!) * m : 0)
 }
 
-export function isFree(row: Pick<MatchStashRow, 'status' | 'project_id'>): boolean {
-  return row.status === 'godkjent' && !row.project_id
+// The part of a row not set aside for a project: all of it, the skeins left over when only
+// some are set aside, or nothing when the whole row belongs to a project.
+export function freePart<R extends MatchStashRow>(row: R): R | null {
+  if (row.status !== 'godkjent') return null
+  if (!row.project_id) return row
+  if (row.project_skeins === null || row.project_skeins === undefined) return null
+  const skeins = Math.max(0, (num(row.skein_count) ?? 0) - (num(row.project_skeins) ?? 0))
+  if (skeins <= 0 && !(num(row.leftover_g) ?? 0)) return null
+  return { ...row, skein_count: skeins }
+}
+
+export function isFree(row: MatchStashRow): boolean {
+  return freePart(row) !== null
 }
 
 // One row per colour: rows with the same yarn and colour number (registered from two piles)
@@ -168,7 +181,7 @@ function joinOg(parts: string[]): string {
 export function matchRecipe(recipe: MatchRecipe, stash: MatchStashRow[], yarns: Map<string, MatchYarn>): RecipeMatch {
   const d = recipe.data
   const sizeLabels = d.sizes.length ? d.sizes.map(s => s.label) : [ONE_SIZE]
-  const free = mergeColours(stash.filter(isFree))
+  const free = mergeColours(stash.map(freePart).filter((r): r is MatchStashRow => r !== null))
   const recipeGauge = num(d.gauge_stitches_10cm)
 
   // Metres one line needs in one size; null when the pattern does not say, or the amount

@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
-import { LAGER_STATUS_LABEL, LAGER_STATUSES, MISSING_COLUMN, STASH_SELECT, STASH_SELECT_WITH_LOT, dyeLotOf, stashStatus, stashThumbnailUrl, type LagerStatus, type StashRow } from '../_lib/stash'
+import { LAGER_STATUS_LABEL, LAGER_STATUSES, dyeLotOf, freeSkeins, projectSkeins, skeinsText, stashStatus, stashThumbnailUrl, type LagerStatus, type StashRow } from '../_lib/stash'
+import { fetchStash } from '../_lib/stash-client'
 import { EXTRACTION_SELECT, storedToExtraction, type StoredRecipe } from '../_lib/extraction'
 import { STATUS_LABEL, type ProjectStatus } from '../_lib/projects'
 import { matchRecipes, sizeRangeText, type MatchRecipe, type RecipeMatch } from '../_lib/stash-match'
@@ -12,6 +13,7 @@ import { mainFibre, type YarnRow } from '../_lib/yarns'
 import YarnFavoriteStar from './YarnFavoriteStar'
 import YarnAlternatives from './YarnAlternatives'
 import AddStashForm from './AddStashForm'
+import StashRowEditor from './StashRowEditor'
 
 const TABS = ['lager', 'strikke', 'alternativ'] as const
 type Tab = typeof TABS[number]
@@ -25,13 +27,6 @@ const FIELD_LABEL: Record<string, string> = {
   brand: 'Merke', name: 'Garn', color_number: 'Fargenr.', color_name: 'Fargenavn', skein_count: 'Antall',
 }
 
-
-// The stash with its parti (migration 028), or without it until that migration is run.
-async function fetchStash(): Promise<{ data: StashRow[] | null; error: string | null }> {
-  let res = await supabase.from('strikk_yarn_stash').select(STASH_SELECT_WITH_LOT).order('created_at')
-  if (res.error?.code === MISSING_COLUMN) res = await supabase.from('strikk_yarn_stash').select(STASH_SELECT).order('created_at')
-  return { data: (res.data ?? null) as unknown as StashRow[] | null, error: res.error?.message ?? null }
-}
 
 async function patchRow(id: string, body: Record<string, unknown>): Promise<StashRow> {
   const res = await fetch(`/api/strikk/garnlager/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -329,6 +324,7 @@ export default function GarnlagerList() {
     onUnapprove: () => void unapprove(row), onRequestDelete: () => setConfirmingDelete(row.id),
     onCancelDelete: () => setConfirmingDelete(null), onDelete: () => void remove(row),
     onThumbnail: (f: File) => void changeThumbnail(row, f), onYarnUpdated,
+    onSaved: (saved: StashRow) => { setRows(rs => (rs ?? []).map(r => (r.id === saved.id ? saved : r))); setAssignedOpen(null) },
   })
 
   return (
@@ -499,7 +495,7 @@ export default function GarnlagerList() {
 
 // En rad i «Godkjent garn»: bildet, tildelings-stjernen (åpner hvilket prosjekt og lar
 // Maria fjerne tildelingen), mengde, favoritt/pris på garnet, og angre/slett.
-function StashListRow({ row, busy, error, assignedOpen, confirmingDelete, yarn, showYarn, onToggleAssigned, onUnassign, onUnapprove, onRequestDelete, onCancelDelete, onDelete, onThumbnail, onYarnUpdated }: {
+function StashListRow({ row, busy, error, assignedOpen, confirmingDelete, yarn, showYarn, onToggleAssigned, onUnassign, onUnapprove, onRequestDelete, onCancelDelete, onDelete, onThumbnail, onYarnUpdated, onSaved }: {
   row: StashRow
   busy: boolean
   error?: string
@@ -515,7 +511,9 @@ function StashListRow({ row, busy, error, assignedOpen, confirmingDelete, yarn, 
   onDelete: () => void
   onThumbnail: (file: File) => void
   onYarnUpdated: (yarnId: string, patch: { favorite?: boolean | null; price_per_skein?: number | null }) => void
+  onSaved: (row: StashRow) => void
 }) {
+  const [editing, setEditing] = useState(false)
   const lot = dyeLotOf(row)
   const colourText = ([row.color_number, row.color_name].filter(Boolean).join(' · ') || 'Ukjent farge') + (lot ? ` · parti ${lot}` : '')
   const text = showYarn ? `${yarnLabel(row.strikk_yarn)} — ${colourText}` : colourText
@@ -524,18 +522,14 @@ function StashListRow({ row, busy, error, assignedOpen, confirmingDelete, yarn, 
     <li className="flex flex-col gap-1 py-1">
       <div className="flex items-center gap-2 text-sm text-stone-600">
         <ThumbnailPicker img={stashThumbnailUrl(row.thumbnail_path)} size="w-9 h-9" busy={busy} onUpload={onThumbnail} />
-        {row.project_id ? (
-          // The whole colour label is the tap target, not just the ✱: a phone
-          // can hit it, and a miss does not land on the thumbnail beside it.
-          <button onClick={onToggleAssigned} aria-expanded={assignedOpen}
-            aria-label={`${colourText}, tildelt ${row.strikk_project?.name ?? 'et prosjekt'}. Vis`}
-            className="flex-1 min-w-0 min-h-11 -my-2 py-2 text-left truncate rounded-md hover:bg-amber-50">
-            <span className="text-amber-600 mr-1 font-medium">✱</span>
-            {text}
-          </button>
-        ) : (
-          <span className="flex-1 min-w-0 truncate">{text}</span>
-        )}
+        {/* The whole colour label is the tap target, not just the ✱: a phone can hit it, and
+            a miss does not land on the thumbnail beside it. It opens the project and editing. */}
+        <button onClick={() => { onToggleAssigned(); setEditing(false) }} aria-expanded={assignedOpen}
+          aria-label={row.project_id ? `${colourText}, tildelt ${row.strikk_project?.name ?? 'et prosjekt'}. Vis` : `${colourText}. Endre`}
+          className={`flex-1 min-w-0 min-h-11 -my-2 py-2 text-left truncate rounded-md ${row.project_id ? 'hover:bg-amber-50' : 'hover:bg-stone-50'}`}>
+          {row.project_id && <span className="text-amber-600 mr-1 font-medium">✱</span>}
+          {text}
+        </button>
         {notLookedUp && (
           <span title="Fiber, løpelengde og strikkefasthet er ikke slått opp ennå" className="shrink-0 text-[11px] rounded-full bg-stone-100 text-stone-600 px-2 py-0.5">Ikke slått opp</span>
         )}
@@ -559,14 +553,24 @@ function StashListRow({ row, busy, error, assignedOpen, confirmingDelete, yarn, 
           <button onClick={onRequestDelete} title="Slett" className="text-xs text-stone-300 hover:text-red-500">✕</button>
         )}
       </div>
-      {assignedOpen && row.project_id && (
-        <div className="ml-11 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-stone-700 flex flex-wrap items-center gap-x-3 gap-y-1">
+      {assignedOpen && row.project_id && !editing && (
+        <div data-assigned-panel className="ml-11 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-stone-700 flex flex-wrap items-center gap-x-3 gap-y-1">
           <span>
-            Tildelt <span className="font-medium">{row.strikk_project?.name || 'et prosjekt'}</span>
+            {row.project_skeins != null ? skeinsText(projectSkeins(row)) : 'Hele raden'}{' '}
+            er tilknyttet{' '}
+            <span className="font-medium">{row.strikk_project?.name || 'et prosjekt'}</span>
             {row.strikk_project && STATUS_LABEL[row.strikk_project.status as ProjectStatus] && ` (${STATUS_LABEL[row.strikk_project.status as ProjectStatus].toLowerCase()})`}
+            {row.project_skeins != null && ` · ${skeinsText(freeSkeins(row))} ledige`}
           </span>
           <a href={`/strikk/prosjekt/${row.project_id}`} className="text-[#2E5339] underline">Åpne prosjektet</a>
+          <button onClick={() => setEditing(true)} className="text-stone-600 underline">Endre</button>
           <button disabled={busy} onClick={onUnassign} className="text-stone-600 underline disabled:opacity-50">Fjern tildeling</button>
+        </div>
+      )}
+      {((assignedOpen && !row.project_id) || editing) && (
+        <div className="ml-11">
+          <StashRowEditor row={row} onClose={() => { setEditing(false); if (!row.project_id) onToggleAssigned() }}
+            onSaved={saved => { setEditing(false); onSaved(saved) }} />
         </div>
       )}
       {error && <p className="text-xs text-red-600 pl-11">{error}</p>}

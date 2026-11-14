@@ -9,7 +9,8 @@ const supabaseAdmin = createClient(
 interface LeftoverInput { stash_id: unknown; skein_count: unknown; leftover_g: unknown }
 
 // Fullfører et prosjekt: garnet som var tildelt det (strikk_yarn_stash.project_id) er brukt
-// opp og blir ikke stående i prosjektet lenger, men restegarn Maria oppgir legges tilbake i
+// opp og blir ikke stående i prosjektet lenger (var bare noen av nøstene satt av, blir resten
+// ledig i lageret), men restegarn Maria oppgir legges tilbake i
 // Garnlageret som nye, godkjente rader — samme garn og farge, tilbake til tildeling.
 export async function POST(req: NextRequest, ctx: RouteContext<'/api/strikk/projects/[id]/complete'>) {
   try {
@@ -40,6 +41,18 @@ export async function POST(req: NextRequest, ctx: RouteContext<'/api/strikk/proj
         source_images: [], note: `Rest fra ${project.name}`, status: 'godkjent', approved_at: now,
       })
       if (insErr) return NextResponse.json({ error: `Klarte ikke legge tilbake restegarn: ${insErr.message}` }, { status: 500 })
+    }
+
+    // A row only partly set aside for this project keeps its free skeins in the stash; the
+    // ones set aside are used. Before migration 029 there are no such rows.
+    const { data: partly, error: partErr } = await supabaseAdmin.from('strikk_yarn_stash')
+      .select('id, skein_count, project_skeins').eq('project_id', id).not('project_skeins', 'is', null)
+    if (partErr && partErr.code !== '42703') return NextResponse.json({ error: partErr.message }, { status: 500 })
+    for (const r of partly ?? []) {
+      const rest = Math.max(0, Number(r.skein_count) - Number(r.project_skeins))
+      const { error: upErr } = await supabaseAdmin.from('strikk_yarn_stash')
+        .update({ skein_count: rest, project_id: null, project_skeins: null, updated_at: new Date().toISOString() }).eq('id', r.id)
+      if (upErr) return NextResponse.json({ error: `Klarte ikke legge tilbake ledige nøster: ${upErr.message}` }, { status: 500 })
     }
 
     const { error } = await supabaseAdmin.from('strikk_project').update({ status: 'done', updated_at: new Date().toISOString() }).eq('id', id)

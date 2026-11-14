@@ -18,6 +18,8 @@ export interface StashData {
   leftover_g: number | null
   // Parti; migration 028. Missing from rows read before it was run.
   dye_lot?: string | null
+  // Skeins set aside for project_id, the rest being free; null = the whole row. Migration 029.
+  project_skeins?: number | null
   note: string | null
   uncertain_fields: string[]
   uncertain_reasons: Record<string, string>
@@ -44,6 +46,27 @@ export const STASH_SELECT =
 
 // The same with the dye lot (parti), once migration 028 has added the column.
 export const STASH_SELECT_WITH_LOT = STASH_SELECT.replace('note, ', 'note, dye_lot, ')
+// And with the skeins set aside for the project (migration 029).
+export const STASH_SELECT_FULL = STASH_SELECT_WITH_LOT.replace('project_id, ', 'project_id, project_skeins, ')
+// Tried in turn until one works, so the stash still loads before migrations 028/029 are run.
+export const STASH_SELECTS = [STASH_SELECT_FULL, STASH_SELECT_WITH_LOT, STASH_SELECT]
+
+type SkeinRow = Pick<StashRow, 'skein_count' | 'project_id'> & { project_skeins?: number | null }
+
+// Skeins of a row that belong to its project, and the ones still free.
+export function projectSkeins(row: SkeinRow): number {
+  if (!row.project_id) return 0
+  return row.project_skeins ?? row.skein_count
+}
+export function freeSkeins(row: SkeinRow): number {
+  return Math.max(0, row.skein_count - projectSkeins(row))
+}
+
+// «3 nøster er tilknyttet …» for the ✱ panel and the project.
+export function skeinsText(n: number): string {
+  const v = String(n).replace('.', ',')
+  return `${v} nøste${n === 1 ? '' : 'r'}`
+}
 
 // PostgREST's code for a column that does not exist (yet).
 export const MISSING_COLUMN = '42703'

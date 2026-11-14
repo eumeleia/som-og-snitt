@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { FINDING_SCHEMA, mergeStashData, normalizeFinding, stashStatus, stashThumbnailUrl } from './stash'
+import { FINDING_SCHEMA, freeSkeins, mergeStashData, normalizeFinding, projectSkeins, skeinsText, stashStatus, stashThumbnailUrl } from './stash'
 import { schemaErrors } from './extraction'
 
 describe('normalizeFinding', () => {
@@ -71,5 +71,17 @@ describe('stashThumbnailUrl', () => {
   it('is null without a path or a base URL', () => {
     expect(stashThumbnailUrl(null, 'https://x.supabase.co')).toBeNull()
     expect(stashThumbnailUrl('garnlager/abc.jpg', '')).toBeNull()
+  })
+})
+
+describe('skeins set aside for a project', () => {
+  it('splits a row into project skeins and free skeins without dividing it', () => {
+    expect(projectSkeins({ skein_count: 5, project_id: 'p', project_skeins: 3 })).toBe(3)
+    expect(freeSkeins({ skein_count: 5, project_id: 'p', project_skeins: 3 })).toBe(2)
+    expect(projectSkeins({ skein_count: 5, project_id: 'p', project_skeins: null })).toBe(5)
+    expect(freeSkeins({ skein_count: 5, project_id: 'p', project_skeins: null })).toBe(0)
+    expect(freeSkeins({ skein_count: 5, project_id: null })).toBe(5)
+    expect(skeinsText(1)).toBe('1 nøste')
+    expect(skeinsText(2.5)).toBe('2,5 nøster')
   })
 })

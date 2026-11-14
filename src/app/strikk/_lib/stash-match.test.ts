@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { ONE_SIZE, choicesText, matchRecipe, matchRecipes, mergeColours, rowMetres, sizeRangeText, type MatchRecipe, type MatchStashRow, type MatchYarn } from './stash-match'
+import { ONE_SIZE, choicesText, freePart, matchRecipe, matchRecipes, mergeColours, rowMetres, sizeRangeText, type MatchRecipe, type MatchStashRow, type MatchYarn } from './stash-match'
 import type { AmountData, ExtractionData, YarnLineData } from './extraction'
 
 const yarn = (id: string, name: string, meterage: number | null, weight: number | null, gauge: number | null, fibre = 'ull'): MatchYarn =>
@@ -160,5 +160,24 @@ describe('matchRecipes and the texts', () => {
     expect(sizeRangeText([0, 2, 3], labels)).toBe('1–3 mnd, 9 mnd til 1 år')
     expect(choicesText([row('merino', '1013', 1, { color_name: 'Hvit' }), row('merino', '2052', 1), row('sunday', '1', 1)], YARNS))
       .toBe('Tynn Merinoull 1013 Hvit eller 2052 eller Sunday 1')
+  })
+})
+
+describe('yarn set aside for a project', () => {
+  // 150 g of Tynn Merinoull for the main colour = 3 skeins of 50 g.
+  const one = () => recipe(['1 år'], [line('merino', 0)], [amount(0, 0, 150)])
+
+  it('counts only the free skeins of a row that is partly set aside', () => {
+    const partly = row('merino', '1', 5, { project_id: 'p', project_skeins: 3 })
+    expect(freePart(partly)?.skein_count).toBe(2)
+    expect(matchRecipe(one(), [partly], YARNS).groups).toHaveLength(0)
+    const enough = row('merino', '1', 6, { project_id: 'p', project_skeins: 3 })
+    expect(matchRecipe(one(), [enough], YARNS).groups).toHaveLength(1)
+  })
+
+  it('counts nothing of a row set aside as a whole, and all of a free row', () => {
+    expect(freePart(row('merino', '1', 5, { project_id: 'p', project_skeins: null }))).toBeNull()
+    expect(freePart(row('merino', '1', 5))?.skein_count).toBe(5)
+    expect(freePart(row('merino', '1', 5, { status: 'til_gjennomgang' }))).toBeNull()
   })
 })
