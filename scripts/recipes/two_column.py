@@ -4,9 +4,16 @@ fonts, styles and drawing code as the one-column original (oppskrifter/_work/scr
 build_pdf.py, which is not changed). The text is the same, word for word: only the layout
 differs.
 
-Layout: the cover and the pattern title run across the page; the spec table, headings and
-text flow in two columns, the left column first, balanced on the last page before anything
-that runs across the page. A table, chart, image or legend that is
+Layout:
+- page 1: the cover (title, photos, intro), as in the original;
+- page 2 (and 3 if needed): the title, the spec table (yarn, sizes, ...) and the text and
+  techniques before the pattern itself, in one column as in the original;
+- then, on a new page: the pattern itself in two columns, the left column first, balanced
+  before anything that runs across the page;
+- after the pattern (from the next page break in the source: abbreviations, tutorials,
+  charts, notes): one column again.
+Where the pattern itself starts is the heading in data["columns_from"], or COLUMNS_FROM
+below, or else the first block; it ends at data["columns_to"] or else the first page break. A table, chart, image or legend that is
 wider than a column breaks the columns and stands across the page at its original size.
 Nothing is scaled down.
 
@@ -40,6 +47,12 @@ COL_W = (CONTENT_W - GAP) / 2
 # The original stops content 10 mm above the bottom margin, where the footer rule is.
 FRAME_BOTTOM = MARGIN + 10 * mm
 TOP = base.PAGE_H - MARGIN
+
+# Patterns whose body starts with general text and techniques before the pattern itself.
+COLUMNS_FROM = {
+    "charlotte-jacket-mini": "Pattern",
+    "butterscotch-sweater-adult": "Pattern",
+}
 
 HEADING = copy.copy(base.STYLE_HEADING)
 HEADING.keepWithNext = 1
@@ -248,9 +261,9 @@ class Story:
         for f in moved + list(fs):
             self.segments.append(("break",) if f is PAGEBREAK else ("full", f))
 
-    def drawing(self, f, caption=None):
+    def drawing(self, f, caption=None, in_pattern=True):
         cap = [Paragraph(caption, base.STYLE_NOTE)] if caption else []
-        if fits_column(f):
+        if in_pattern and fits_column(f):
             self.col(f, *cap)
         else:
             self.full(f, *cap)
@@ -382,7 +395,22 @@ class Layout:
             return
 
 
-def build(data, out_path):
+def pattern_range(data, key):
+    """Indices [start, end) of the body blocks that are the pattern itself."""
+    body = data["body"]
+    heading = data.get("columns_from") or COLUMNS_FROM.get(key)
+    start = 0
+    if heading:
+        start = next(i for i, b in enumerate(body) if b["kind"] == "heading" and b["text"] == heading)
+    end_heading = data.get("columns_to")
+    if end_heading:
+        end = next(i for i, b in enumerate(body) if i > start and b["kind"] == "heading" and b["text"] == end_heading)
+    else:
+        end = next((i for i, b in enumerate(body) if i > start and b["kind"] == "pagebreak"), len(body))
+    return start, end
+
+
+def build(data, out_path, key=None):
     s = Story()
 
     # ---------- Cover (across the page) ----------
@@ -405,28 +433,33 @@ def build(data, out_path):
         s.full(Paragraph(para, base.STYLE_INTRO))
     s.full(PAGEBREAK)
 
-    # ---------- Title across, spec and body in columns ----------
+    # ---------- Info page: title, spec and what comes before the pattern, one column ----------
     s.full(Paragraph(f"<b>{data['title']}</b>", base.STYLE_HEADING))
-    s.col(spec_table(data["spec"], COL_W))
+    s.full(spec_table(data["spec"], CONTENT_W))
     if data.get("spec_note"):
-        s.col(Rule(3, 4), Paragraph(data["spec_note"], base.STYLE_NOTE))
+        s.full(Rule(3, 4), Paragraph(data["spec_note"], base.STYLE_NOTE))
 
-    for block in data["body"]:
+    start, end = pattern_range(data, key)
+    for i, block in enumerate(data["body"]):
+        if i == start:
+            # The pattern itself always starts at the top of a new page.
+            s.full(PAGEBREAK)
+        text = s.col if start <= i < end else s.full
         kind = block["kind"]
         if kind == "heading":
-            s.col(Paragraph(f"<b>{block['text']}</b>", HEADING))
+            text(Paragraph(f"<b>{block['text']}</b>", HEADING))
         elif kind == "para":
-            s.col(Paragraph(block["text"], base.STYLE_PARA))
+            text(Paragraph(block["text"], base.STYLE_PARA))
         elif kind == "step":
-            s.col(Paragraph(f"<b>{block['label']}</b> {block['text']}", base.STYLE_STEP))
+            text(Paragraph(f"<b>{block['label']}</b> {block['text']}", base.STYLE_STEP))
         elif kind == "rule":
-            s.col(Rule())
+            text(Rule())
         elif kind == "image":
-            s.drawing(Picture(block["path"], block.get("max_h", 150 * mm)), block.get("caption"))
+            s.drawing(Picture(block["path"], block.get("max_h", 150 * mm)), block.get("caption"), start <= i < end)
         elif kind == "diagram":
-            s.drawing(Diagram(block), block.get("caption"))
+            s.drawing(Diagram(block), block.get("caption"), start <= i < end)
         elif kind == "legend":
-            s.drawing(Legend(block["entries"]))
+            s.drawing(Legend(block["entries"]), None, start <= i < end)
         elif kind == "side_by_side":
             s.full(SideBySide(block))
         elif kind == "pagebreak":
@@ -443,7 +476,7 @@ def build(data, out_path):
     if data.get("notes"):
         s.full(PAGEBREAK, Paragraph("<b>Merknader ved avskrift</b>", base.STYLE_HEADING))
         for i, n in enumerate(data["notes"]):
-            s.col(*note_box(i, n, COL_W))
+            s.full(*note_box(i, n, CONTENT_W))
 
     # ---------- Appendix: original chart photos, across the page ----------
     if data.get("appendix_images"):
@@ -499,5 +532,5 @@ if __name__ == "__main__":
     data = base.load_data(sys.argv[1])
     out = sys.argv[2] if len(sys.argv) > 2 else os.path.join(OUT_DIR, os.path.basename(data["out_path"]))
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    build(data, out)
+    build(data, out, key=os.path.basename(os.path.dirname(os.path.abspath(sys.argv[1]))))
     print("wrote", out)

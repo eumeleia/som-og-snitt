@@ -21,7 +21,8 @@ bøkene er upålitelig — brøker som ½ og ¼ leses ofte feil. Gjett aldri på
 
 ## Oppskrifter Claude lager eller finjusterer
 
-Alltid A4 med to tekstspalter. Følg `docs/oppskrift-oppsett.md` (bygges med
+A4: forside, info om garn og størrelser (og teknikker) på egen side i én spalte, og selve
+oppskriften i to spalter fra ny side. Følg `docs/oppskrift-oppsett.md` (bygges med
 `scripts/recipes/two_column.py`, tekst ord for ord, tabeller og diagrammer hele).
 
 ## Strikk: lese inn oppskrifter
