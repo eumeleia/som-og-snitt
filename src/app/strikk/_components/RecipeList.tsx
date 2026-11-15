@@ -14,6 +14,8 @@ import DriveExpired from './DriveExpired'
 import { scheduleOverviewRefresh } from '../_lib/overview-client'
 import { spellingKey } from '../_lib/yarns'
 import { FilterBar, FilterSheet, HitInfo, filterCount, useFilterData, useStoredFilter } from './RecipeFilters'
+import { FolderBar, FolderSheet, RecipeFolderPicker, WishList, useFolderData } from './RecipeFolders'
+import { inFolder, membership, type FolderKey, type FolderRecipe } from '../_lib/folders'
 
 type ListState =
   | { kind: 'loading' }
@@ -68,6 +70,9 @@ export default function RecipeList() {
   const [newRecipes, setNewRecipes] = useState<KnitRecipe[] | null>(null)
   const [filterData, onYarnUpdated] = useFilterData(loadAttempt + filterReload)
   const [filter, setFilter] = useStoredFilter()
+  const [folderData, updateFolders] = useFolderData(loadAttempt)
+  const [folder, setFolder] = useState<FolderKey>('all')
+  const [folderSheet, setFolderSheet] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
   const recipesRef = useRef<KnitRecipe[]>([])
 
@@ -211,6 +216,21 @@ export default function RecipeList() {
     return { items, unread }
   }, [list, filterData, filter])
 
+  // Garment type and audience from the filter data, favourite as it is now in the list.
+  const folderRecipes = useMemo<FolderRecipe[]>(() => {
+    if (list.kind !== 'ready') return []
+    const garment = new Map(filterData.kind === 'ready' ? filterData.recipes.map(r => [r.id, r.garment_type]) : [])
+    return list.recipes.map(r => ({ id: r.id, garment_type: garment.get(r.id) ?? null, audience: r.audience, favorite: r.favorite }))
+  }, [list, filterData])
+
+  const shownItems = useMemo(() => {
+    if (!view) return null
+    if (folder === 'all') return view.items
+    const members = folderData.kind === 'ready' ? membership(folderData.links) : new Map<string, Set<string>>()
+    const byId = new Map(folderRecipes.map(r => [r.id, r]))
+    return view.items.filter(it => { const r = byId.get(it.recipe.id); return !!r && inFolder(folder, r, members) })
+  }, [view, folder, folderData, folderRecipes])
+
   const failed = results?.filter(r => r.status === 'failed') ?? []
   const count = (s: UploadResult<KnitRecipe>['status']) => results?.filter(r => r.status === s).length ?? 0
 
@@ -321,19 +341,23 @@ export default function RecipeList() {
           </p>
         </details>
       )}
-      {list.kind === 'ready' && list.recipes.length > 0 && filterData.kind === 'ready' && view && (
-        <FilterBar filter={filter} onChange={setFilter} yarns={filterData.yarns} shown={view.items.length}
+      {list.kind === 'ready' && list.recipes.length > 0 && (
+        <FolderBar current={folder} onChange={setFolder} recipes={folderRecipes} data={folderData} onOpenSheet={() => setFolderSheet(true)} />
+      )}
+      {list.kind === 'ready' && folder === 'wish' && <WishList data={folderData} recipes={list.recipes} update={updateFolders} />}
+      {folder !== 'wish' && list.kind === 'ready' && list.recipes.length > 0 && filterData.kind === 'ready' && view && shownItems && (
+        <FilterBar filter={filter} onChange={setFilter} yarns={filterData.yarns} shown={shownItems.length}
           total={list.recipes.length} unread={view.unread} onOpen={() => setFiltersOpen(true)} />
       )}
       {list.kind === 'ready' && filterData.kind === 'error' && (
         <p className="text-sm text-amber-800 break-words">Filtrene er ikke tilgjengelige: {filterData.text}</p>
       )}
-      {list.kind === 'ready' && list.recipes.length > 0 && view && view.items.length === 0 && (
-        <p className="text-sm text-stone-500">Ingen oppskrifter passer filtrene.</p>
+      {folder !== 'wish' && list.kind === 'ready' && list.recipes.length > 0 && shownItems && shownItems.length === 0 && (
+        <p className="text-sm text-stone-500">{folder === 'all' ? 'Ingen oppskrifter passer filtrene.' : 'Ingen oppskrifter i denne mappa.'}</p>
       )}
-      {list.kind === 'ready' && view && view.items.length > 0 && (
+      {folder !== 'wish' && list.kind === 'ready' && shownItems && shownItems.length > 0 && (
         <ul className="flex flex-col divide-y divide-stone-200 rounded-2xl border border-stone-200 bg-white overflow-hidden">
-          {view.items.map(({ recipe: r, result }) => {
+          {shownItems.map(({ recipe: r, result }) => {
             const elsewhere = visibleIds !== null && !visibleIds.has(r.drive_file_id)
             return (
               <li key={r.id} className="flex items-center">
@@ -404,8 +428,13 @@ export default function RecipeList() {
         return r ? <RatingSheet recipe={r} onChange={patch => void changeRating(r, patch)} onClose={() => setRating(null)} /> : null
       })()}
 
+      {folderSheet && (
+        <FolderSheet current={folder} onChange={setFolder} recipes={folderRecipes} data={folderData} update={updateFolders} onClose={() => setFolderSheet(false)} />
+      )}
+
       {editing && (
         <EditSheet
+          folders={<RecipeFolderPicker recipeId={editing.id} data={folderData} update={updateFolders} />}
           recipe={editing}
           onClose={() => setEditing(null)}
           onSaved={saved => { replace(rs => rs.map(r => (r.id === saved.id ? saved : r))); setEditing(null); setFilterReload(n => n + 1) }}
@@ -429,8 +458,9 @@ function Thumbnail({ recipe }: { recipe: KnitRecipe }) {
   )
 }
 
-function EditSheet({ recipe, onClose, onSaved, onDeleted }: {
+function EditSheet({ recipe, folders, onClose, onSaved, onDeleted }: {
   recipe: KnitRecipe
+  folders?: React.ReactNode
   onClose: () => void
   onSaved: (r: KnitRecipe) => void
   onDeleted: (id: string) => void
@@ -481,7 +511,7 @@ function EditSheet({ recipe, onClose, onSaved, onDeleted }: {
       <form
         onClick={e => e.stopPropagation()}
         onSubmit={e => { e.preventDefault(); if (title.trim()) void save() }}
-        className="w-full sm:max-w-md bg-[#FAF7F4] rounded-t-2xl sm:rounded-2xl p-4 flex flex-col gap-3"
+        className="w-full sm:max-w-md max-h-[90dvh] overflow-y-auto overscroll-contain bg-[#FAF7F4] rounded-t-2xl sm:rounded-2xl p-4 flex flex-col gap-3"
         style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 16px)' }}
       >
         <div className="font-serif text-xl text-stone-800">Rediger oppskrift</div>
@@ -496,6 +526,7 @@ function EditSheet({ recipe, onClose, onSaved, onDeleted }: {
             className="h-11 px-3 rounded-lg border border-stone-300 bg-white text-base text-stone-900" />
         </label>
         <AudienceSelect value={audience} onChange={setAudience} />
+        {folders}
         <p className="text-xs text-stone-500 break-words">Fil: {recipe.file_name}</p>
         {error && <p className="text-sm text-red-700 break-words">{error}</p>}
         <div className="flex gap-2">
