@@ -560,7 +560,7 @@ function StashListRow({ row, busy, error, assignedOpen, confirmingDelete, yarn, 
             er tilknyttet{' '}
             <span className="font-medium">{row.strikk_project?.name || 'et prosjekt'}</span>
             {row.strikk_project && STATUS_LABEL[row.strikk_project.status as ProjectStatus] && ` (${STATUS_LABEL[row.strikk_project.status as ProjectStatus].toLowerCase()})`}
-            {row.project_skeins != null && ` · ${skeinsText(freeSkeins(row))} ledige`}
+            {row.project_skeins != null && ` · ${skeinsText(freeSkeins(row))} ${freeSkeins(row) === 1 ? 'ledig' : 'ledige'}`}
           </span>
           <a href={`/strikk/prosjekt/${row.project_id}`} className="text-[#2E5339] underline">Åpne prosjektet</a>
           <button onClick={() => setEditing(true)} className="text-stone-600 underline">Endre</button>

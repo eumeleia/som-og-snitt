@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { STATUS_LABEL, type ProjectStatus } from '../_lib/projects'
-import type { StashRow } from '../_lib/stash'
+import { skeinsText, type StashRow } from '../_lib/stash'
 
 interface ProjectOption { id: string; name: string; status: ProjectStatus }
 
@@ -100,7 +100,7 @@ export default function StashRowEditor({ row, onSaved, onClose }: {
         <label className="text-xs text-stone-500">Nøster til prosjektet
           <input className={input} inputMode="decimal" value={forProject} onChange={e => setForProject(e.target.value)} />
           {total !== null && part !== null && part < total && (
-            <span className="block mt-0.5 text-stone-500">{String(total - part).replace('.', ',')} blir ledige i lageret.</span>
+            <span className="block mt-0.5 text-stone-500">{skeinsText(total - part)} blir {total - part === 1 ? 'ledig' : 'ledige'} i lageret.</span>
           )}
         </label>
       )}
