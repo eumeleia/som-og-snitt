@@ -17,7 +17,7 @@ import StashRowEditor from './StashRowEditor'
 
 const TABS = ['lager', 'strikke', 'alternativ'] as const
 type Tab = typeof TABS[number]
-const TAB_LABEL: Record<Tab, string> = { lager: 'Lager', strikke: 'Hva vil du strikke nå', alternativ: 'Finn alternativt garn' }
+const TAB_LABEL: Record<Tab, string> = { lager: 'Lager', strikke: 'Hva vil du strikke nå', alternativ: 'Alternativt garn' }
 
 const SORTS = ['navn', 'mengde', 'nylig'] as const
 type Sort = typeof SORTS[number]
@@ -312,6 +312,7 @@ export default function GarnlagerList() {
     const leftover = row.leftover_g && y.skein_weight_g ? (row.leftover_g / y.skein_weight_g) * y.meterage_m : 0
     return row.skein_count * y.meterage_m + leftover
   }
+  const activeMore = [fiberFilter, gaugeMin || gaugeMax, onlyLeftover, onlyFavorite].filter(Boolean).length
   const approvedGrouped = sort === 'navn' ? groupApproved(visibleApproved) : null
   const approvedFlat = sort === 'navn' ? null : [...visibleApproved].sort((a, b) =>
     sort === 'nylig' ? b.created_at.localeCompare(a.created_at) : metersOf(b) - metersOf(a))
@@ -328,18 +329,13 @@ export default function GarnlagerList() {
   })
 
   return (
-    <div className="max-w-6xl mx-auto px-4 sm:px-8 py-6 flex flex-col gap-6">
-      <div>
-        <h1 className="font-serif text-2xl text-stone-800">Garnlager</h1>
-        <p className="text-sm text-stone-600 mt-1">
-          Registrert fra bilder: se <code>docs/garnlager-registrering.md</code>.
-        </p>
-      </div>
+    <div className="max-w-6xl mx-auto px-3 sm:px-8 py-4 sm:py-6 flex flex-col gap-4 sm:gap-6">
+      <h1 className="font-serif text-2xl text-stone-800">Garnlager</h1>
 
       <nav className="flex gap-1 overflow-x-auto border-b border-stone-200" aria-label="Garnlager">
         {TABS.map(t => (
           <button key={t} onClick={() => setTab(t)} aria-current={tab === t ? 'page' : undefined}
-            className={`shrink-0 px-3 py-2.5 text-sm whitespace-nowrap border-b-2 -mb-px transition-colors ${
+            className={`shrink-0 px-2 sm:px-3 py-2.5 text-sm whitespace-nowrap border-b-2 -mb-px transition-colors ${
               tab === t ? 'border-[#8B6340] text-stone-800 font-medium' : 'border-transparent text-stone-500 hover:text-stone-700'
             }`}>
             {TAB_LABEL[t]}
@@ -348,7 +344,7 @@ export default function GarnlagerList() {
       </nav>
 
       {tab === 'lager' && (
-        <div className="flex flex-col gap-6">
+        <div className="flex flex-col gap-4 sm:gap-6">
           {addOpen ? (
             <AddStashForm yarns={yarns} onClose={() => setAddOpen(false)}
               onAdded={(row, yarn, warning) => {
@@ -399,6 +395,13 @@ export default function GarnlagerList() {
                   {LAGER_STATUS_LABEL[s]}
                 </button>
               ))}
+            </div>
+            {/* Fibre, gauge, leftovers and favourites: used now and then, so behind a tap. */}
+            <details className="text-sm">
+              <summary className="cursor-pointer text-xs text-stone-500 select-none">
+                Flere filtre{activeMore > 0 ? ` (${activeMore} på)` : ''}
+              </summary>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
               <select value={fiberFilter} onChange={e => setFiberFilter(e.target.value)} className="px-2 py-1.5 rounded-lg border border-stone-200 bg-white text-xs">
                 <option value="">Alle fiber</option>
                 {fiberOptions.map(f => <option key={f} value={f}>{f}</option>)}
@@ -413,7 +416,8 @@ export default function GarnlagerList() {
               <label className="flex items-center gap-1.5 text-xs text-stone-600">
                 <input type="checkbox" checked={onlyFavorite} onChange={e => setOnlyFavorite(e.target.checked)} /> Bare favoritter
               </label>
-            </div>
+              </div>
+            </details>
 
             <h2 className="font-serif text-lg text-stone-700 mt-1">Godkjent garn ({visibleApproved.length} av {approved.length})</h2>
             {visibleApproved.length === 0 && <p className="text-sm text-stone-400">Ingen garn matcher.</p>}
@@ -421,19 +425,30 @@ export default function GarnlagerList() {
             {approvedGrouped && approvedGrouped.map(([brand, byName]) => (
               <div key={brand} className="flex flex-col gap-2">
                 <h3 className="text-sm font-semibold uppercase tracking-wide text-stone-500">{brand}</h3>
-                {byName.map(([name, colorRows]) => (
-                  <div key={name} className="rounded-xl border border-stone-200 bg-white px-4 py-3">
-                    <div className="text-base text-stone-800">{name}</div>
-                    <ul className="mt-1 flex flex-col gap-1">
-                      {colorRows.map(row => <StashListRow key={row.id} {...rowProps(row)} />)}
-                    </ul>
-                  </div>
-                ))}
+                {byName.map(([name, colorRows]) => {
+                  // Favourite and price belong to the yarn, so they stand once, by its name.
+                  const y = colorRows[0].yarn_id ? yarnById.get(colorRows[0].yarn_id) : undefined
+                  const oneYarn = !!y && colorRows.every(r => r.yarn_id === y.id)
+                  return (
+                    <div key={name} className="rounded-xl border border-stone-200 bg-white px-3 sm:px-4 py-2.5 sm:py-3">
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 min-w-0 text-base text-stone-800 truncate">{name}</div>
+                        {oneYarn && (
+                          <YarnFavoriteStar yarnId={y.id} favorite={y.favorite} pricePerSkein={y.price_per_skein}
+                            onChange={patch => onYarnUpdated(y.id, patch)} />
+                        )}
+                      </div>
+                      <ul className="mt-1 flex flex-col gap-1">
+                        {colorRows.map(row => <StashListRow key={row.id} {...rowProps(row)} hideYarnControls={oneYarn} />)}
+                      </ul>
+                    </div>
+                  )
+                })}
               </div>
             ))}
 
             {approvedFlat && (
-              <div className="rounded-xl border border-stone-200 bg-white px-4 py-3">
+              <div className="rounded-xl border border-stone-200 bg-white px-3 sm:px-4 py-2.5 sm:py-3">
                 <ul className="flex flex-col gap-1">
                   {approvedFlat.map(row => <StashListRow key={row.id} {...rowProps(row)} showYarn />)}
                 </ul>
@@ -446,7 +461,7 @@ export default function GarnlagerList() {
       )}
 
       {tab === 'strikke' && (
-        <div className="rounded-2xl border border-[#D4A574] bg-[#F5EFE6] px-4 py-4 max-w-2xl">
+        <div className="sm:rounded-2xl sm:border sm:border-[#D4A574] sm:bg-[#F5EFE6] sm:px-4 sm:py-4 max-w-2xl">
           {library && 'error' in library && <p className="text-sm text-red-700 mt-2 break-words">Kunne ikke hente oppskriftene: {library.error}</p>}
           {matches === null && !(library && 'error' in library) && <p className="text-sm text-stone-500 mt-2">Ser gjennom oppskriftene …</p>}
           {matches && matches.length > 0 && sizeOptions.length > 0 && (
@@ -495,7 +510,7 @@ export default function GarnlagerList() {
 
 // En rad i «Godkjent garn»: bildet, tildelings-stjernen (åpner hvilket prosjekt og lar
 // Maria fjerne tildelingen), mengde, favoritt/pris på garnet, og angre/slett.
-function StashListRow({ row, busy, error, assignedOpen, confirmingDelete, yarn, showYarn, onToggleAssigned, onUnassign, onUnapprove, onRequestDelete, onCancelDelete, onDelete, onThumbnail, onYarnUpdated, onSaved }: {
+function StashListRow({ row, busy, error, assignedOpen, confirmingDelete, yarn, showYarn, hideYarnControls, onToggleAssigned, onUnassign, onUnapprove, onRequestDelete, onCancelDelete, onDelete, onThumbnail, onYarnUpdated, onSaved }: {
   row: StashRow
   busy: boolean
   error?: string
@@ -503,6 +518,8 @@ function StashListRow({ row, busy, error, assignedOpen, confirmingDelete, yarn, 
   confirmingDelete: boolean
   yarn?: YarnRow
   showYarn?: boolean
+  // The yarn's favourite and price are shown once by its name instead.
+  hideYarnControls?: boolean
   onToggleAssigned: () => void
   onUnassign: () => void
   onUnapprove: () => void
@@ -533,12 +550,12 @@ function StashListRow({ row, busy, error, assignedOpen, confirmingDelete, yarn, 
         {notLookedUp && (
           <span title="Fiber, løpelengde og strikkefasthet er ikke slått opp ennå" className="shrink-0 text-[11px] rounded-full bg-stone-100 text-stone-600 px-2 py-0.5">Ikke slått opp</span>
         )}
-        <span className="font-medium text-stone-800">
+        <span className="font-medium text-stone-800 whitespace-nowrap">
           {row.skein_count > 0 && `${row.skein_count} nøste${row.skein_count === 1 ? '' : 'r'}`}
           {row.skein_count > 0 && row.leftover_g ? ' + ' : ''}
           {row.leftover_g ? `rest ~${row.leftover_g} g` : ''}
         </span>
-        {yarn && (
+        {yarn && !hideYarnControls && (
           <YarnFavoriteStar yarnId={yarn.id} favorite={yarn.favorite} pricePerSkein={yarn.price_per_skein}
             onChange={patch => onYarnUpdated(yarn.id, patch)} />
         )}

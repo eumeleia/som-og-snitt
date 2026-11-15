@@ -215,13 +215,13 @@ export default function RecipeList() {
   const count = (s: UploadResult<KnitRecipe>['status']) => results?.filter(r => r.status === s).length ?? 0
 
   return (
-    <div className="max-w-3xl mx-auto px-4 sm:px-8 py-6 flex flex-col gap-4">
+    <div className="max-w-3xl mx-auto px-3 sm:px-8 py-4 sm:py-6 flex flex-col gap-3 sm:gap-4">
       <div className="flex items-center justify-between gap-3">
         <h1 className="font-serif text-2xl text-stone-800">Oppskrifter</h1>
         <button
           onClick={() => fileInput.current?.click()}
           disabled={running || connection.kind !== 'connected'}
-          className="h-11 px-4 rounded-xl bg-[#2E5339] text-white text-sm disabled:opacity-50 shrink-0"
+          className="h-10 sm:h-11 px-3 sm:px-4 rounded-xl bg-[#2E5339] text-white text-sm disabled:opacity-50 shrink-0"
         >
           Last opp PDF
         </button>
@@ -236,7 +236,7 @@ export default function RecipeList() {
       )}
       {connection.kind === 'disconnected' && <DriveExpired />}
       {connection.kind === 'connected' && connection.email && (
-        <p className="text-xs text-stone-500">Disk: {connection.email}</p>
+        <p className="hidden sm:block text-xs text-stone-500">Disk: {connection.email}</p>
       )}
 
       {running && progress && (
@@ -306,17 +306,20 @@ export default function RecipeList() {
       {list.kind === 'ready' && list.recipes.length === 0 && (
         <p className="text-sm text-stone-500">Ingen strikkeoppskrifter ennå. Last opp en PDF for å begynne.</p>
       )}
-      {list.kind === 'ready' && list.recipes.some(waitsForClaudeCode) && (
-        <p className="text-sm rounded-xl p-3 bg-amber-50 text-amber-900">
-          {list.recipes.filter(waitsForClaudeCode).length} oppskrifter venter på Claude Code. Si «les inn nye
-          strikkeoppskrifter» til Claude Code, så blir de lest inn, kontrollert og godkjent.
-        </p>
-      )}
-      {list.kind === 'ready' && list.recipes.some(needsMaria) && (
-        <p className="text-sm rounded-xl p-3 bg-stone-100 text-stone-800">
-          {list.recipes.filter(needsMaria).length} oppskrifter er kontrollert, men har noe uklart i selve oppskriften.
-          Se grunnen under <Link href="/strikk/gjennomgang" className="underline">Gjennomgang</Link>.
-        </p>
+      {/* One short line; what to do about it is behind a tap. */}
+      {list.kind === 'ready' && (list.recipes.some(waitsForClaudeCode) || list.recipes.some(needsMaria)) && (
+        <details className="text-sm rounded-xl px-3 py-2 bg-amber-50 text-amber-900">
+          <summary className="cursor-pointer">
+            {[
+              list.recipes.some(waitsForClaudeCode) && `${list.recipes.filter(waitsForClaudeCode).length} venter på Claude Code`,
+              list.recipes.some(needsMaria) && `${list.recipes.filter(needsMaria).length} trenger deg`,
+            ].filter(Boolean).join(' · ')}
+          </summary>
+          <p className="mt-1 text-stone-700">
+            Si «les inn nye strikkeoppskrifter» til Claude Code, så blir de lest inn, kontrollert og godkjent.
+            {list.recipes.some(needsMaria) && <> Det som trenger deg, står under <Link href="/strikk/gjennomgang" className="underline">Gjennomgang</Link>.</>}
+          </p>
+        </details>
       )}
       {list.kind === 'ready' && list.recipes.length > 0 && filterData.kind === 'ready' && view && (
         <FilterBar filter={filter} onChange={setFilter} yarns={filterData.yarns} shown={view.items.length}
@@ -348,7 +351,7 @@ export default function RecipeList() {
                       <div className="text-sm text-stone-500 truncate">{[r.designer, r.audience && AUDIENCE_LABEL[r.audience]].filter(Boolean).join(' · ')}</div>
                     )}
                     {waitsForClaudeCode(r) && (
-                      <span className="inline-block mt-1 text-xs rounded-full bg-amber-100 text-amber-900 px-2 py-0.5">Venter på Claude Code</span>
+                      <span className="inline-block mt-1 text-[11px] whitespace-nowrap rounded-full bg-amber-100 text-amber-900 px-2 py-0.5">Venter på Claude Code</span>
                     )}
                     {needsMaria(r) && (
                       <span className="inline-block mt-1 text-xs rounded-full bg-stone-200 text-stone-800 px-2 py-0.5">Trenger deg</span>
@@ -369,7 +372,7 @@ export default function RecipeList() {
                   <button
                     onClick={() => setEditing(r)}
                     aria-label={`Rediger ${r.title}`}
-                    className="w-12 h-12 flex items-center justify-center text-stone-500 shrink-0"
+                    className="w-10 sm:w-12 h-12 flex items-center justify-center text-stone-500 shrink-0"
                   >
                     <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor">
                       <circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" />

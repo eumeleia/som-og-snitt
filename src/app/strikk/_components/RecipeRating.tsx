@@ -36,7 +36,7 @@ export function HeartIcon({ filled, className = 'w-6 h-6' }: { filled: boolean; 
 export function FavoriteButton({ on, title, onToggle, className = '' }: { on: boolean; title: string; onToggle: () => void; className?: string }) {
   return (
     <button type="button" onClick={onToggle} aria-pressed={on} aria-label={on ? `Fjern ${title} fra favoritter` : `Merk ${title} som favoritt`}
-      className={`w-11 h-11 flex items-center justify-center text-stone-400 shrink-0 ${className}`}>
+      className={`w-9 sm:w-11 h-11 flex items-center justify-center text-stone-400 shrink-0 ${className}`}>
       <HeartIcon filled={on} />
     </button>
   )
@@ -46,7 +46,7 @@ export function FavoriteButton({ on, title, onToggle, className = '' }: { on: bo
 export function RatingBadge({ rating, title, onOpen }: { rating: number | null; title: string; onOpen: () => void }) {
   return (
     <button type="button" onClick={onOpen} aria-label={rating ? `${title}: ${rating} stjerner. Endre` : `Gi ${title} stjerner`}
-      className="h-11 min-w-11 px-1 flex items-center justify-center gap-0.5 text-stone-400 shrink-0">
+      className="h-11 min-w-9 sm:min-w-11 px-1 flex items-center justify-center gap-0.5 text-stone-400 shrink-0">
       <StarIcon filled={rating !== null} className="w-5 h-5" />
       {rating !== null && <span className="text-sm text-stone-700 tabular-nums">{rating}</span>}
     </button>

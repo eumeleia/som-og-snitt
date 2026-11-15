@@ -71,11 +71,11 @@ export default function ReviewList() {
   const shown = rows.filter(r => r.extraction_status === filter)
 
   return (
-    <div className="max-w-6xl mx-auto px-4 sm:px-8 py-6 flex flex-col gap-4">
+    <div className="max-w-6xl mx-auto px-3 sm:px-8 py-4 sm:py-6 flex flex-col gap-3 sm:gap-4">
       <h1 className="font-serif text-2xl text-stone-800">Gjennomgang</h1>
       <p className="text-sm text-stone-600">
-        Oppskrifter leses inn via Claude Code: be om å lese inn nye strikkeoppskrifter. De havner her som
-        «Til gjennomgang».{count('pending') + count('failed') > 0 && ` ${count('pending') + count('failed')} venter på å bli lest inn.`}
+        Oppskrifter Claude Code har lest inn, men som har noe uklart.
+        {count('pending') + count('failed') > 0 && ` ${count('pending') + count('failed')} venter på å bli lest inn.`}
       </p>
 
       <div className="flex gap-1 overflow-x-auto">

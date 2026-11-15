@@ -16,12 +16,6 @@ import type { KnitRecipe } from '../../_lib/recipes'
 import { coverUrl } from '../../_lib/cover'
 import { OfflineBadge, useOfflineReady } from '../../_components/OfflineReady'
 
-const STATUS_STYLE: Record<ProjectStatus, string> = {
-  planned: 'bg-amber-50 text-amber-700 border-amber-200',
-  in_progress: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-  done: 'bg-sky-50 text-sky-700 border-sky-200',
-}
-
 function statusFromQuery(v: string | null): ProjectStatus | null {
   return v && (STATUSES as readonly string[]).includes(v) ? v as ProjectStatus : null
 }
@@ -123,12 +117,12 @@ function ProjectsPageInner() {
   }
 
   return (
-    <div className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-4">
-      <div className="flex items-center justify-between gap-3 mb-4">
-        <div className="flex gap-1 bg-white rounded-xl p-1 border border-stone-200 shadow-sm overflow-x-auto">
+    <div className="w-full max-w-5xl mx-auto px-3 sm:px-6 py-3 sm:py-4">
+      <div className="flex items-center justify-between gap-2 sm:gap-3 mb-3 sm:mb-4">
+        <div className="flex min-w-0 gap-0.5 sm:gap-1 bg-white rounded-xl p-1 border border-stone-200 shadow-sm overflow-x-auto">
           {STATUSES.map(s => (
             <button key={s} onClick={() => setStatus(s)}
-              className={`px-3 py-1.5 rounded-lg text-sm whitespace-nowrap transition-colors ${
+              className={`px-2 sm:px-3 py-1.5 rounded-lg text-sm whitespace-nowrap transition-colors ${
                 status === s ? 'bg-stone-800 text-white shadow-sm' : 'text-stone-500 hover:text-stone-700'
               }`}>
               {STATUS_LABEL[s]}
@@ -137,8 +131,9 @@ function ProjectsPageInner() {
           ))}
         </div>
         <button onClick={() => setNewOpen(true)}
-          className="shrink-0 h-10 px-4 rounded-xl bg-[#2E5339] text-white text-sm font-medium">
-          Nytt prosjekt
+          aria-label="Nytt prosjekt"
+          className="shrink-0 h-10 px-3 sm:px-4 rounded-xl bg-[#2E5339] text-white text-sm font-medium">
+          <span className="sm:hidden">+ Ny</span><span className="hidden sm:inline">Nytt prosjekt</span>
         </button>
       </div>
 
@@ -207,10 +202,9 @@ function ProjectCard({ project, offline }: { project: ProjectListRow; offline: b
           <p className="text-xs text-stone-500 truncate mt-0.5">{project.strikk_oppskrift.title}</p>
         )}
         {project.size_label && <p className="text-xs text-stone-400 truncate">{project.size_label}</p>}
-        <span className={`inline-flex mt-2 items-center px-2 py-0.5 rounded border text-xs font-medium ${STATUS_STYLE[project.status]}`}>
-          {STATUS_LABEL[project.status]}
-        </span>
-        {offline && <OfflineBadge className="ml-1 align-middle" />}
+        {/* No status badge: the tab above already says which status these cards have. The
+            row keeps room for the «Oppskrift» button in the corner. */}
+        {(offline || project.oppskrift_id) && <div className="mt-2 h-8 flex items-center">{offline && <OfflineBadge />}</div>}
       </Link>
       {/* Straight to the recipe in the project, next to the status. A sibling of the card
           link, since one link cannot hold another. */}

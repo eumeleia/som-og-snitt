@@ -21,49 +21,60 @@ interface NavSection {
   label: string
   icon: IconName
   href?: string
+  exact?: boolean
   children?: NavLeaf[]
 }
 
-// Rekkefølge og struktur følger _prosjekter.png (presedens), med Broderi/Teknikker/
-// Prosjekter-undermenyene avklart mot sidemenu1/sidemenu2 og brukeren direkte:
-// Teknikker er flat (prosjekter.png sitt "Teknikker"-underpunkt er en tegnefeil),
-// Prosjekter har en undermeny (kun vist i sidemenu2, men bekreftet ønsket av brukeren),
-// og Broderi har tre underpunkter inkludert Bilde til broderi (bekreftet).
-const MENU: NavSection[] = [
-  { label: 'Hjem', icon: 'home', href: '/dashboard' },
-  { label: 'Oppskrifter', icon: 'book', href: '/dashboard/recipes' },
+// Hjem øverst (under «Festet»), så tre grupper: Sy, Strikk og Broderi. Prosjekter og Lager
+// i Sy har egne undermenyer (status og kategori styres via søkestrengen).
+const HOME: NavSection = { label: 'Hjem', icon: 'home', href: '/dashboard' }
+
+const STRIKK_ICONS: Record<string, IconName> = {
+  '/strikk/oppskrifter': 'book', '/strikk/prosjekter': 'folder', '/strikk/garnlager': 'yarn', '/strikk/gjennomgang': 'check',
+}
+
+const GROUPS: { label: string; sections: NavSection[] }[] = [
   {
-    label: 'Prosjekter', icon: 'folder', href: '/dashboard/projects',
-    children: [
-      { label: 'Planlagt', href: '/dashboard/projects?status=Planlagt', activeQuery: { key: 'status', value: 'Planlagt' } },
-      { label: 'Aktiv',    href: '/dashboard/projects?status=Aktiv',    activeQuery: { key: 'status', value: 'Aktiv' } },
-      { label: 'Fullført', href: '/dashboard/projects?status=Fullført', activeQuery: { key: 'status', value: 'Fullført' } },
+    label: 'Sy',
+    sections: [
+      { label: 'Oppskrifter', icon: 'book', href: '/dashboard/recipes' },
+      {
+        label: 'Prosjekter', icon: 'folder', href: '/dashboard/projects',
+        children: [
+          { label: 'Planlagt', href: '/dashboard/projects?status=Planlagt', activeQuery: { key: 'status', value: 'Planlagt' } },
+          { label: 'Aktiv',    href: '/dashboard/projects?status=Aktiv',    activeQuery: { key: 'status', value: 'Aktiv' } },
+          { label: 'Fullført', href: '/dashboard/projects?status=Fullført', activeQuery: { key: 'status', value: 'Fullført' } },
+        ],
+      },
+      { label: 'Teknikker', icon: 'scissors', href: '/dashboard/techniques' },
+      {
+        label: 'Lager', icon: 'box', href: '/dashboard/inventory',
+        children: [
+          { label: 'Stoff',    href: '/dashboard/inventory?kategori=Stoff',    icon: 'fabric', activeQuery: { key: 'kategori', value: 'Stoff' } },
+          { label: 'Tilbehør', href: '/dashboard/inventory?kategori=Tilbehør', icon: 'button', activeQuery: { key: 'kategori', value: 'Tilbehør' } },
+          { label: 'Utstyr',   href: '/dashboard/inventory?kategori=Utstyr',   icon: 'sewingfoot', activeQuery: { key: 'kategori', value: 'Utstyr' } },
+        ],
+      },
     ],
   },
   {
-    label: 'Broderi', icon: 'thread', href: '/dashboard/embroidery',
-    children: [
-      { label: 'Mine motiver',        href: '/dashboard/embroidery',                    icon: 'leaf' },
-      { label: 'Broderikomposisjon',  href: '/dashboard/embroidery/arranger',            icon: 'hoop' },
-      { label: 'Bilde til broderi',   href: '/dashboard/embroidery/bilde-til-broderi',   icon: 'photo' },
-    ],
+    label: 'Strikk',
+    sections: STRIKK_SECTIONS.map(s => ({ label: s.label, href: s.href, icon: STRIKK_ICONS[s.href] ?? 'yarn' })),
   },
-  // Strikk er helt adskilt fra syfunksjonene og har egne ruter under /strikk.
-  { label: 'Strikk', icon: 'yarn', href: '/strikk', children: STRIKK_SECTIONS },
-  { label: 'Teknikker', icon: 'scissors', href: '/dashboard/techniques' },
   {
-    label: 'Lager', icon: 'box', href: '/dashboard/inventory',
-    children: [
-      { label: 'Stoff',    href: '/dashboard/inventory?kategori=Stoff',    icon: 'fabric', activeQuery: { key: 'kategori', value: 'Stoff' } },
-      { label: 'Tilbehør', href: '/dashboard/inventory?kategori=Tilbehør', icon: 'button', activeQuery: { key: 'kategori', value: 'Tilbehør' } },
-      { label: 'Utstyr',   href: '/dashboard/inventory?kategori=Utstyr',   icon: 'sewingfoot', activeQuery: { key: 'kategori', value: 'Utstyr' } },
+    label: 'Broderi',
+    sections: [
+      // Exact match, so the two pages below do not light up Mine motiver too.
+      { label: 'Mine motiver',       icon: 'leaf',  href: '/dashboard/embroidery', exact: true },
+      { label: 'Broderikomposisjon', icon: 'hoop',  href: '/dashboard/embroidery/arranger' },
+      { label: 'Bilde til broderi',  icon: 'photo', href: '/dashboard/embroidery/bilde-til-broderi' },
     ],
   },
 ]
 
 function isSectionActive(section: NavSection, pathname: string): boolean {
   if (!section.href) return false
-  if (section.href === '/dashboard') return pathname === '/dashboard'
+  if (section.href === '/dashboard' || section.exact) return pathname === section.href
   return pathname === section.href || pathname.startsWith(section.href + '/')
 }
 
@@ -90,7 +101,7 @@ function NavRow({ section, isActive, isOpen, onToggle, onNavigate, search }: {
         <Link
           href={section.href ?? '#'}
           onClick={onNavigate}
-          className="flex-1 flex items-center gap-3 px-3 py-2.5 min-w-0"
+          className="flex-1 flex items-center gap-3 px-3 py-2 min-w-0"
         >
           <NavIcon name={section.icon} className="w-5 h-5 flex-shrink-0" />
           <span className="text-sm font-medium truncate">{section.label}</span>
@@ -100,7 +111,7 @@ function NavRow({ section, isActive, isOpen, onToggle, onNavigate, search }: {
             onClick={onToggle}
             aria-expanded={isOpen}
             aria-label={`${isOpen ? 'Skjul' : 'Vis'} undermeny for ${section.label}`}
-            className="px-2.5 py-2.5 text-stone-400 hover:text-stone-600 flex-shrink-0"
+            className="px-2.5 py-2 text-stone-400 hover:text-stone-600 flex-shrink-0"
           >
             <NavIcon name="chevronDown" className={`w-4 h-4 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
           </button>
@@ -164,7 +175,7 @@ function PinnedShortcuts({ onNavigate }: { onNavigate: () => void }) {
       <p className="px-3 pt-1 text-[11px] uppercase tracking-wide text-stone-400">Festet</p>
       {pins.map(pin => (
         <button key={pin.kind} onClick={() => open(pin)}
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left text-stone-700 hover:bg-stone-100 transition-colors">
+          className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-left text-stone-700 hover:bg-stone-100 transition-colors">
           <NavIcon name={pin.kind === 'strikk' ? 'yarn' : 'scissors'} className="w-5 h-5 flex-shrink-0 text-[#8B6340]" />
           <span className="text-sm font-medium truncate">{pin.name}</span>
         </button>
@@ -187,6 +198,26 @@ export function SidebarContent({ onNavigate, onClose, onLogout, userName }: {
     return isSectionActive(section, pathname)
   }
 
+  const row = (section: NavSection, search: URLSearchParams | null) => (
+    <NavRow key={section.href ?? section.label} section={section} isActive={isSectionActive(section, pathname)}
+      isOpen={isOpen(section)} onToggle={() => setManualOpen(m => ({ ...m, [section.label]: !isOpen(section) }))}
+      onNavigate={onNavigate} search={search} />
+  )
+
+  function renderMenu(search: URLSearchParams | null) {
+    return (
+      <>
+        {row(HOME, search)}
+        {GROUPS.map(g => (
+          <div key={g.label} data-nav-group={g.label} className="pt-2 space-y-0.5">
+            <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-stone-400">{g.label}</p>
+            {g.sections.map(s => row(s, search))}
+          </div>
+        ))}
+      </>
+    )
+  }
+
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between px-4 h-[88px] flex-shrink-0 border-b border-stone-200">
@@ -198,22 +229,8 @@ export function SidebarContent({ onNavigate, onClose, onLogout, userName }: {
 
       <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
         <PinnedShortcuts onNavigate={onNavigate} />
-        <Suspense fallback={
-          MENU.map(section => (
-            <NavRow key={section.label} section={section} isActive={isSectionActive(section, pathname)}
-              isOpen={isOpen(section)} onToggle={() => setManualOpen(m => ({ ...m, [section.label]: !isOpen(section) }))}
-              onNavigate={onNavigate} search={null} />
-          ))
-        }>
-          <ActiveQuery render={search => (
-            <>
-              {MENU.map(section => (
-                <NavRow key={section.label} section={section} isActive={isSectionActive(section, pathname)}
-                  isOpen={isOpen(section)} onToggle={() => setManualOpen(m => ({ ...m, [section.label]: !isOpen(section) }))}
-                  onNavigate={onNavigate} search={search} />
-              ))}
-            </>
-          )} />
+        <Suspense fallback={renderMenu(null)}>
+          <ActiveQuery render={search => renderMenu(search)} />
         </Suspense>
       </nav>
 
