@@ -14,6 +14,7 @@ import { PROJECT_LIST_SELECT, STATUSES, STATUS_LABEL, type ProjectListRow, type 
 import ProjectRecipePicker from '../../_components/ProjectRecipePicker'
 import type { KnitRecipe } from '../../_lib/recipes'
 import { coverUrl } from '../../_lib/cover'
+import { coverPhoto, photoUrl, type ProjectPhoto } from '../../_lib/project-photos'
 import { OfflineBadge, useOfflineReady } from '../../_components/OfflineReady'
 
 function statusFromQuery(v: string | null): ProjectStatus | null {
@@ -55,6 +56,8 @@ function ProjectsPageInner() {
   const searchParams = useSearchParams()
 
   const [projects, setProjects] = useState<ProjectListRow[]>([])
+  // The cover photo of each finished project that has photos (migration 030).
+  const [photoCovers, setPhotoCovers] = useState<Map<string, string>>(new Map())
   const offlineIds = useOfflineReady()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -79,6 +82,17 @@ function ProjectsPageInner() {
     if (err) setError(err.message)
     else setProjects((data ?? []) as unknown as ProjectListRow[])
     setLoading(false)
+    // Without migration 030 there is no photo table: the cards then look as before.
+    const { data: photos, error: photoErr } = await supabase.from('strikk_project_photo').select('project_id, path, position, created_at')
+    if (!photoErr) {
+      const byProject = new Map<string, Pick<ProjectPhoto, 'path' | 'position' | 'created_at'>[]>()
+      for (const ph of (photos ?? []) as Pick<ProjectPhoto, 'project_id' | 'path' | 'position' | 'created_at'>[]) {
+        byProject.set(ph.project_id, [...(byProject.get(ph.project_id) ?? []), ph])
+      }
+      const covers = new Map<string, string>()
+      for (const [id, list] of byProject) { const url = photoUrl(coverPhoto(list)!.path); if (url) covers.set(id, url) }
+      setPhotoCovers(covers)
+    }
   }, [])
 
   useEffect(() => { void load() }, [load])
@@ -148,7 +162,7 @@ function ProjectsPageInner() {
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
           <SortableContext items={sorted.map(p => p.id)} strategy={rectSortingStrategy}>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-              {sorted.map(p => <ProjectCard key={p.id} project={p} offline={offlineIds.has(p.id)} />)}
+              {sorted.map(p => <ProjectCard key={p.id} project={p} photo={photoCovers.get(p.id) ?? null} offline={offlineIds.has(p.id)} />)}
             </div>
           </SortableContext>
         </DndContext>
@@ -174,12 +188,14 @@ function ProjectsPageInner() {
 }
 
 // Planned and ongoing projects show their cover: Maria's own photo, or the recipe's first page.
+// A finished project shows its first photo, when it has one.
 const SHOWS_COVER: ProjectStatus[] = ['planned', 'in_progress']
 
-function ProjectCard({ project, offline }: { project: ProjectListRow; offline: boolean }) {
+function ProjectCard({ project, photo, offline }: { project: ProjectListRow; photo: string | null; offline: boolean }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: project.id })
-  const cover = SHOWS_COVER.includes(project.status)
-  const url = cover ? coverUrl(project) : null
+  const finishedPhoto = project.status === 'done' ? photo : null
+  const cover = SHOWS_COVER.includes(project.status) || !!finishedPhoto
+  const url = finishedPhoto ?? (cover ? coverUrl(project) : null)
   return (
     <div ref={setNodeRef}
       className="relative"

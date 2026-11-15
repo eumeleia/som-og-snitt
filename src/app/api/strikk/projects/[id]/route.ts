@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
-import { PROJECT_SELECT, STATUSES, parsePositionPatch, type Project, type ProjectStatus } from '@/app/strikk/_lib/projects'
+import { COVER_BUCKET, PROJECT_SELECT, STATUSES, parsePositionPatch, type Project, type ProjectStatus } from '@/app/strikk/_lib/projects'
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -86,8 +86,14 @@ export async function PATCH(req: NextRequest, ctx: RouteContext<'/api/strikk/pro
 export async function DELETE(_req: NextRequest, ctx: RouteContext<'/api/strikk/projects/[id]'>) {
   try {
     const { id } = await ctx.params
+    // The rows go with the project (on delete cascade), the files do not: the cover and the
+    // photos are removed here. A missing photo table (migration 030 not run) means no photos.
+    const { data: photos } = await supabaseAdmin.from('strikk_project_photo').select('path').eq('project_id', id)
+    const { data: project } = await supabaseAdmin.from('strikk_project').select('cover_path').eq('id', id).maybeSingle()
+    const files = [...(photos ?? []).map(p => p.path as string), ...(project?.cover_path ? [project.cover_path as string] : [])]
     const { error } = await supabaseAdmin.from('strikk_project').delete().eq('id', id)
     if (error) return NextResponse.json({ error: `Klarte ikke slette: ${error.message}` }, { status: 500 })
+    if (files.length) await supabaseAdmin.storage.from(COVER_BUCKET).remove(files)
     return NextResponse.json({ ok: true })
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : 'Ukjent feil' }, { status: 500 })

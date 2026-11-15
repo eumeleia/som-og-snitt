@@ -20,6 +20,7 @@ import PdfPages, { MARKER_OPACITY, SIZE_MARK_COLOR, type PageSize } from './PdfP
 import { pageAtCenter, placeAt, useSavePosition } from './readingPosition'
 import { openPdf } from './PdfViewer'
 import { compressCover, coverUrl, removeCover, uploadCover } from '../_lib/cover'
+import { MIGRATION_030, PHOTO_SELECT, deletePhoto, isMissingTable, makeCoverPhoto, photoUrl, sortPhotos, uploadPhoto, type ProjectPhoto } from '../_lib/project-photos'
 import Counters from './Counters'
 import YarnPicker from './YarnPicker'
 import DriveExpired from './DriveExpired'
@@ -454,7 +455,9 @@ function InfoView({ project, recipe, extraction, yarns, combos, swatches, yarnLi
 
         {recipe?.title && <p className="text-sm text-stone-500">Fra oppskrift: {recipe.title}</p>}
 
-        <CoverSection project={project} recipe={recipe} onChanged={onSaved} />
+        {project.status === 'done'
+          ? <PhotosSection projectId={project.id} />
+          : <CoverSection project={project} recipe={recipe} onChanged={onSaved} />}
 
         <div>
           <label className={labelCls}>Status</label>
@@ -1031,6 +1034,124 @@ function CoverSection({ project, recipe, onChanged }: {
           {err && <p className="text-xs text-red-700 break-words">{err}</p>}
         </div>
       </div>
+    </div>
+  )
+}
+
+// Photos of a finished project. The first is the cover on the project's card.
+function PhotosSection({ projectId }: { projectId: string }) {
+  const [photos, setPhotos] = useState<ProjectPhoto[] | null>(null)
+  const [missing, setMissing] = useState(false)
+  const [selected, setSelected] = useState<string | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const input = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    let alive = true
+    void supabase.from('strikk_project_photo').select(PHOTO_SELECT).eq('project_id', projectId).then(({ data, error }) => {
+      if (!alive) return
+      if (error) { if (isMissingTable(error)) setMissing(true); else setErr(error.message); setPhotos([]); return }
+      setPhotos(sortPhotos((data ?? []) as ProjectPhoto[]))
+    })
+    return () => { alive = false }
+  }, [projectId])
+
+  async function add(files: File[]) {
+    setErr(null)
+    let added = 0
+    try {
+      for (const [i, file] of files.entries()) {
+        setBusy(files.length > 1 ? `Bilde ${i + 1} av ${files.length}: gjør det mindre …` : 'Gjør bildet mindre …')
+        const blob = await compressCover(file)
+        setBusy(files.length > 1 ? `Bilde ${i + 1} av ${files.length}: lagrer …` : 'Lagrer …')
+        const row = await uploadPhoto(projectId, blob)
+        setPhotos(ps => sortPhotos([...(ps ?? []), row]))
+        added++
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Klarte ikke lagre bildet'
+      setErr(added ? `${added} av ${files.length} ble lagret. ${msg}` : msg)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function act(kind: 'cover' | 'delete', id: string) {
+    setErr(null)
+    setBusy(kind === 'cover' ? 'Lagrer …' : 'Sletter …')
+    try {
+      if (kind === 'cover') {
+        const row = await makeCoverPhoto(projectId, id)
+        setPhotos(ps => sortPhotos((ps ?? []).map(p => (p.id === id ? row : p))))
+      } else {
+        await deletePhoto(projectId, id)
+        setPhotos(ps => (ps ?? []).filter(p => p.id !== id))
+        setSelected(null)
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Klarte ikke lagre')
+    } finally {
+      setBusy(null)
+      setConfirmDelete(false)
+    }
+  }
+
+  const chosen = photos?.find(p => p.id === selected) ?? null
+  return (
+    <div data-project-photos>
+      <label className={labelCls}>Bilder</label>
+      {missing ? <p className="text-xs text-amber-800">{MIGRATION_030}</p> : (
+        <>
+          {photos && photos.length > 0 && (
+            <ul className="grid grid-cols-3 gap-2 mb-2">
+              {photos.map((p, i) => {
+                const url = photoUrl(p.path)
+                return (
+                  <li key={p.id}>
+                    <button type="button" onClick={() => { setSelected(s => (s === p.id ? null : p.id)); setConfirmDelete(false) }}
+                      aria-pressed={selected === p.id} aria-label={i === 0 ? 'Forsidebilde. Velg' : `Bilde ${i + 1}. Velg`}
+                      className={`relative block w-full aspect-square rounded-lg overflow-hidden bg-stone-100 border-2 ${selected === p.id ? 'border-[#2E5339]' : 'border-transparent'}`}>
+                      {url && (
+                        // eslint-disable-next-line @next/next/no-img-element -- a small public file; next/image would only add a resize step
+                        <img src={url} alt="" loading="lazy" className="w-full h-full object-cover" />
+                      )}
+                      {i === 0 && <span className="absolute left-1 bottom-1 rounded bg-white/90 px-1.5 py-0.5 text-[10px] text-stone-700">Forsidebilde</span>}
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+          {chosen && (
+            <div className="flex flex-wrap items-center gap-2 mb-2 text-sm">
+              {photos?.[0]?.id !== chosen.id && (
+                <button onClick={() => void act('cover', chosen.id)} disabled={busy !== null}
+                  className="h-9 px-3 rounded-xl border border-stone-300 bg-white text-stone-800 disabled:opacity-60">Gjør til forsidebilde</button>
+              )}
+              {confirmDelete ? (
+                <>
+                  <span className="text-stone-600">Slette bildet?</span>
+                  <button onClick={() => void act('delete', chosen.id)} disabled={busy !== null} className="h-9 px-3 rounded-xl bg-red-700 text-white disabled:opacity-60">Slett</button>
+                  <button onClick={() => setConfirmDelete(false)} className="h-9 px-2 text-stone-500">Avbryt</button>
+                </>
+              ) : (
+                <button onClick={() => setConfirmDelete(true)} disabled={busy !== null} className="h-9 px-2 text-red-700 underline disabled:opacity-60">Slett</button>
+              )}
+            </div>
+          )}
+          <input ref={input} type="file" accept="image/*" multiple className="hidden"
+            onChange={e => { const fs = Array.from(e.target.files ?? []); e.target.value = ''; if (fs.length) void add(fs) }} />
+          <button onClick={() => input.current?.click()} disabled={busy !== null || photos === null}
+            className="h-10 px-3 rounded-xl border border-stone-300 bg-white text-sm text-stone-800 disabled:opacity-60">
+            {photos?.length ? 'Legg til flere bilder' : 'Legg til bilder'}
+          </button>
+          {photos?.length === 0 && !busy && <p className="text-xs text-stone-500 mt-1">Det første bildet blir forsidebilde.</p>}
+        </>
+      )}
+      {busy && <p className="text-xs text-stone-500 mt-1">{busy}</p>}
+      {err && <p className="text-xs text-red-700 mt-1 break-words">{err}</p>}
     </div>
   )
 }
