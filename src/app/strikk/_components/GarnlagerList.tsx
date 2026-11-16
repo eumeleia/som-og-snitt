@@ -8,6 +8,7 @@ import { fetchStash } from '../_lib/stash-client'
 import { EXTRACTION_SELECT, storedToExtraction, type StoredRecipe } from '../_lib/extraction'
 import { STATUS_LABEL, type ProjectStatus } from '../_lib/projects'
 import { matchRecipes, sizeRangeText, type MatchRecipe, type RecipeMatch } from '../_lib/stash-match'
+import { ADULT_GROUPS, CHILD_GROUPS, OTHER, groupOrder, sizeGroups } from '../_lib/size-groups'
 import { thumbnailUrl } from '../_lib/recipes'
 import { mainFibre, type YarnRow } from '../_lib/yarns'
 import YarnFavoriteStar from './YarnFavoriteStar'
@@ -52,31 +53,7 @@ function yarnLabel(y: StashRow['strikk_yarn']): string {
   return [y.brand, y.name].filter(Boolean).join(' ') + (y.discontinued ? ' (utgått)' : '')
 }
 
-// Patterns spell the same size in a dozen ways: «3-6 mnd.», «3/6 mnd», «3–6 mnd», «3-6mnd».
-// Folds the punctuation and spacing together so the size filter has one option for all of
-// them, not a near-duplicate per pattern. The sizes shown on an open card keep the
-// pattern's own original spelling — only the filter's own list is normalized.
-function normalizeSizeKey(label: string): string {
-  return label.toLowerCase()
-    .replace(/måneder|måned|mdr\.?/g, 'mnd')
-    .replace(/[–—/]/g, '-')
-    .replace(/\s*-\s*/g, '-')
-    .replace(/(\d)\s*(mnd|år)/g, '$1 $2')
-    .replace(/\.$/, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-// Roughly youngest-to-oldest: months as themselves, years as months (×12), anything
-// without a number (S/M/L, Dame, Onesize …) last, in whatever order it was found.
-function sizeSortKey(key: string): number {
-  if (/prematur|nyfødt/.test(key)) return -1
-  const m = key.match(/(\d+(?:[.,]\d+)?)/)
-  if (!m) return Number.POSITIVE_INFINITY
-  const n = Number(m[1].replace(',', '.'))
-  return /år/.test(key) ? n * 12 : n
-}
-
+const groupsOf = (m: RecipeMatch, s: number) => sizeGroups(m.sizeLabels[s], m.garmentType)
 
 // Garnlageret: raden som venter på gjennomgang øverst (bilde, rettbare felt, usikre merker),
 // godkjent garn gruppert produsent > garn > farge under, og «Hva vil du strikke?» i hjørnet —
@@ -156,7 +133,7 @@ export default function GarnlagerList() {
       const recipes = (r.data ?? []).map(raw => {
         const stored = raw as unknown as StoredRecipe & { mentions_leftover: boolean | null; thumbnail_path: string | null; thumbnail_at: string | null }
         thumbs.set(stored.id, { thumbnail_path: stored.thumbnail_path, thumbnail_at: stored.thumbnail_at })
-        return { id: stored.id, title: stored.title, designer: stored.designer, mentions_leftover: stored.mentions_leftover, data: storedToExtraction(stored) }
+        return { id: stored.id, title: stored.title, designer: stored.designer, garment_type: stored.garment_type, mentions_leftover: stored.mentions_leftover, data: storedToExtraction(stored) }
       })
       setLibrary({ recipes })
       setRecipeThumbs(thumbs)
@@ -170,21 +147,19 @@ export default function GarnlagerList() {
     return matchRecipes(library.recipes, rows, yarns)
   }, [library, rows, yarns])
 
-  // Every size label that can actually be knitted in at least one recipe, folded together
-  // so «3-6 mnd.», «3/6 mnd» and «3–6 mnd» (one pattern's own spelling against another's)
-  // become the same option — in rough age order, so Maria can pick «3 år» and hide the
-  // 0–1 mnd patterns when she is knitting for an older child.
+  // The size groups (size-groups.ts) of every size that can be knitted in at least one recipe,
+  // youngest first, then XS–XXL, then «Annet». A size is in every group it overlaps.
   const sizeOptions = useMemo(() => {
     const seen = new Set<string>()
     for (const m of matches ?? []) {
-      for (const g of m.groups) for (const s of g.sizes) seen.add(normalizeSizeKey(m.sizeLabels[s]))
+      for (const g of m.groups) for (const s of g.sizes) for (const grp of groupsOf(m, s)) seen.add(grp)
     }
-    return [...seen].sort((a, b) => sizeSortKey(a) - sizeSortKey(b))
+    return [...seen].sort((a, b) => groupOrder(a) - groupOrder(b))
   }, [matches])
 
   const filteredMatches = useMemo(() => {
     if (!sizeFilter) return matches
-    return matches?.filter(m => m.groups.some(g => g.sizes.some(s => normalizeSizeKey(m.sizeLabels[s]) === sizeFilter))) ?? null
+    return matches?.filter(m => m.groups.some(g => g.sizes.some(s => groupsOf(m, s).includes(sizeFilter)))) ?? null
   }, [matches, sizeFilter])
   const fromLeftovers = useMemo(() => filteredMatches?.filter(m => m.fromLeftovers) ?? [], [filteredMatches])
 
@@ -469,7 +444,13 @@ export default function GarnlagerList() {
               Størrelse
               <select value={sizeFilter} onChange={e => setSizeFilter(e.target.value)} className="px-2 py-1.5 rounded-lg border border-stone-200 bg-white text-sm">
                 <option value="">Alle størrelser</option>
-                {sizeOptions.map(l => <option key={l} value={l}>{l}</option>)}
+                {([['Barn', CHILD_GROUPS], ['Voksne', ADULT_GROUPS], ['', [OTHER]]] as [string, readonly string[]][]).map(([label, list]) => {
+                  const opts = sizeOptions.filter(o => list.includes(o))
+                  if (!opts.length) return null
+                  return label
+                    ? <optgroup key={label} label={label}>{opts.map(l => <option key={l} value={l}>{l}</option>)}</optgroup>
+                    : opts.map(l => <option key={l} value={l}>{l}</option>)
+                })}
               </select>
             </label>
           )}
@@ -596,16 +577,16 @@ function StashListRow({ row, busy, error, assignedOpen, confirmingDelete, yarn, 
 }
 
 // One recipe in «Hva vil du strikke?»: which yarn in the stash knits which sizes, the pattern's
-// own yarn first and alternatives (swatch first) after, and what the other sizes lack.
+// own yarn first and alternatives after, and what the other sizes lack.
 // One line per yarn (not one sentence per combination): «Merino Extra Fine 37: 1/3 mnd til
 // 3/4 år», each slot's each colour choice on its own row, in the sizes that exact group covers.
-function yarnSizeLines(m: RecipeMatch): { label: string; sizes: string; alternative: boolean }[] {
-  const out: { label: string; sizes: string; alternative: boolean }[] = []
+function yarnSizeLines(m: RecipeMatch): { label: string; sizes: string; alternative: boolean; fibres: string }[] {
+  const out: { label: string; sizes: string; alternative: boolean; fibres: string }[] = []
   for (const g of m.groups) {
     for (const slot of g.slots) {
-      for (const choice of slot.choices) {
-        out.push({ label: choice, sizes: sizeRangeText(g.sizes, m.sizeLabels), alternative: g.alternative })
-      }
+      slot.choices.forEach((choice, i) => {
+        out.push({ label: choice, sizes: sizeRangeText(g.sizes, m.sizeLabels), alternative: g.alternative, fibres: slot.fibres[i] ?? '' })
+      })
     }
   }
   return out
@@ -644,8 +625,9 @@ function MatchCard({ match: m, thumb, busy, error, onPlan }: {
           <ul className="mt-1.5 flex flex-col gap-1">
             {lines.map((l, i) => (
               <li key={i} className="text-xs text-stone-700">
-                {l.alternative && <span className="mr-1 px-1.5 py-0.5 rounded bg-amber-100 text-amber-900">Alternativ – strikk prøvelapp</span>}
+                {l.alternative && <span className="mr-1 px-1.5 py-0.5 rounded bg-stone-100 text-stone-700">Alternativ</span>}
                 <span className="font-medium">{l.label}:</span> {l.sizes}
+                {l.alternative && l.fibres && <span className="block text-stone-500">{l.fibres}</span>}
               </li>
             ))}
           </ul>

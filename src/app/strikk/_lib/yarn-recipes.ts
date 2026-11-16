@@ -35,7 +35,7 @@ export interface YarnContext {
   swatches: RawSwatch[]
 }
 
-// Highest trust first. Only the recipe's own yarn and Maria's own swatch need no swatch.
+// Highest trust first.
 export const HIT_SOURCES = ['recommended', 'pattern', 'own_swatch', 'skaberglaede', 'drops', 'same_gauge'] as const
 export type HitSource = typeof HIT_SOURCES[number]
 export type HitGroup = 'recommended' | 'pattern' | 'alternatives'
@@ -60,7 +60,6 @@ export interface RecipeHit {
   heldTogether: boolean
   // Other yarns the combination needs, for a combination hit.
   with: string[]
-  needsSwatch: boolean
 }
 
 export interface RecipeForYarn<R extends YarnRecipe = YarnRecipe> {
@@ -72,8 +71,9 @@ export interface RecipeForYarn<R extends YarnRecipe = YarnRecipe> {
 const GAUGE_TOLERANCE = 1
 const num = (v: number | string | null | undefined) => (v === null || v === undefined || v === '' ? null : Number(v))
 
-// Plastic and discontinued yarns are never offered as an alternative.
-export const suggestable = (y: YarnRow) => !y.discontinued && y.has_plastic !== true
+// Discontinued yarns are never offered as an alternative. Yarns with plastic are, with their
+// fibres shown beside them.
+export const suggestable = (y: YarnRow) => !y.discontinued
 
 export const yarnName = (y: Pick<YarnRow, 'brand' | 'name'>) => [y.brand, y.name].filter(Boolean).join(' ')
 
@@ -121,7 +121,7 @@ export function recipeHitsForYarn(r: YarnRecipe, yarnId: string, ctx: YarnContex
     const base = { colorGroup: group, instead, heldTogether, with: [] as string[] }
 
     if (lines.some(l => l.yarn_id === yarnId)) {
-      hits.push({ ...base, source: 'recommended', instead: [], needsSwatch: false })
+      hits.push({ ...base, source: 'recommended', instead: [] })
       continue
     }
     if (!suggestable(yarn)) continue
@@ -129,7 +129,7 @@ export function recipeHitsForYarn(r: YarnRecipe, yarnId: string, ctx: YarnContex
     const ids = new Set(lines.map(l => l.id))
     const named = r.strikk_yarn_alternative.some(a => a.source === 'pattern' && a.yarn_id === yarnId &&
       (a.yarn_line_id ? ids.has(a.yarn_line_id) : a.color_group === null || a.color_group === group))
-    if (named) hits.push({ ...base, source: 'pattern', needsSwatch: true })
+    if (named) hits.push({ ...base, source: 'pattern' })
 
     if (gauge === null) continue
     const close = (g: number | null) => g !== null && Math.abs(g - gauge) <= GAUGE_TOLERANCE
@@ -145,14 +145,14 @@ export function recipeHitsForYarn(r: YarnRecipe, yarnId: string, ctx: YarnContex
     }
     for (const s of ctx.swatches) {
       const rest = close(s.gauge_stitches_10cm) ? others(s.members) : null
-      if (rest) hits.push({ ...base, source: 'own_swatch', with: rest, needsSwatch: false })
+      if (rest) hits.push({ ...base, source: 'own_swatch', with: rest })
     }
     for (const c of ctx.combos) {
       const rest = close(c.gauge_stitches_10cm) ? others(c.members) : null
-      if (rest) hits.push({ ...base, source: c.source === 'skaberglaede' ? 'skaberglaede' : 'drops', with: rest, needsSwatch: true })
+      if (rest) hits.push({ ...base, source: c.source === 'skaberglaede' ? 'skaberglaede' : 'drops', with: rest })
     }
     if (catalogueMatches(yarn, gauge, groupFibre(lines, ctx.catalogue))) {
-      hits.push({ ...base, source: 'same_gauge', needsSwatch: true })
+      hits.push({ ...base, source: 'same_gauge' })
     }
   }
   return hits.sort((a, b) => HIT_SOURCES.indexOf(a.source) - HIT_SOURCES.indexOf(b.source))

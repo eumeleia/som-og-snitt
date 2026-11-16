@@ -419,6 +419,7 @@ function InfoView({ project, recipe, extraction, yarns, combos, swatches, yarnLi
     return rankAlternatives({
       targetGauge: extraction?.gauge_stitches_10cm ?? null,
       targetFibre,
+      targetYarn: currentYarn ?? suggestedYarn ?? null,
       excludeYarnId: line?.yarn_id ?? null,
       catalogue: yarns, combos, swatches, patternAlternativeYarnIds,
     })

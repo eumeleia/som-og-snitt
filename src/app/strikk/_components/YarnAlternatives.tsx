@@ -16,7 +16,7 @@ import YarnFavoriteStar from './YarnFavoriteStar'
 
 const SOURCE_LABEL: Record<Alternative['source'], string> = {
   own_swatch: 'Egen strikkeprøve', skaberglaede: 'Skaberglæde', pattern: 'Oppskriftens alternativ',
-  drops: 'DROPS', same_gauge: 'Samme strikkefasthet',
+  drops: 'DROPS', same_gauge: 'Samme strikkefasthet', same_thickness: 'Samme tykkelse',
 }
 
 function yarnLabel(y: YarnRow): string {
@@ -100,7 +100,6 @@ function AlternativeCard({ a, target, ownedByYarn, onYarnUpdated }: {
     <li className="rounded-xl border border-stone-200 bg-white p-3">
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs rounded-full bg-stone-100 text-stone-600 px-2 py-0.5">{SOURCE_LABEL[a.source]}</span>
-        {a.source !== 'own_swatch' && <span className="text-xs rounded-full bg-amber-100 text-amber-900 px-2 py-0.5">Krever prøvelapp</span>}
       </div>
       <ul className="mt-2 flex flex-col gap-2">
         {a.members.map((m, j) => {
@@ -210,7 +209,7 @@ export default function YarnAlternatives({ yarns, stash, onYarnUpdated, onYarnAd
       ? (picked.gauge_stitches_min + (picked.gauge_stitches_max ?? picked.gauge_stitches_min)) / 2
       : null
     return rankAlternatives({
-      targetGauge: target, targetFibre: mainFibre(picked.fibers), excludeYarnId: picked.id,
+      targetGauge: target, targetFibre: mainFibre(picked.fibers), targetYarn: picked, excludeYarnId: picked.id,
       catalogue: yarns, combos, swatches, patternAlternativeYarnIds: [],
     })
   }, [mode, picked, yarns, combos, swatches])
@@ -337,9 +336,6 @@ export default function YarnAlternatives({ yarns, stash, onYarnUpdated, onYarnAd
                       <li key={recipe.id} className="rounded-lg border border-stone-200 bg-white px-3 py-2 flex flex-col gap-0.5">
                         <div className="flex items-center gap-2">
                           <Link href={`/strikk/oppskrifter/${recipe.id}`} className="text-sm text-stone-800 flex-1 min-w-0 truncate hover:underline">{recipe.title}</Link>
-                          <span className={`shrink-0 text-xs rounded-full px-2 py-0.5 ${best.needsSwatch ? 'bg-amber-100 text-amber-900' : 'bg-emerald-50 text-emerald-800'}`}>
-                            {best.needsSwatch ? 'Krever prøvelapp' : 'Ingen prøvelapp'}
-                          </span>
                         </div>
                         <p className="text-xs text-stone-500">
                           {best.source === 'recommended' ? 'Oppskriften bruker dette garnet' : `I stedet for ${best.instead.join(' + ')}`}

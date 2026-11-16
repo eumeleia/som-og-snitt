@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { AUDIENCES, type Audience } from '../_lib/extraction'
-import { spellingKey, type YarnRow } from '../_lib/yarns'
+import { formatFibers, spellingKey, type YarnRow } from '../_lib/yarns'
 import { COMBO_SELECT, SWATCH_SELECT, comboFromRow, swatchFromRow, type ComboRow, type SwatchRow } from '../_lib/combos'
 import { HIT_SOURCE_LABEL, type RecipeHit } from '../_lib/yarn-recipes'
 import YarnFavoriteStar from './YarnFavoriteStar'
@@ -119,12 +119,13 @@ export function FilterBar({ filter, onChange, yarns, shown, total, unread, onOpe
   )
 }
 
-export function hitText(name: string, h: RecipeHit): string {
-  const swatch = h.needsSwatch ? ' · krever prøvelapp' : ''
+// An alternative shows the yarn's fibres, so Maria can judge it herself.
+export function hitText(name: string, h: RecipeHit, fibres = ''): string {
+  const fibre = fibres ? ` · ${fibres}` : ''
   if (h.source === 'recommended') return `Bruker ${name}`
-  if (h.source === 'pattern') return `${name} er oppskriftens eget alternativ${swatch}`
+  if (h.source === 'pattern') return `${name} er oppskriftens eget alternativ${fibre}`
   const together = h.with.length ? `, sammen med ${h.with.join(' + ')}` : ''
-  return `${name} kan erstatte ${h.instead.join(' + ')} (${HIT_SOURCE_LABEL[h.source].toLowerCase()}${together})${swatch}`
+  return `${name} kan erstatte ${h.instead.join(' + ')} (${HIT_SOURCE_LABEL[h.source].toLowerCase()}${together})${fibre}`
 }
 
 // What a recipe matched on, for the active yarn and leftover filters.
@@ -139,7 +140,7 @@ export function HitInfo({ result, yarns, filter }: { result: FilterResult; yarns
     for (const h of hits) {
       if (seen.has(h.colorGroup)) continue
       seen.add(h.colorGroup)
-      lines.push(hitText(name, h))
+      lines.push(hitText(name, h, y ? formatFibers(y.fibers) : ''))
     }
   }
   if (filter.leftover && result.leftover) {

@@ -45,8 +45,7 @@ describe('recipeHitsForYarn', () => {
     const same = recipe('Samme fasthet', [{ yarn_id: 'merino' }])
     expect(recipeHitsForYarn(uses, 'merino', ctx()).map(h => h.source)).toEqual(['recommended'])
     expect(recipeHitsForYarn(named, 'merino2', ctx()).map(h => h.source)).toEqual(['pattern'])
-    expect(recipeHitsForYarn(same, 'merino2', ctx()).map(h => [h.source, h.needsSwatch, h.instead])).toEqual([['same_gauge', true, ['Garn Merino']]])
-    expect(recipeHitsForYarn(uses, 'merino', ctx())[0].needsSwatch).toBe(false)
+    expect(recipeHitsForYarn(same, 'merino2', ctx()).map(h => [h.source, h.instead])).toEqual([['same_gauge', ['Garn Merino']]])
   })
 
   it('takes catalogue yarns only within one stitch per 10 cm and with the same main fibre', () => {
@@ -60,11 +59,16 @@ describe('recipeHitsForYarn', () => {
     expect(recipeHitsForYarn(recipe('Ingen fasthet', [{ yarn_id: 'merino' }], { gauge_stitches_10cm: null }), 'merino2', ctx())).toEqual([])
   })
 
-  it('never offers a plastic or discontinued yarn as an alternative, only as the recipe yarn', () => {
+  it('never offers a discontinued yarn as an alternative, only as the recipe yarn', () => {
     const r = recipe('Merino', [{ yarn_id: 'merino' }])
     r.strikk_yarn_alternative = [{ yarn_line_id: null, color_group: 0, yarn_id: 'gone', source: 'pattern' }]
     expect(recipeHitsForYarn(r, 'gone', ctx())).toEqual([])
-    expect(recipeHitsForYarn(recipe('Sokker', [{ yarn_id: 'merino' }]), 'plastic', ctx())).toEqual([])
+  })
+
+  it('offers a yarn with plastic like any other yarn', () => {
+    const r = recipe('Sokker', [{ yarn_id: 'merino' }])
+    r.strikk_yarn_alternative = [{ yarn_line_id: null, color_group: 0, yarn_id: 'plastic', source: 'pattern' }]
+    expect(recipeHitsForYarn(r, 'plastic', ctx()).map(h => h.source)).toEqual(['pattern'])
     expect(recipeHitsForYarn(recipe('Sokker', [{ yarn_id: 'plastic' }]), 'plastic', ctx()).map(h => h.source)).toEqual(['recommended'])
   })
 
@@ -73,13 +77,13 @@ describe('recipeHitsForYarn', () => {
     const combo: RawCombo = { source: 'skaberglaede', source_url: null, stitch_pattern: null, gauge_stitches_10cm: 21, gauge_rows_10cm: null, needle_mm: 4.5, note: null, members: [{ yarn_id: 'alpaca', strands: 1 }, { yarn_id: 'mohair', strands: 1 }] }
     const withPlastic: RawCombo = { ...combo, source: 'drops', members: [{ yarn_id: 'alpaca', strands: 1 }, { yarn_id: 'plastic', strands: 1 }] }
     const hits = recipeHitsForYarn(recipe('Genser', [{ yarn_id: 'merino' }]), 'alpaca', ctx([combo, withPlastic], [swatch]))
-    expect(hits.map(h => [h.source, h.needsSwatch, h.with])).toEqual([['own_swatch', false, []], ['skaberglaede', true, ['Garn Silk Mohair']]])
+    expect(hits.map(h => [h.source, h.with])).toEqual([['own_swatch', []], ['skaberglaede', ['Garn Silk Mohair']], ['drops', ['Garn Sokkegarn']]])
   })
 
   it('marks a colour knitted with a carry-along yarn, and lets one yarn replace the pair', () => {
     const pair = recipe('Par', [{ yarn_id: 'alpaca' }, { yarn_id: 'mohair' }], { gauge_stitches_10cm: 17 })
     const hits = recipeHitsForYarn(pair, 'thick', ctx())
-    expect(hits).toEqual([{ source: 'same_gauge', colorGroup: 0, heldTogether: true, instead: ['Garn Alpakka', 'Garn Silk Mohair'], with: [], needsSwatch: true }])
+    expect(hits).toEqual([{ source: 'same_gauge', colorGroup: 0, heldTogether: true, instead: ['Garn Alpakka', 'Garn Silk Mohair'], with: [] }])
   })
 
   it('leaves collections out', () => {

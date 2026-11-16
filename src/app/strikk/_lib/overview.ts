@@ -40,15 +40,22 @@ function yarnName(l: { yarn_id: string | null; brand: string | null; yarn_name: 
 
 const isDiscontinued = (l: { yarn_id: string | null }, catalogue: Map<string, YarnRow>) => !!(l.yarn_id && catalogue.get(l.yarn_id)?.discontinued)
 
+// A catalogue yarn's fibres after its name, so a yarn with plastic can be judged in the sheet.
+const withFibres = (name: string, y: Pick<YarnRow, 'fibers'> | undefined) => {
+  const f = y ? formatFibers(y.fibers) : ''
+  return f ? `${name} (${f})` : name
+}
+
 // The pattern's own alternatives, except discontinued ones. A discontinued original yarn
-// with no alternative left gets substitutes from the catalogue.
+// with no alternative left gets substitutes from the catalogue. Yarns with plastic are listed
+// like any other.
 function alternatives(d: ExtractionData, catalogue: Map<string, YarnRow>, all: YarnRow[]): string {
   const kept = d.alternatives.filter(a => !isDiscontinued(a, catalogue))
-  const out = kept.map(a => `${a.color_group !== null ? `${groupLabel(d, a.color_group)}: ` : ''}${yarnName(a, catalogue)}`)
+  const out = kept.map(a => `${a.color_group !== null ? `${groupLabel(d, a.color_group)}: ` : ''}${withFibres(yarnName(a, catalogue), a.yarn_id ? catalogue.get(a.yarn_id) : undefined)}`)
   for (const { gone, suggestions } of discontinuedSuggestions(d.yarn_lines, d.alternatives, catalogue, all)) {
     const comparable = gone.fibers.length > 0 && gone.gauge_stitches_min !== null && gone.meterage_m !== null && gone.skein_weight_g !== null
     const none = comparable ? 'ingen sammenlignbare garn i katalogen' : 'mangler fiber, strikkefasthet eller løpelengde til å sammenligne'
-    out.push(`Forslag for ${fullName(gone)}: ${suggestions.length ? suggestions.map(fullName).join(', ') : none}`)
+    out.push(`Forslag for ${fullName(gone)}: ${suggestions.length ? suggestions.map(y => withFibres(fullName(y), y)).join(', ') : none}`)
   }
   return out.join('; ')
 }

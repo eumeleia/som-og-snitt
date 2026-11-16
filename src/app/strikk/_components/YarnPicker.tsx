@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { spellingKey, type YarnRow } from '../_lib/yarns'
+import { formatFibers, spellingKey, type YarnRow } from '../_lib/yarns'
 import type { Alternative } from '../_lib/yarn-alternatives'
 import { estimatedCost } from '../_lib/project-amounts'
 import type { AmountData } from '../_lib/extraction'
@@ -12,7 +12,7 @@ const yarnLabel = (y: Pick<YarnRow, 'brand' | 'name' | 'discontinued'>) =>
 
 const SOURCE_LABEL: Record<Alternative['source'], string> = {
   own_swatch: 'Egen strikkeprøve', skaberglaede: 'Skaberglæde', pattern: 'Oppskriftens alternativ',
-  drops: 'DROPS', same_gauge: 'Samme strikkefasthet i katalogen',
+  drops: 'DROPS', same_gauge: 'Samme strikkefasthet i katalogen', same_thickness: 'Samme tykkelse i katalogen',
 }
 
 function altLabel(a: Alternative): string {
@@ -87,6 +87,7 @@ export default function YarnPicker({ yarns, value, suggestedId, alternatives, am
                   const content = (
                     <>
                       <div className="text-sm text-stone-800">{altLabel(a)}</div>
+                      <div className="text-xs text-stone-600">{a.members.map(m => formatFibers(m.yarn.fibers) || 'fiber ukjent').join(' + ')}</div>
                       <div className="text-xs text-stone-500">
                         {SOURCE_LABEL[a.source]}
                         {cost !== null && ` · ca. ${cost} kr`}

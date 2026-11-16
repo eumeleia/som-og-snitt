@@ -86,11 +86,11 @@ describe('discontinued yarns', () => {
   it('marks a discontinued original yarn and suggests catalogue yarns that are not discontinued', () => {
     const r = row(recipe([]))
     expect(r['Garn 2']).toBe('Rust: Sandnes Garn Mandarin Merino (utgått) (2 tråder)')
-    expect(r['Garnalternativer']).toBe('Forslag for Sandnes Garn Mandarin Merino: Sandnes Garn Merinoull')
+    expect(r['Garnalternativer']).toBe('Forslag for Sandnes Garn Mandarin Merino: Sandnes Garn Merinoull (100 % merinoull)')
   })
   it('never lists a discontinued yarn as an alternative, and suggests when none is left', () => {
     const r = row(recipe([{ color_group: 1, yarn_line: 2, yarn_name: 'Gammel Merino', brand: 'Sandnes Garn', yarn_id: GONE_ALT }]))
-    expect(r['Garnalternativer']).toBe('Forslag for Sandnes Garn Mandarin Merino: Sandnes Garn Merinoull')
+    expect(r['Garnalternativer']).toBe('Forslag for Sandnes Garn Mandarin Merino: Sandnes Garn Merinoull (100 % merinoull)')
   })
   it('keeps the pattern\'s own alternative when it is still made, without extra suggestions', () => {
     const r = row(recipe([{ color_group: 1, yarn_line: 2, yarn_name: 'Smart', brand: 'Sandnes Garn' }]))

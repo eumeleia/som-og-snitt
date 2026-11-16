@@ -12,11 +12,11 @@
 // - A recipe without sizes is one size.
 // - Besides the pattern's own yarn, a line can be knitted in the pattern's own alternatives
 //   or in stash yarn with the same gauge and main fibre (only the gauge for a line that
-//   names no yarn). Those need a swatch first.
+//   names no yarn). Each alternative shows its fibres.
 // - Rows of the same yarn and colour number are one colour.
 import { amountForCalc, type ExtractionData } from './extraction'
 import { amountForLine } from './project-amounts'
-import { mainFibre, type Fiber } from './yarns'
+import { formatFibers, mainFibre, type Fiber } from './yarns'
 
 export interface MatchYarn {
   id: string
@@ -46,18 +46,21 @@ export interface MatchRecipe {
   id: string
   title: string
   designer: string | null
+  // Tells shoe sizes on socks from women's sizes (size-groups.ts).
+  garment_type?: string | null
   mentions_leftover: boolean | null
   data: Pick<ExtractionData, 'sizes' | 'yarn_lines' | 'amounts' | 'alternatives' | 'gauge_stitches_10cm'>
 }
 
-export interface MatchSlotText { label: string; choices: string[] }
+// fibres: the fibres of each choice's yarn, shown beside an alternative.
+export interface MatchSlotText { label: string; choices: string[]; fibres: string[] }
 
 export interface MatchGroup {
   // «Med Tynn Merinoull 1013 Hvit og 2052 Lys brun kan du strikke 1–3 mnd til 2 år»
   text: string
   slots: MatchSlotText[]
   sizes: number[]
-  // Another yarn than the pattern's for at least one line: knit a swatch first.
+  // Another yarn than the pattern's for at least one line.
   alternative: boolean
   // The stash rows of one combination that knits these sizes, for «Planlegg prosjekt».
   rowIds: string[]
@@ -69,6 +72,7 @@ export interface RecipeMatch {
   id: string
   title: string
   designer: string | null
+  garmentType: string | null
   sizeLabels: string[]
   groups: MatchGroup[]
   // Sizes no shown combination knits, and what each one lacks.
@@ -300,6 +304,7 @@ export function matchRecipe(recipe: MatchRecipe, stash: MatchStashRow[], yarns: 
       const slotTexts: MatchSlotText[] = slots.map((slot, i) => ({
         label: slot.label,
         choices: slotRows[i].map(r => rowLabel(r, yarns)),
+        fibres: slotRows[i].map(r => formatFibers((r.yarn_id ? yarns.get(r.yarn_id)?.fibers : undefined) ?? [])),
       }))
       const more = !mergeable ? ' (eller andre farger)' : ''
       const yarnText = joinOg(slotRows.map(rows => choicesText(rows, yarns)))
@@ -355,7 +360,7 @@ export function matchRecipe(recipe: MatchRecipe, stash: MatchStashRow[], yarns: 
     })
   }))
 
-  return { id: recipe.id, title: recipe.title, designer: recipe.designer, sizeLabels, groups, missing, available, fromLeftovers }
+  return { id: recipe.id, title: recipe.title, designer: recipe.designer, garmentType: recipe.garment_type ?? null, sizeLabels, groups, missing, available, fromLeftovers }
 }
 
 const nb = (a: string, b: string) => a.localeCompare(b, 'nb', { sensitivity: 'base' })

@@ -33,7 +33,7 @@ describe('rankAlternatives', () => {
     expect(top.members[0].yarn.id).toBe('peer-gynt')
   })
 
-  it('never suggests a plastic or discontinued yarn, even inside a combo', () => {
+  it('never suggests a discontinued yarn, even inside a combo, but does suggest a yarn with plastic', () => {
     const result = rankAlternatives({
       targetGauge: 22, targetFibre: null, excludeYarnId: null, catalogue,
       combos: [
@@ -43,7 +43,7 @@ describe('rankAlternatives', () => {
       swatches: [],
       patternAlternativeYarnIds: ['plastic', 'gone'],
     })
-    expect(result).toEqual([])
+    expect(result.map(r => [r.source, r.members.map(m => m.yarn.id)])).toEqual([['drops', ['plastic']]])
   })
 
   it('falls back to same gauge and main fibre in the catalogue, within tolerance', () => {
@@ -51,8 +51,8 @@ describe('rankAlternatives', () => {
       targetGauge: 22, targetFibre: 'ull', excludeYarnId: 'peer-gynt', catalogue,
       combos: [], swatches: [], patternAlternativeYarnIds: [],
     })
-    expect(result).toHaveLength(1)
-    expect(result[0]).toMatchObject({ source: 'same_gauge', members: [{ yarn: smart, strands: 1 }] })
+    // Plastgarn has plastic and the same gauge and main fibre: it is suggested too.
+    expect(result.map(r => [r.source, r.members[0].yarn.id])).toEqual([['same_gauge', 'smart'], ['same_gauge', 'plastic']])
   })
 
   it('does not match a yarn of the wrong main fibre or gauge outside tolerance', () => {
@@ -83,5 +83,27 @@ describe('rankAlternatives', () => {
     })
     expect(result).toHaveLength(1)
     expect(result[0].source).toBe('own_swatch')
+  })
+})
+
+describe('same thickness', () => {
+  // Alpaca Bris (15 m/10 cm), Air (17) and Kos (16–18): all 150 m per 50 g, alpaca first.
+  const fibres = [{ fiber: 'alpakka', percent: 65 }, { fiber: 'polyamid', percent: 28 }, { fiber: 'ull', percent: 7 }]
+  const mk = (id: string, gMin: number, gMax: number, m: number) => ({
+    id, brand: 'B', name: id, aliases: [], fibers: fibres, skein_weight_g: 50, meterage_m: m, gauge_stitches_min: gMin, gauge_stitches_max: gMax,
+    needle_mm_min: 5, needle_mm_max: 5, drops_group: null, has_plastic: true, discontinued: false, status: 'approved', approved_at: null,
+    created_at: '', updated_at: '', favorite: null, price_per_skein: null,
+  }) as unknown as Parameters<typeof rankAlternatives>[0]['catalogue'][number]
+  const bris = mk('bris', 15, 15, 150), air = mk('air', 17, 17, 150), kos = mk('kos', 16, 18, 150), thin = mk('thin', 17, 17, 200)
+  // Same metres per 50 g, but a thin, dense yarn: too far from the gauge.
+  const dense = mk('dense', 24, 24, 160)
+
+  it('suggests a yarn of the same main fibre and metres per 50 g even when the stated gauge differs', () => {
+    const r = rankAlternatives({ targetGauge: 15, targetFibre: 'alpakka', targetYarn: bris, excludeYarnId: 'bris', catalogue: [bris, air, kos, thin, dense], combos: [], swatches: [], patternAlternativeYarnIds: [] })
+    expect(r.map(a => [a.members[0].yarn.id, a.source])).toEqual([['kos', 'same_gauge'], ['air', 'same_thickness']])
+  })
+  it('keeps to the gauge alone when the yarn being replaced is not given', () => {
+    const r = rankAlternatives({ targetGauge: 15, targetFibre: 'alpakka', excludeYarnId: 'bris', catalogue: [bris, air, kos, thin], combos: [], swatches: [], patternAlternativeYarnIds: [] })
+    expect(r.map(a => a.members[0].yarn.id)).toEqual(['kos'])
   })
 })

@@ -119,7 +119,9 @@ beholder målgruppen hennes, og tittelen endres ikke av innlesingen.
       ikke koblet.
 
    **Utgåtte garn.** `discontinued` settes bare når en kilde sier rett ut at garnet er
-   utgått. Et utgått garn foreslås aldri som alternativ. Er det originalgarnet i en
+   utgått. Et utgått garn foreslås aldri som alternativ. Garn med plast foreslås som
+   alle andre garn, og alle alternativer (i appen og i regnearket) viser fibersammensetningen,
+   så Maria vurderer selv. Er det originalgarnet i en
    oppskrift, beholder det koblingen og merkes «(utgått)» i regnearket, og alternativene
    viser oppskriftens egne alternativer som ikke er utgått, eller, om ingen er igjen, inntil
    tre garn fra katalogen med samme hovedfiber og tykkelse (`substitutes` i
