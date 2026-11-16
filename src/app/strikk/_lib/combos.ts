@@ -11,7 +11,7 @@ export const SWATCH_SELECT =
 
 export interface ComboRow {
   id: string
-  source: 'skaberglaede' | 'drops'
+  source: 'skaberglaede' | 'drops' | 'yarn_info'
   source_url: string | null
   stitch_pattern: string | null
   gauge_stitches_10cm: number | string | null
@@ -46,7 +46,7 @@ export function comboFromRow(r: ComboRow) {
 export function swatchFromRow(r: SwatchRow) {
   return {
     gauge_stitches_10cm: num(r.gauge_stitches_10cm), gauge_rows_10cm: num(r.gauge_rows_10cm),
-    needle_mm: num(r.needle_mm), notes: r.notes,
+    needle_mm: num(r.needle_mm), notes: r.notes, created_at: r.created_at,
     members: sorted(r.strikk_swatch_yarn).map(m => ({ yarn_id: m.yarn_id, strands: m.strands })),
   }
 }

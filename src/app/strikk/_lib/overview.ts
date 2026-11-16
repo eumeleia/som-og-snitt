@@ -158,7 +158,7 @@ export function yarnSheet(yarns: YarnRow[]): Sheet {
 
 // ── Garnalternativer ────────────────────────────────────────────────────────────────
 
-const SOURCE_LABEL: Record<RawCombo['source'], string> = { skaberglaede: 'Skaberglæde', drops: 'DROPS' }
+const SOURCE_LABEL: Record<RawCombo['source'], string> = { skaberglaede: 'Skaberglæde', drops: 'DROPS', yarn_info: 'Garnets opplysninger' }
 
 export function comboSheet(combos: RawCombo[], yarns: YarnRow[]): Sheet {
   const byId = new Map(yarns.map(y => [y.id, y]))

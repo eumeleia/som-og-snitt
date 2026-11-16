@@ -34,6 +34,9 @@ export interface YarnData {
   price_per_skein: number | null
   uncertain_fields: string[]
   uncertain_reasons: Record<string, string>
+  // Migration 032: a carry thread that does not change the gauge (Dale Garn Bling). Missing
+  // until the migration has run.
+  gauge_neutral?: boolean
 }
 
 export interface YarnRow extends YarnData {

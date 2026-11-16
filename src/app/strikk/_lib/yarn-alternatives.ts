@@ -3,14 +3,15 @@
 // så den kan testes uten database.
 import { fibreFamily, mainFibre, type YarnRow } from './yarns'
 
-export const ALT_SOURCES = ['own_swatch', 'skaberglaede', 'pattern', 'drops', 'same_gauge', 'same_thickness'] as const
+export const ALT_SOURCES = ['own_swatch', 'skaberglaede', 'pattern', 'drops', 'yarn_info', 'same_gauge', 'same_thickness'] as const
 export type AltSource = typeof ALT_SOURCES[number]
 
 // Høyest tillit først: egne strikkeprøver, Skaberglæde, oppskriftens egne alternativer,
-// DROPS (garnkombinasjonssiden og garngruppe-regelen slått sammen), lik strikkefasthet og
+// DROPS (garnkombinasjonssiden og garngruppe-regelen slått sammen), garnets egne opplysninger
+// (f.eks. strikkefasthet med dobbel tråd hos forhandleren), lik strikkefasthet og
 // hovedfiber i katalogen, og til sist samme tykkelse (hovedfiber og løpelengde) i katalogen.
 const SOURCE_RANK: Record<AltSource, number> = {
-  own_swatch: 0, skaberglaede: 1, pattern: 2, drops: 3, same_gauge: 4, same_thickness: 5,
+  own_swatch: 0, skaberglaede: 1, pattern: 2, drops: 3, yarn_info: 4, same_gauge: 5, same_thickness: 6,
 }
 
 // Strikkefasthet er sjelden helt eksakt; innenfor denne mange masker per 10 cm regnes to
@@ -29,7 +30,13 @@ const per50 = (y: Pick<YarnRow, 'meterage_m' | 'skein_weight_g'>) =>
 export interface AltMember {
   yarn: YarnRow
   strands: number
+  // Set when the same yarn is also suggested with several strands (Tilia, 2 tråder), so a
+  // single strand is shown as «1 tråd» and the two are told apart.
+  showStrands?: boolean
 }
+
+export const strandText = (m: AltMember) =>
+  m.strands > 1 ? ` (${m.strands} tråder)` : m.showStrands ? ' (1 tråd)' : ''
 
 export interface Alternative {
   source: AltSource
@@ -50,7 +57,7 @@ function gaugeMatches(a: number | null, b: number | null): boolean {
 const suggestable = (y: YarnRow) => !y.discontinued
 
 export interface RawCombo {
-  source: 'skaberglaede' | 'drops'
+  source: 'skaberglaede' | 'drops' | 'yarn_info'
   source_url: string | null
   stitch_pattern: string | null
   gauge_stitches_10cm: number | null
@@ -66,6 +73,7 @@ export interface RawSwatch {
   needle_mm: number | null
   notes: string | null
   members: { yarn_id: string; strands: number }[]
+  created_at?: string | null
 }
 
 export interface PatternAlternative {
@@ -122,7 +130,7 @@ export function rankAlternatives(args: {
     const members = resolveMembers(c.members, byId)
     if (!members) continue
     out.push({
-      source: c.source === 'skaberglaede' ? 'skaberglaede' : 'drops', members,
+      source: c.source === 'skaberglaede' || c.source === 'yarn_info' ? c.source : 'drops', members,
       gauge_stitches_10cm: c.gauge_stitches_10cm, gauge_rows_10cm: c.gauge_rows_10cm,
       needle_mm: c.needle_mm, note: c.note, source_url: c.source_url,
     })
@@ -165,9 +173,13 @@ export function rankAlternatives(args: {
     out.push(...byThickness)
   }
 
+  const multi = new Set([...combos, ...swatches].flatMap(c => c.members.filter(m => m.strands > 1 && m.yarn_id).map(m => m.yarn_id!)))
   return out
     .filter((a, i, all) => all.findIndex(b => sameSuggestion(a, b)) === i)
     .sort((a, b) => SOURCE_RANK[a.source] - SOURCE_RANK[b.source])
+    .map(a => (a.members.some(m => m.strands === 1 && multi.has(m.yarn.id))
+      ? { ...a, members: a.members.map(m => (m.strands === 1 && multi.has(m.yarn.id) ? { ...m, showStrands: true } : m)) }
+      : a))
 }
 
 function sameSuggestion(a: Alternative, b: Alternative): boolean {

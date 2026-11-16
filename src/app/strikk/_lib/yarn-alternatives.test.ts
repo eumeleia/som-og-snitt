@@ -107,3 +107,22 @@ describe('same thickness', () => {
     expect(r.map(a => a.members[0].yarn.id)).toEqual(['kos'])
   })
 })
+
+describe('single and double strand (Tilia)', () => {
+  const tilia = yarn({ id: 'tilia', brand: 'Filcolana', name: 'Tilia', fibers: [{ fiber: 'kid mohair', percent: 70 }, { fiber: 'silke', percent: 30 }], meterage_m: 210, skein_weight_g: 25, gauge_stitches_min: 24, gauge_stitches_max: 32 })
+  const double = { source: 'yarn_info' as const, source_url: 'https://shop.saturniagarn.no/categories/tilia', stitch_pattern: 'glattstrikk', gauge_stitches_10cm: 20, gauge_rows_10cm: null, needle_mm: 4.5, note: 'Dobbel tråd: ca. 19–21 m = 10 cm, pinne 4–5', members: [{ yarn_id: 'tilia', strands: 2 }] }
+
+  it('suggests two strands of Tilia for about 20 stitches, labelled as the yarn\'s own information', () => {
+    const result = rankAlternatives({ targetGauge: 20, targetFibre: null, excludeYarnId: null, catalogue: [tilia], combos: [double], swatches: [], patternAlternativeYarnIds: [] })
+    expect(result.map(a => [a.source, a.members.map(m => `${m.yarn.id}x${m.strands}`).join('+')])).toEqual([['yarn_info', 'tiliax2']])
+  })
+  it('marks a single strand of Tilia as «1 tråd» when two strands are also known', async () => {
+    const { strandText } = await import('./yarn-alternatives')
+    const kid = yarn({ id: 'kid', name: 'Kid', fibers: [{ fiber: 'mohair', percent: 75 }], meterage_m: 210, skein_weight_g: 25, gauge_stitches_min: 28, gauge_stitches_max: 28 })
+    const result = rankAlternatives({ targetGauge: 28, targetFibre: 'mohair', targetYarn: kid, excludeYarnId: 'kid', catalogue: [tilia, kid], combos: [double], swatches: [], patternAlternativeYarnIds: [] })
+    const single = result.find(a => a.members[0].yarn.id === 'tilia')!
+    expect(strandText(single.members[0])).toBe(' (1 tråd)')
+    expect(strandText({ yarn: tilia, strands: 2 })).toBe(' (2 tråder)')
+    expect(strandText({ yarn: kid, strands: 1 })).toBe('')
+  })
+})

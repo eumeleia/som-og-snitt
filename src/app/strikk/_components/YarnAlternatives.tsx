@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 import { COMBO_SELECT, SWATCH_SELECT, comboFromRow, swatchFromRow, type ComboRow, type SwatchRow } from '../_lib/combos'
-import { rankAlternatives, type Alternative, type RawCombo, type RawSwatch } from '../_lib/yarn-alternatives'
+import { rankAlternatives, strandText, type Alternative, type RawCombo, type RawSwatch } from '../_lib/yarn-alternatives'
 import { formatRange, mainFibre, spellingKey, type YarnRow } from '../_lib/yarns'
 import { RECIPE_FILTER_SELECT, type FilterRecipe } from '../_lib/recipe-filter'
 import {
@@ -13,10 +13,11 @@ import {
 } from '../_lib/yarn-recipes'
 import type { StashRow } from '../_lib/stash'
 import YarnFavoriteStar from './YarnFavoriteStar'
+import { MAX_STRANDS, MAX_YARNS, RULE_TEXT, estimateGauge, matchingSwatches, parseNeedle } from '../_lib/gauge-calc'
 
 const SOURCE_LABEL: Record<Alternative['source'], string> = {
   own_swatch: 'Egen strikkeprøve', skaberglaede: 'Skaberglæde', pattern: 'Oppskriftens alternativ',
-  drops: 'DROPS', same_gauge: 'Samme strikkefasthet', same_thickness: 'Samme tykkelse',
+  drops: 'DROPS', yarn_info: 'Garnets opplysninger', same_gauge: 'Samme strikkefasthet', same_thickness: 'Samme tykkelse',
 }
 
 function yarnLabel(y: YarnRow): string {
@@ -108,7 +109,7 @@ function AlternativeCard({ a, target, ownedByYarn, onYarnUpdated }: {
             <li key={j}>
               <div className="flex items-center gap-2">
                 <span className="text-sm text-stone-800 flex-1 min-w-0 truncate">
-                  {yarnLabel(m.yarn)}{m.strands > 1 ? ` (${m.strands} tråder)` : ''}
+                  {yarnLabel(m.yarn)}{strandText(m)}
                   {owned > 0 && <span className="text-emerald-700"> · du har {owned} nøste{owned === 1 ? '' : 'r'}</span>}
                 </span>
                 <YarnFavoriteStar yarnId={m.yarn.id} favorite={m.yarn.favorite} pricePerSkein={m.yarn.price_per_skein}
@@ -122,7 +123,7 @@ function AlternativeCard({ a, target, ownedByYarn, onYarnUpdated }: {
       </ul>
       {(a.members.length > 1 || a.members.some(m => m.strands > 1)) && (
         <p className="text-xs text-stone-600 mt-1.5">
-          Sammen: {[a.gauge_stitches_10cm !== null && `${formatRange(a.gauge_stitches_10cm, a.gauge_stitches_10cm)} m/10 cm`, a.needle_mm !== null && `pinne ${a.needle_mm} mm`].filter(Boolean).join(' · ') || 'strikkefasthet ikke oppgitt'}
+          Sammen: {[a.gauge_stitches_10cm !== null && `${formatRange(a.gauge_stitches_10cm, a.gauge_stitches_10cm)} m/10 cm`, a.needle_mm !== null && `pinne ${fmt(a.needle_mm)} mm`].filter(Boolean).join(' · ') || 'strikkefasthet ikke oppgitt'}
         </p>
       )}
       {a.note && <p className="text-xs text-stone-500 mt-1">{a.note}</p>}
@@ -130,7 +131,144 @@ function AlternativeCard({ a, target, ownedByYarn, onYarnUpdated }: {
   )
 }
 
-// «Finn alternativt garn»: et garn, et par (hovedgarn og følgetråd) eller en strikkefasthet.
+const fmt = (n: number) => n.toLocaleString('nb-NO', { maximumFractionDigits: 1 })
+
+// Kalkulator: one to three catalogue yarns with strands and a needle → an estimated gauge
+// (gauge-calc.ts), with Maria's own swatch of the same yarns and needle shown first.
+function GaugeCalculator({ yarns, swatches, onSwatchSaved }: {
+  yarns: YarnRow[]
+  swatches: RawSwatch[]
+  onSwatchSaved: (row: SwatchRow) => void
+}) {
+  const [rows, setRows] = useState<{ key: number; yarn: YarnRow | null; strands: number }[]>([{ key: 0, yarn: null, strands: 1 }])
+  const [needleInput, setNeedleInput] = useState('')
+  const [saving, setSaving] = useState<null | 'form' | 'busy'>(null)
+  const [measured, setMeasured] = useState({ stitches: '', rows: '', notes: '' })
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const [savedNote, setSavedNote] = useState<string | null>(null)
+
+  const chosen = rows.filter((r): r is { key: number; yarn: YarnRow; strands: number } => r.yarn !== null)
+  const needle = parseNeedle(needleInput)
+  const estimate = chosen.length ? estimateGauge(chosen.map(r => ({ yarn: r.yarn, strands: r.strands })), needle) : null
+  const own = matchingSwatches(swatches, chosen.map(r => ({ yarnId: r.yarn.id, strands: r.strands })), needle)
+  const ready = chosen.length > 0 && needle !== null && estimate !== null && (estimate.ok || !estimate.error.startsWith('Pinnen'))
+  const update = (key: number, patch: Partial<{ yarn: YarnRow | null; strands: number }>) => {
+    setRows(rs => rs.map(r => (r.key === key ? { ...r, ...patch } : r)))
+    setSavedNote(null)
+  }
+
+  async function save() {
+    setSaveError(null)
+    setSaving('busy')
+    try {
+      const res = await fetch('/api/strikk/swatches', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          members: chosen.map(r => ({ yarn_id: r.yarn.id, strands: r.strands })), needle_mm: needle,
+          gauge_stitches_10cm: measured.stitches, gauge_rows_10cm: measured.rows, notes: measured.notes,
+        }),
+      })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(j.error ?? `Lagring feilet (${res.status})`)
+      onSwatchSaved(j as SwatchRow)
+      setSaving(null)
+      setMeasured({ stitches: '', rows: '', notes: '' })
+      setSavedNote('Strikkeprøven er lagret og brukes neste gang du velger samme garn og pinne.')
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'Noe gikk galt')
+      setSaving('form')
+    }
+  }
+
+  return (
+    <section data-calculator className="flex flex-col gap-3">
+      <p className="text-sm text-stone-600">Velg garnene som strikkes sammen, antall tråder av hvert og pinnen du vil bruke.</p>
+      {rows.map((r, i) => (
+        <div key={r.key} className="flex items-start gap-2">
+          <div className="flex-1 min-w-0">
+            <YarnSearch yarns={yarns} picked={r.yarn} onPick={y => update(r.key, { yarn: y })} placeholder={i === 0 ? 'Garn' : 'Garn nr. ' + (i + 1)} />
+          </div>
+          <select aria-label="Antall tråder" value={r.strands} onChange={e => update(r.key, { strands: Number(e.target.value) })}
+            className="shrink-0 px-2 py-2 rounded-lg border border-stone-200 bg-white text-sm">
+            {Array.from({ length: MAX_STRANDS }, (_, k) => k + 1).map(n => <option key={n} value={n}>{n} {n === 1 ? 'tråd' : 'tråder'}</option>)}
+          </select>
+          {rows.length > 1 && (
+            <button aria-label="Fjern garnet" onClick={() => { setRows(rs => rs.filter(x => x.key !== r.key)); setSavedNote(null) }}
+              className="shrink-0 px-2 py-2 text-stone-400 hover:text-red-500">✕</button>
+          )}
+        </div>
+      ))}
+      {rows.length < MAX_YARNS && (
+        <button onClick={() => setRows(rs => [...rs, { key: Math.max(...rs.map(x => x.key)) + 1, yarn: null, strands: 1 }])}
+          className="self-start text-sm text-[#8B6340] underline">+ Legg til garn</button>
+      )}
+      <label className="text-sm text-stone-700 flex items-center gap-2">
+        Pinne
+        <input className="w-24 px-3 py-2 rounded-lg border border-stone-200 bg-white text-sm" inputMode="decimal" placeholder="mm"
+          value={needleInput} onChange={e => { setNeedleInput(e.target.value); setSavedNote(null) }} />
+        mm
+      </label>
+
+      {own.length > 0 && needle !== null && (
+        <div data-own-swatch className="rounded-xl border-2 border-emerald-300 bg-emerald-50 p-3">
+          <p className="text-xs uppercase tracking-wide text-emerald-800">Din strikkeprøve</p>
+          {own.map((s, i) => (
+            <p key={i} className="text-sm text-stone-800 mt-0.5">
+              {s.gauge_stitches_10cm !== null ? fmt(s.gauge_stitches_10cm) : '?'} masker{s.gauge_rows_10cm !== null ? ` × ${fmt(s.gauge_rows_10cm)} pinner/omganger` : ''} per 10 cm på pinne {fmt(needle)} mm
+              {s.created_at && <span className="text-stone-500"> · målt {new Date(s.created_at).toLocaleDateString('nb-NO')}</span>}
+              {s.notes && <span className="text-stone-500"> · {s.notes}</span>}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {estimate && ready && (estimate.ok ? (
+        <div data-estimate className="rounded-xl border border-stone-200 bg-white p-3">
+          <p className="text-xs uppercase tracking-wide text-stone-500">Anslag</p>
+          <p className="text-lg text-stone-800">ca. {estimate.gauge} masker per 10 cm <span className="text-sm text-stone-500">({estimate.low}–{estimate.high})</span></p>
+          <p className="text-sm text-stone-700">Naturlig pinne for kombinasjonen: ca. {fmt(estimate.naturalNeedle)} mm</p>
+          {estimate.neutral.length > 0 && (
+            <p className="text-xs text-stone-600 mt-1">{estimate.neutral.join(' og ')} er tatt med uten å endre utregningen: påvirker ikke strikkefastheten etter katalogen.</p>
+          )}
+          <p className="text-xs text-stone-500 mt-2">{RULE_TEXT}</p>
+          <p className="text-xs text-stone-500 mt-1">Dette er et anslag, ikke en målt strikkeprøve.</p>
+        </div>
+      ) : (
+        <p data-estimate-error className="text-sm text-amber-800 bg-amber-50 rounded-lg px-3 py-2">{estimate.error}</p>
+      ))}
+      {chosen.length > 0 && needleInput.trim() && needle === null && <p className="text-sm text-amber-800">Pinnen må være et tall i mm.</p>}
+
+      {chosen.length > 0 && needle !== null && estimate !== null && (estimate.ok || !estimate.error.startsWith('Pinnen')) && (saving === null ? (
+        <button onClick={() => { setSaving('form'); setSavedNote(null) }} className="self-start text-sm px-3 py-2 rounded-lg border border-stone-300 bg-white text-stone-800">
+          Lagre som strikkeprøve
+        </button>
+      ) : (
+        <div data-save-swatch className="rounded-xl border border-stone-200 bg-stone-50 p-3 flex flex-col gap-2">
+          <p className="text-sm text-stone-700">Det du faktisk målte, på pinne {fmt(needle)} mm:</p>
+          <div className="flex flex-wrap gap-2">
+            <input className="w-32 px-3 py-2 rounded-lg border border-stone-200 bg-white text-sm" inputMode="decimal" placeholder="Masker/10 cm"
+              value={measured.stitches} onChange={e => setMeasured(m => ({ ...m, stitches: e.target.value }))} />
+            <input className="w-40 px-3 py-2 rounded-lg border border-stone-200 bg-white text-sm" inputMode="decimal" placeholder="Pinner/omg. (valgfritt)"
+              value={measured.rows} onChange={e => setMeasured(m => ({ ...m, rows: e.target.value }))} />
+          </div>
+          <input className="px-3 py-2 rounded-lg border border-stone-200 bg-white text-sm" placeholder="Notat (valgfritt)"
+            value={measured.notes} onChange={e => setMeasured(m => ({ ...m, notes: e.target.value }))} />
+          {saveError && <p className="text-sm text-red-600">{saveError}</p>}
+          <div className="flex gap-2">
+            <button disabled={saving === 'busy'} onClick={() => void save()} className="text-sm px-3 py-2 rounded-lg bg-stone-800 text-white disabled:opacity-50">
+              {saving === 'busy' ? 'Lagrer …' : 'Lagre'}
+            </button>
+            <button onClick={() => { setSaving(null); setSaveError(null) }} className="text-sm px-3 py-2 rounded-lg text-stone-600">Avbryt</button>
+          </div>
+        </div>
+      ))}
+      {savedNote && <p className="text-sm text-emerald-700">{savedNote}</p>}
+    </section>
+  )
+}
+
+// «Finn alternativt garn»: et garn, et par (hovedgarn og følgetråd), en strikkefasthet eller
+// kalkulatoren (anslått strikkefasthet for garn strikket sammen).
 // For et garn vises garnet som byttes ut, alternativene med forskjellene markert, og alle
 // oppskriftene garnet kan brukes til (yarn-recipes.ts, samme regel som garnfilteret).
 export default function YarnAlternatives({ yarns, stash, onYarnUpdated, onYarnAdded, initialPair, pairRecipeId, pairGroup }: {
@@ -143,7 +281,7 @@ export default function YarnAlternatives({ yarns, stash, onYarnUpdated, onYarnAd
   pairRecipeId?: string | null
   pairGroup?: string | null
 }) {
-  const [mode, setMode] = useState<'yarn' | 'pair' | 'gauge'>('yarn')
+  const [mode, setMode] = useState<'yarn' | 'pair' | 'gauge' | 'calc'>('yarn')
   const [picked, setPicked] = useState<YarnRow | null>(null)
   const [pairMain, setPairMain] = useState<YarnRow | null>(null)
   const [pairCarry, setPairCarry] = useState<YarnRow | null>(null)
@@ -284,6 +422,7 @@ export default function YarnAlternatives({ yarns, stash, onYarnUpdated, onYarnAd
         {tabButton('yarn', 'Garn')}
         {tabButton('pair', 'Par')}
         {tabButton('gauge', 'Strikkefasthet')}
+        {tabButton('calc', 'Kalkulator')}
       </div>
 
       {mode === 'yarn' && (
@@ -401,6 +540,11 @@ export default function YarnAlternatives({ yarns, stash, onYarnUpdated, onYarnAd
             </>
           )}
         </>
+      )}
+
+      {mode === 'calc' && (
+        <GaugeCalculator yarns={yarns} swatches={swatches}
+          onSwatchSaved={row => setSwatches(s => [...s, swatchFromRow(row)])} />
       )}
 
       {/* ── Gauge result ── */}

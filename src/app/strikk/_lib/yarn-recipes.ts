@@ -36,19 +36,19 @@ export interface YarnContext {
 }
 
 // Highest trust first.
-export const HIT_SOURCES = ['recommended', 'pattern', 'own_swatch', 'skaberglaede', 'drops', 'same_gauge'] as const
+export const HIT_SOURCES = ['recommended', 'pattern', 'own_swatch', 'skaberglaede', 'drops', 'yarn_info', 'same_gauge'] as const
 export type HitSource = typeof HIT_SOURCES[number]
 export type HitGroup = 'recommended' | 'pattern' | 'alternatives'
 export const HIT_GROUP: Record<HitSource, HitGroup> = {
   recommended: 'recommended', pattern: 'pattern',
-  own_swatch: 'alternatives', skaberglaede: 'alternatives', drops: 'alternatives', same_gauge: 'alternatives',
+  own_swatch: 'alternatives', skaberglaede: 'alternatives', drops: 'alternatives', yarn_info: 'alternatives', same_gauge: 'alternatives',
 }
 export const HIT_GROUP_LABEL: Record<HitGroup, string> = {
   recommended: 'Anbefalt garn', pattern: 'Oppskriftens eget alternativ', alternatives: 'Fra garnalternativene',
 }
 export const HIT_SOURCE_LABEL: Record<HitSource, string> = {
   recommended: 'Oppskriftens garn', pattern: 'Oppskriftens eget alternativ', own_swatch: 'Egen strikkeprøve',
-  skaberglaede: 'Skaberglæde', drops: 'DROPS', same_gauge: 'Samme strikkefasthet og hovedfiber',
+  skaberglaede: 'Skaberglæde', drops: 'DROPS', yarn_info: 'Garnets opplysninger', same_gauge: 'Samme strikkefasthet og hovedfiber',
 }
 
 export interface RecipeHit {
@@ -149,7 +149,7 @@ export function recipeHitsForYarn(r: YarnRecipe, yarnId: string, ctx: YarnContex
     }
     for (const c of ctx.combos) {
       const rest = close(c.gauge_stitches_10cm) ? others(c.members) : null
-      if (rest) hits.push({ ...base, source: c.source === 'skaberglaede' ? 'skaberglaede' : 'drops', with: rest })
+      if (rest) hits.push({ ...base, source: c.source, with: rest })
     }
     if (catalogueMatches(yarn, gauge, groupFibre(lines, ctx.catalogue))) {
       hits.push({ ...base, source: 'same_gauge' })

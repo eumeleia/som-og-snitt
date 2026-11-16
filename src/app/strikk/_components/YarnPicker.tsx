@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { formatFibers, spellingKey, type YarnRow } from '../_lib/yarns'
-import type { Alternative } from '../_lib/yarn-alternatives'
+import { strandText, type Alternative } from '../_lib/yarn-alternatives'
 import { estimatedCost } from '../_lib/project-amounts'
 import type { AmountData } from '../_lib/extraction'
 import YarnFavoriteStar from './YarnFavoriteStar'
@@ -12,11 +12,11 @@ const yarnLabel = (y: Pick<YarnRow, 'brand' | 'name' | 'discontinued'>) =>
 
 const SOURCE_LABEL: Record<Alternative['source'], string> = {
   own_swatch: 'Egen strikkeprøve', skaberglaede: 'Skaberglæde', pattern: 'Oppskriftens alternativ',
-  drops: 'DROPS', same_gauge: 'Samme strikkefasthet i katalogen', same_thickness: 'Samme tykkelse i katalogen',
+  drops: 'DROPS', yarn_info: 'Garnets opplysninger', same_gauge: 'Samme strikkefasthet i katalogen', same_thickness: 'Samme tykkelse i katalogen',
 }
 
 function altLabel(a: Alternative): string {
-  return a.members.map(m => `${yarnLabel(m.yarn)}${m.strands > 1 ? ` (${m.strands} tråder)` : ''}`).join(' + ')
+  return a.members.map(m => `${yarnLabel(m.yarn)}${strandText(m)}`).join(' + ')
 }
 
 // Velger ett garn fra katalogen til én garnlinje i et prosjekt. suggestedId er garnet
