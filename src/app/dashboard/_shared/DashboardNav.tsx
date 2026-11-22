@@ -30,7 +30,7 @@ interface NavSection {
 const HOME: NavSection = { label: 'Hjem', icon: 'home', href: '/dashboard' }
 
 const STRIKK_ICONS: Record<string, IconName> = {
-  '/strikk/oppskrifter': 'book', '/strikk/prosjekter': 'folder', '/strikk/garnlager': 'yarn', '/strikk/gjennomgang': 'check',
+  '/strikk/oppskrifter': 'book', '/strikk/prosjekter': 'folder', '/strikk/garnlager': 'yarn', '/strikk/gjennomgang': 'check', '/strikk/okefelle': 'plusminus',
 }
 
 const GROUPS: { label: string; sections: NavSection[] }[] = [

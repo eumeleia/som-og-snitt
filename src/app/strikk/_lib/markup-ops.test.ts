@@ -73,3 +73,17 @@ describe('undo', () => {
     expect(stack.map(s => (s[0] as { id: string }).id)).toEqual(['s2', 's3', 's4'])
   })
 })
+
+describe('counter_edit', () => {
+  const start = { strokes: [], counters: [{ id: 'c1', name: 'Rundeteller', total: 20, value: 7, applied: ['op1'] }] }
+  it('changes the name and the total, and keeps the count', () => {
+    const next = applyOps(start, [{ type: 'counter_edit', id: 'c1', name: 'Bol', total: 40 }])
+    expect(next.counters).toEqual([{ id: 'c1', name: 'Bol', total: 40, value: 7, applied: ['op1'] }])
+  })
+  it('can remove the total', () => {
+    expect(applyOps(start, [{ type: 'counter_edit', id: 'c1', name: 'Bol', total: null }]).counters[0].total).toBeNull()
+  })
+  it('leaves other counters alone when the id is unknown', () => {
+    expect(applyOps(start, [{ type: 'counter_edit', id: 'x', name: 'Bol', total: 1 }])).toEqual(start)
+  })
+})

@@ -9,12 +9,14 @@ interface Props {
   onSet: (id: string, value: number) => void
   onStep: (id: string, delta: number) => void
   onDelete: (id: string) => void
+  onEdit: (id: string, name: string, total: number | null) => void
   onHeight: (px: number) => void
 }
 
-export default function Counters({ counters, onAdd, onSet, onStep, onDelete, onHeight }: Props) {
+export default function Counters({ counters, onAdd, onSet, onStep, onDelete, onEdit, onHeight }: Props) {
   const barRef = useRef<HTMLDivElement>(null)
   const [adding, setAdding] = useState(false)
+  const [editing, setEditing] = useState<Counter | null>(null)
 
   useEffect(() => {
     const el = barRef.current
@@ -37,7 +39,7 @@ export default function Counters({ counters, onAdd, onSet, onStep, onDelete, onH
         <div className="flex gap-2 overflow-x-auto snap-x snap-mandatory px-3 pt-2 pb-1"
           style={{ scrollPaddingInline: 12 }}>
           {counters.map(c => (
-            <CounterCard key={c.id} counter={c} onSet={onSet} onStep={onStep} onDelete={onDelete} />
+            <CounterCard key={c.id} counter={c} onSet={onSet} onStep={onStep} onDelete={onDelete} onEdit={() => setEditing(c)} />
           ))}
           <button
             onClick={() => setAdding(true)}
@@ -48,20 +50,28 @@ export default function Counters({ counters, onAdd, onSet, onStep, onDelete, onH
         </div>
       </div>
       {adding && (
-        <AddCounterSheet
+        <CounterSheet
           onCancel={() => setAdding(false)}
-          onAdd={(name, total) => { onAdd(name, total); setAdding(false) }}
+          onSave={(name, total) => { onAdd(name, total); setAdding(false) }}
+        />
+      )}
+      {editing && (
+        <CounterSheet
+          initial={editing}
+          onCancel={() => setEditing(null)}
+          onSave={(name, total) => { onEdit(editing.id, name, total); setEditing(null) }}
         />
       )}
     </>
   )
 }
 
-function CounterCard({ counter, onSet, onStep, onDelete }: {
+function CounterCard({ counter, onSet, onStep, onDelete, onEdit }: {
   counter: Counter
   onSet: (id: string, value: number) => void
   onStep: (id: string, delta: number) => void
   onDelete: (id: string) => void
+  onEdit: () => void
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const done = counter.total !== null && counter.value >= counter.total
@@ -117,13 +127,19 @@ function CounterCard({ counter, onSet, onStep, onDelete }: {
       </button>
 
       {menuOpen && (
-        <div className="absolute right-2 top-10 z-10 bg-white border border-stone-200 rounded-xl shadow-lg py-1">
+        <div className="absolute right-2 top-10 z-10 bg-white border border-stone-200 rounded-xl shadow-lg py-1 flex flex-col">
+          <button
+            onClick={() => { setMenuOpen(false); onEdit() }}
+            className="px-4 py-2.5 text-sm text-stone-800 text-left"
+          >
+            Endre
+          </button>
           <button
             onClick={() => {
               setMenuOpen(false)
               if (window.confirm(`Slette «${counter.name}»?`)) onDelete(counter.id)
             }}
-            className="px-4 py-2.5 text-sm text-red-700"
+            className="px-4 py-2.5 text-sm text-red-700 text-left"
           >
             Slett
           </button>
@@ -133,12 +149,14 @@ function CounterCard({ counter, onSet, onStep, onDelete }: {
   )
 }
 
-function AddCounterSheet({ onAdd, onCancel }: {
-  onAdd: (name: string, total: number | null) => void
+// «Ny teller», or «Endre teller» with the counter's name and total filled in.
+function CounterSheet({ initial, onSave, onCancel }: {
+  initial?: Counter
+  onSave: (name: string, total: number | null) => void
   onCancel: () => void
 }) {
-  const [name, setName] = useState('')
-  const [total, setTotal] = useState('')
+  const [name, setName] = useState(initial?.name ?? '')
+  const [total, setTotal] = useState(initial?.total != null ? String(initial.total) : '')
   const parsedTotal = total.trim() === '' ? null : Number.parseInt(total, 10)
   const valid = name.trim() !== '' && (parsedTotal === null || (Number.isFinite(parsedTotal) && parsedTotal > 0))
 
@@ -146,11 +164,11 @@ function AddCounterSheet({ onAdd, onCancel }: {
     <div className="absolute inset-0 pointer-events-auto z-30 flex flex-col justify-end bg-black/30" onClick={onCancel}>
       <form
         onClick={e => e.stopPropagation()}
-        onSubmit={e => { e.preventDefault(); if (valid) onAdd(name.trim(), parsedTotal) }}
+        onSubmit={e => { e.preventDefault(); if (valid) onSave(name.trim(), parsedTotal) }}
         className="bg-[#FAF7F4] rounded-t-2xl p-4 flex flex-col gap-3"
         style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 16px)' }}
       >
-        <div className="text-base font-medium text-stone-800">Ny teller</div>
+        <div className="text-base font-medium text-stone-800">{initial ? 'Endre teller' : 'Ny teller'}</div>
         <label className="flex flex-col gap-1 text-sm text-stone-600">
           Navn
           <input
@@ -177,7 +195,7 @@ function AddCounterSheet({ onAdd, onCancel }: {
           </button>
           <button type="submit" disabled={!valid}
             className="flex-1 h-11 rounded-xl bg-[#2E5339] text-white disabled:opacity-40">
-            Legg til
+            {initial ? 'Lagre' : 'Legg til'}
           </button>
         </div>
       </form>

@@ -22,6 +22,7 @@ import { openPdf } from './PdfViewer'
 import { compressCover, coverUrl, removeCover, uploadCover } from '../_lib/cover'
 import { MIGRATION_030, PHOTO_SELECT, deletePhoto, isMissingTable, makeCoverPhoto, photoUrl, sortPhotos, uploadPhoto, type ProjectPhoto } from '../_lib/project-photos'
 import Counters from './Counters'
+import { StitchCalculatorSheet } from './StitchCalculator'
 import YarnPicker from './YarnPicker'
 import DriveExpired from './DriveExpired'
 import AssignedYarnStash from './AssignedYarnStash'
@@ -670,6 +671,7 @@ function PdfView({ projectId, project, recipe, sizeLabels, onSaved, onBack }: {
   const [sheetOpen, setSheetOpen] = useState(false)
   const [settings, setSettings] = useState<ToolSettings>(() => readLocal('strikk-project-settings', DEFAULT_SETTINGS))
   const [countersVisible, setCountersVisible] = useState(false)
+  const [calcOpen, setCalcOpen] = useState(false)
   const [counterHeight, setCounterHeight] = useState(0)
   const [jsTwoFinger, setJsTwoFinger] = useState(() => readLocal(UI_KEY, DEFAULT_UI).jsTwoFinger)
   const [sizeMarksOn, setSizeMarksOn] = useState(() => readLocal(UI_KEY, DEFAULT_UI).sizeMarks)
@@ -866,6 +868,9 @@ function PdfView({ projectId, project, recipe, sizeLabels, onSaved, onBack }: {
                   <IconSizeMark />
                 </RoundButton>
               )}
+              <RoundButton label="Øke/felle-kalkulator" on={calcOpen} onClick={() => setCalcOpen(true)}>
+                <span className="text-lg leading-none">±</span>
+              </RoundButton>
               <RoundButton label="Tellere" on={countersVisible} onClick={() => setCountersVisible(v => !v)}>
                 <IconCounter />
               </RoundButton>
@@ -912,8 +917,11 @@ function PdfView({ projectId, project, recipe, sizeLabels, onSaved, onBack }: {
             onSet={(cid, value) => commit({ type: 'counter_set', id: cid, value })}
             onStep={(cid, delta) => commit({ type: 'counter_step', id: cid, delta, opId: crypto.randomUUID() })}
             onDelete={cid => commit({ type: 'counter_delete', id: cid })}
+            onEdit={(cid, name, total) => commit({ type: 'counter_edit', id: cid, name, total })}
           />
         )}
+
+        {calcOpen && <StitchCalculatorSheet onClose={() => setCalcOpen(false)} />}
 
         {sheetOpen && drawTool && (
           <ToolSheet

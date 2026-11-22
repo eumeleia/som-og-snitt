@@ -43,6 +43,8 @@ export type Op =
   // write wins.
   | { type: 'counter_step'; id: string; delta: number; opId: string }
   | { type: 'counter_delete'; id: string }
+  // New name and total from «Endre»; the count itself is left as it is.
+  | { type: 'counter_edit'; id: string; name: string; total: number | null }
 
 export interface DocState {
   strokes: Stroke[]
@@ -95,6 +97,9 @@ export function applyOps(state: DocState, ops: Op[]): DocState {
         break
       case 'counter_delete':
         counters = counters.filter(c => c.id !== op.id)
+        break
+      case 'counter_edit':
+        counters = counters.map(c => (c.id === op.id ? { ...c, name: op.name, total: op.total } : c))
         break
     }
   }

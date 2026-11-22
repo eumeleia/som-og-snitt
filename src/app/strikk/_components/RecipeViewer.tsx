@@ -8,6 +8,7 @@ import { supabase } from '@/lib/supabase'
 import { RECIPE_SELECT, type KnitRecipe } from '../_lib/recipes'
 import { renderThumbnail, uploadThumbnail } from '../_lib/thumbnail'
 import { RatingSheet, StarIcon, saveRecipePatch, type RatingPatch } from './RecipeRating'
+import { StitchCalculatorSheet } from './StitchCalculator'
 import { useSavePosition } from './readingPosition'
 import { DriveAuthExpiredError, downloadPdf } from '../_lib/drive'
 import type { Project } from '../_lib/projects'
@@ -57,6 +58,7 @@ export default function RecipeViewer({ id }: { id: string }) {
   const [attempt, setAttempt] = useState(0)
   const [startingProject, setStartingProject] = useState(false)
   const [ratingOpen, setRatingOpen] = useState(false)
+  const [calcOpen, setCalcOpen] = useState(false)
   const [placed, setPlaced] = useState(false)
   const box = useVisualViewportBox()
   const onPlaced = useCallback(() => setPlaced(true), [])
@@ -189,6 +191,13 @@ export default function RecipeViewer({ id }: { id: string }) {
           </Link>
           <div className="absolute right-3 flex items-center gap-2" style={{ top: 'calc(env(safe-area-inset-top) + 12px)' }}>
             <button
+              onClick={() => setCalcOpen(true)}
+              aria-label="Øke/felle-kalkulator"
+              className="pointer-events-auto h-11 w-11 rounded-full bg-white/95 border border-stone-300 shadow-md flex items-center justify-center text-lg text-stone-700"
+            >
+              ±
+            </button>
+            <button
               onClick={() => setRatingOpen(true)}
               aria-label={recipe?.rating ? `${recipe.rating} stjerner${recipe.favorite ? ', favoritt' : ''}. Endre` : 'Stjerner og favoritt'}
               className="pointer-events-auto h-11 min-w-11 px-2.5 rounded-full bg-white/95 border border-stone-300 shadow-md flex items-center justify-center gap-1 text-stone-500"
@@ -208,6 +217,7 @@ export default function RecipeViewer({ id }: { id: string }) {
         </div>
       )}
 
+      {calcOpen && <StitchCalculatorSheet onClose={() => setCalcOpen(false)} />}
       {ratingOpen && recipe && (
         <RatingSheet recipe={recipe} onChange={patch => void changeRating(patch)} onClose={() => setRatingOpen(false)} />
       )}
