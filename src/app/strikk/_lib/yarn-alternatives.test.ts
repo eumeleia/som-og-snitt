@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { rankAlternatives } from './yarn-alternatives'
+import { parseGaugeQuery, rankAlternatives, searchByGauge } from './yarn-alternatives'
 import type { YarnRow } from './yarns'
 
 function yarn(over: Partial<YarnRow> & { id: string }): YarnRow {
@@ -124,5 +124,43 @@ describe('single and double strand (Tilia)', () => {
     expect(strandText(single.members[0])).toBe(' (1 tråd)')
     expect(strandText({ yarn: tilia, strands: 2 })).toBe(' (2 tråder)')
     expect(strandText({ yarn: kid, strands: 1 })).toBe('')
+  })
+})
+
+describe('search by gauge (whole catalogue)', () => {
+  // Same shapes as the real catalogue: Dale Lerke 22, Sandnes Peer Gynt 22, a 20–22 yarn, others.
+  const lerke = yarn({ id: 'lerke', brand: 'Dale Garn', name: 'Lerke', fibers: [{ fiber: 'merinoull', percent: 53 }, { fiber: 'bomull', percent: 47 }] })
+  const peer = yarn({ id: 'peer', brand: 'Sandnes Garn', name: 'Peer Gynt' })
+  const span = yarn({ id: 'span', name: 'Spenngarn', gauge_stitches_min: 20, gauge_stitches_max: 22, fibers: [{ fiber: 'alpakka', percent: 100 }] })
+  const near = yarn({ id: 'near', name: 'Tjuetre', gauge_stitches_min: 23, gauge_stitches_max: 23, fibers: [{ fiber: 'bomull', percent: 100 }] })
+  const far = yarn({ id: 'far', name: 'Tjuefem', gauge_stitches_min: 25, gauge_stitches_max: 25 })
+  const gone = yarn({ id: 'gone', name: 'Utgått', discontinued: true })
+  const none = yarn({ id: 'none', name: 'Uten fasthet', gauge_stitches_min: null, gauge_stitches_max: null })
+  const catalogue = [far, near, span, peer, gone, lerke, none]
+  const run = (q: string) => searchByGauge({ query: parseGaugeQuery(q)!, catalogue, combos: [], swatches: [] })
+  const ids = (r: ReturnType<typeof run>) => r.map(x => `${x.group}:${x.alternative.members[0].yarn.id}`)
+
+  it('finds catalogue yarns of any fibre, without an original yarn (acceptance 1)', () => {
+    expect(ids(run('22'))).toEqual(['equal:lerke', 'equal:peer', 'covers:span', 'near:near'])
+  })
+  it('takes a 20–22 range for 22 (acceptance 2), and leaves out discontinued yarns and yarns without a gauge', () => {
+    const r = run('22')
+    expect(r.find(x => x.alternative.members[0].yarn.id === 'span')?.group).toBe('covers')
+    expect(ids(r).some(i => /gone|none|far/.test(i))).toBe(false)
+  })
+  it('reads a range typed with a dash or an en dash', () => {
+    expect(parseGaugeQuery('20–22')).toEqual({ min: 20, max: 22 })
+    expect(parseGaugeQuery('22 - 20')).toEqual({ min: 20, max: 22 })
+    expect(parseGaugeQuery('22,5')).toEqual({ min: 22.5, max: 22.5 })
+    expect(parseGaugeQuery('22 masker')).toEqual({ min: 22, max: 22 })
+    expect(parseGaugeQuery('')).toBeNull()
+    expect(parseGaugeQuery('tjue')).toBeNull()
+    expect(ids(run('20–22'))[0]).toBe('equal:span')
+  })
+  it('puts own swatches first within the same group and does not repeat a yarn', async () => {
+    const r = searchByGauge({ query: { min: 22, max: 22 }, catalogue, combos: [], swatches: [{ gauge_stitches_10cm: 22, gauge_rows_10cm: 30, needle_mm: 4, notes: null, members: [{ yarn_id: 'peer', strands: 1 }] }] })
+    expect(ids(r).slice(0, 2)).toEqual(['equal:peer', 'equal:lerke'])
+    expect(r[0].alternative.source).toBe('own_swatch')
+    expect(ids(r).filter(i => i.endsWith(':peer'))).toHaveLength(1)
   })
 })

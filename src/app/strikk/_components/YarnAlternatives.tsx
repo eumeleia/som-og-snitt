@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 import { COMBO_SELECT, SWATCH_SELECT, comboFromRow, swatchFromRow, type ComboRow, type SwatchRow } from '../_lib/combos'
-import { rankAlternatives, strandText, type Alternative, type RawCombo, type RawSwatch } from '../_lib/yarn-alternatives'
+import { GAUGE_GROUPS, parseGaugeQuery, rankAlternatives, searchByGauge, strandText, type Alternative, type GaugeGroup, type RawCombo, type RawSwatch } from '../_lib/yarn-alternatives'
 import { formatRange, mainFibre, spellingKey, type YarnRow } from '../_lib/yarns'
 import { RECIPE_FILTER_SELECT, type FilterRecipe } from '../_lib/recipe-filter'
 import {
@@ -51,7 +51,7 @@ function YarnSearch({ yarns, picked, onPick, placeholder, onAddMissing }: {
   }, [yarns, words, picked])
   return (
     <div className="relative">
-      <input className="w-full px-3 py-2 rounded-lg border border-stone-200 bg-white text-sm" placeholder={placeholder}
+      <input className="w-full px-3 py-2 rounded-lg border border-stone-200 bg-white text-base sm:text-sm" placeholder={placeholder}
         value={picked ? yarnLabel(picked) : query} onChange={e => { onPick(null); setQuery(e.target.value) }} />
       {matches.length > 0 && (
         <div className="absolute z-10 mt-1 w-full rounded-lg border border-stone-200 bg-white shadow-md max-h-64 overflow-y-auto">
@@ -82,7 +82,7 @@ function Facts({ yarn, target }: { yarn: YarnRow; target?: YarnRow | null }) {
         <div key={f} className="contents">
           <dt className="text-stone-500">{FACT_LABEL[f]}</dt>
           <dd data-diff={diff.has(f) ? 'true' : undefined}
-            className={diff.has(f) ? 'text-amber-900 bg-amber-100 rounded px-1 -mx-1 font-medium' : 'text-stone-800'}>
+            className={`min-w-0 break-words ${diff.has(f) ? 'text-amber-900 bg-amber-100 rounded px-1 -mx-1 font-medium' : 'text-stone-800'}`}>
             {facts[f]}{diff.has(f) && <span className="sr-only"> (avviker)</span>}
           </dd>
         </div>
@@ -108,9 +108,9 @@ function AlternativeCard({ a, target, ownedByYarn, onYarnUpdated }: {
           return (
             <li key={j}>
               <div className="flex items-center gap-2">
-                <span className="text-sm text-stone-800 flex-1 min-w-0 truncate">
+                <span className="text-sm text-stone-800 flex-1 min-w-0 break-words">
                   {yarnLabel(m.yarn)}{strandText(m)}
-                  {owned > 0 && <span className="text-emerald-700"> · du har {owned} nøste{owned === 1 ? '' : 'r'}</span>}
+                  {owned > 0 && <span className="block text-xs text-emerald-700">Du har {owned} nøste{owned === 1 ? '' : 'r'} på lager</span>}
                 </span>
                 <YarnFavoriteStar yarnId={m.yarn.id} favorite={m.yarn.favorite} pricePerSkein={m.yarn.price_per_skein}
                   onChange={patch => onYarnUpdated(m.yarn.id, patch)} />
@@ -126,7 +126,7 @@ function AlternativeCard({ a, target, ownedByYarn, onYarnUpdated }: {
           Sammen: {[a.gauge_stitches_10cm !== null && `${formatRange(a.gauge_stitches_10cm, a.gauge_stitches_10cm)} m/10 cm`, a.needle_mm !== null && `pinne ${fmt(a.needle_mm)} mm`].filter(Boolean).join(' · ') || 'strikkefasthet ikke oppgitt'}
         </p>
       )}
-      {a.note && <p className="text-xs text-stone-500 mt-1">{a.note}</p>}
+      {a.note && <p className="text-xs text-stone-500 mt-1 break-words">{a.note}</p>}
     </li>
   )
 }
@@ -189,7 +189,7 @@ function GaugeCalculator({ yarns, swatches, onSwatchSaved }: {
             <YarnSearch yarns={yarns} picked={r.yarn} onPick={y => update(r.key, { yarn: y })} placeholder={i === 0 ? 'Garn' : 'Garn nr. ' + (i + 1)} />
           </div>
           <select aria-label="Antall tråder" value={r.strands} onChange={e => update(r.key, { strands: Number(e.target.value) })}
-            className="shrink-0 px-2 py-2 rounded-lg border border-stone-200 bg-white text-sm">
+            className="shrink-0 px-2 py-2 rounded-lg border border-stone-200 bg-white text-base sm:text-sm">
             {Array.from({ length: MAX_STRANDS }, (_, k) => k + 1).map(n => <option key={n} value={n}>{n} {n === 1 ? 'tråd' : 'tråder'}</option>)}
           </select>
           {rows.length > 1 && (
@@ -204,7 +204,7 @@ function GaugeCalculator({ yarns, swatches, onSwatchSaved }: {
       )}
       <label className="text-sm text-stone-700 flex items-center gap-2">
         Pinne
-        <input className="w-24 px-3 py-2 rounded-lg border border-stone-200 bg-white text-sm" inputMode="decimal" placeholder="mm"
+        <input className="w-24 px-3 py-2 rounded-lg border border-stone-200 bg-white text-base sm:text-sm" inputMode="decimal" placeholder="mm"
           value={needleInput} onChange={e => { setNeedleInput(e.target.value); setSavedNote(null) }} />
         mm
       </label>
@@ -246,12 +246,12 @@ function GaugeCalculator({ yarns, swatches, onSwatchSaved }: {
         <div data-save-swatch className="rounded-xl border border-stone-200 bg-stone-50 p-3 flex flex-col gap-2">
           <p className="text-sm text-stone-700">Det du faktisk målte, på pinne {fmt(needle)} mm:</p>
           <div className="flex flex-wrap gap-2">
-            <input className="w-32 px-3 py-2 rounded-lg border border-stone-200 bg-white text-sm" inputMode="decimal" placeholder="Masker/10 cm"
+            <input className="w-32 px-3 py-2 rounded-lg border border-stone-200 bg-white text-base sm:text-sm" inputMode="decimal" placeholder="Masker/10 cm"
               value={measured.stitches} onChange={e => setMeasured(m => ({ ...m, stitches: e.target.value }))} />
-            <input className="w-40 px-3 py-2 rounded-lg border border-stone-200 bg-white text-sm" inputMode="decimal" placeholder="Pinner/omg. (valgfritt)"
+            <input className="w-40 px-3 py-2 rounded-lg border border-stone-200 bg-white text-base sm:text-sm" inputMode="decimal" placeholder="Pinner/omg. (valgfritt)"
               value={measured.rows} onChange={e => setMeasured(m => ({ ...m, rows: e.target.value }))} />
           </div>
-          <input className="px-3 py-2 rounded-lg border border-stone-200 bg-white text-sm" placeholder="Notat (valgfritt)"
+          <input className="px-3 py-2 rounded-lg border border-stone-200 bg-white text-base sm:text-sm" placeholder="Notat (valgfritt)"
             value={measured.notes} onChange={e => setMeasured(m => ({ ...m, notes: e.target.value }))} />
           {saveError && <p className="text-sm text-red-600">{saveError}</p>}
           <div className="flex gap-2">
@@ -381,12 +381,19 @@ export default function YarnAlternatives({ yarns, stash, onYarnUpdated, onYarnAd
   }, [mode, pair && formatPair(pair), resolvedPairGauge?.value, yarns, combos, swatches, pairPatternAlts])
 
   // ── Gauge ──
-  const gaugeAlternatives = useMemo<Alternative[] | null>(() => {
-    if (mode !== 'gauge') return null
-    const g = toNumber(gauge)
-    if (g === null) return null
-    return rankAlternatives({ targetGauge: g, targetFibre: null, excludeYarnId: null, catalogue: yarns, combos, swatches, patternAlternativeYarnIds: [] })
-  }, [mode, gauge, yarns, combos, swatches])
+  // The whole catalogue within ±1 stitch, any fibre (searchByGauge), grouped: the same gauge
+  // first, then ranges that cover it, then within ±1. Yarns in the stash first within a group.
+  const gaugeQuery = mode === 'gauge' ? parseGaugeQuery(gauge) : null
+  const gaugeHits = useMemo(() => {
+    if (!gaugeQuery) return null
+    const hits = searchByGauge({ query: gaugeQuery, catalogue: yarns, combos, swatches })
+    return GAUGE_GROUPS.map(group => ({ group, alternatives: ownedFirst(hits.filter(h => h.group === group).map(h => h.alternative)) }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gaugeQuery?.min, gaugeQuery?.max, yarns, combos, swatches, ownedByYarn])
+  const gaugeText = gaugeQuery ? (gaugeQuery.min === gaugeQuery.max ? fmt(gaugeQuery.min) : `${fmt(gaugeQuery.min)}–${fmt(gaugeQuery.max)}`) : ''
+  const GROUP_LABEL: Record<GaugeGroup, string> = {
+    equal: `Lik strikkefasthet (${gaugeText} m)`, covers: `Spenn som dekker ${gaugeText} m`, near: 'Innen ±1 maske',
+  }
 
   async function handleAdd(query: string) {
     const [brand, ...rest] = query.split(' ')
@@ -418,7 +425,7 @@ export default function YarnAlternatives({ yarns, stash, onYarnUpdated, onYarnAd
 
   return (
     <div className="flex flex-col gap-4 max-w-2xl">
-      <div className="flex gap-1 p-1 bg-stone-100 rounded-xl w-fit">
+      <div className="flex flex-wrap gap-1 p-1 bg-stone-100 rounded-xl w-fit max-w-full">
         {tabButton('yarn', 'Garn')}
         {tabButton('pair', 'Par')}
         {tabButton('gauge', 'Strikkefasthet')}
@@ -436,8 +443,8 @@ export default function YarnAlternatives({ yarns, stash, onYarnUpdated, onYarnAd
         </div>
       )}
       {mode === 'gauge' && (
-        <input className="w-full sm:w-64 px-3 py-2 rounded-lg border border-stone-200 bg-white text-sm" inputMode="decimal"
-          placeholder="Masker per 10 cm" value={gauge} onChange={e => setGauge(e.target.value)} />
+        <input className="w-full sm:w-64 px-3 py-2 rounded-lg border border-stone-200 bg-white text-base sm:text-sm" inputMode="decimal"
+          placeholder="Masker per 10 cm, f.eks. 22 eller 20–22" value={gauge} onChange={e => setGauge(e.target.value)} />
       )}
       {addError && <p className="text-sm text-red-600">{addError}</p>}
 
@@ -515,7 +522,7 @@ export default function YarnAlternatives({ yarns, stash, onYarnUpdated, onYarnAd
             ) : (
               <label className="block text-xs text-stone-700 mt-2">
                 Strikkefastheten for paret finnes verken i oppskriften eller i kombinasjonstabellene. Skriv den inn:
-                <input className="mt-1 w-40 px-3 py-2 rounded-lg border border-stone-200 bg-white text-sm" inputMode="decimal"
+                <input className="mt-1 w-40 px-3 py-2 rounded-lg border border-stone-200 bg-white text-base sm:text-sm" inputMode="decimal"
                   placeholder="Masker per 10 cm" value={pairGaugeInput} onChange={e => setPairGaugeInput(e.target.value)} />
               </label>
             )}
@@ -548,12 +555,20 @@ export default function YarnAlternatives({ yarns, stash, onYarnUpdated, onYarnAd
       )}
 
       {/* ── Gauge result ── */}
-      {mode === 'gauge' && gaugeAlternatives && (
-        <section className="flex flex-col gap-2">
-          {gaugeAlternatives.length === 0 && <p className="text-sm text-stone-500">Ingen alternativer funnet.</p>}
-          <ul className="flex flex-col gap-2">
-            {ownedFirst(gaugeAlternatives).map((a, i) => <AlternativeCard key={i} a={a} target={null} ownedByYarn={ownedByYarn} onYarnUpdated={onYarnUpdated} />)}
-          </ul>
+      {mode === 'gauge' && gauge.trim() !== '' && !gaugeQuery && (
+        <p className="text-sm text-amber-800">Skriv masker per 10 cm som et tall (22) eller et spenn (20–22).</p>
+      )}
+      {mode === 'gauge' && gaugeHits && (
+        <section data-gauge-hits className="flex flex-col gap-4">
+          {gaugeHits.every(g => g.alternatives.length === 0) && <p className="text-sm text-stone-500">Ingen garn i katalogen innen ±1 maske.</p>}
+          {gaugeHits.filter(g => g.alternatives.length > 0).map(({ group, alternatives }) => (
+            <div key={group} className="flex flex-col gap-2">
+              <h3 className="font-serif text-lg text-stone-700">{GROUP_LABEL[group]} ({alternatives.length})</h3>
+              <ul className="flex flex-col gap-2">
+                {alternatives.map((a, i) => <AlternativeCard key={i} a={a} target={null} ownedByYarn={ownedByYarn} onYarnUpdated={onYarnUpdated} />)}
+              </ul>
+            </div>
+          ))}
         </section>
       )}
     </div>

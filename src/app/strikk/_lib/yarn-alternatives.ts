@@ -182,6 +182,74 @@ export function rankAlternatives(args: {
       : a))
 }
 
+// ── Søk på strikkefasthet (Garnlager › Alternativt garn › Strikkefasthet) ─────────────
+// The whole catalogue, whatever the fibre: every yarn that is not discontinued and whose gauge
+// (a single value or a range) lies within ±1 stitch of the search, plus Maria's swatches and
+// the combination tables at that gauge.
+
+export interface GaugeQuery { min: number; max: number }
+
+// «22», «22,5», «20–22», «20-22» or «20 – 22» (stitches per 10 cm); anything else is null.
+export function parseGaugeQuery(input: string): GaugeQuery | null {
+  const m = input.trim().replace(/,/g, '.').match(/^(\d+(?:\.\d+)?)\s*(?:[-–—]\s*(\d+(?:\.\d+)?))?\s*(?:m|masker)?$/i)
+  if (!m) return null
+  const a = Number(m[1]), b = m[2] !== undefined ? Number(m[2]) : a
+  const min = Math.min(a, b), max = Math.max(a, b)
+  return min > 0 && max <= 80 ? { min, max } : null
+}
+
+export type GaugeGroup = 'equal' | 'covers' | 'near'
+export const GAUGE_GROUPS: GaugeGroup[] = ['equal', 'covers', 'near']
+
+// equal: the same gauge as the search; covers: a range that overlaps it (20–22 for 22);
+// near: within ±1 stitch.
+export function gaugeGroup(lo: number, hi: number, q: GaugeQuery): GaugeGroup | null {
+  if (lo === q.min && hi === q.max) return 'equal'
+  if (lo <= q.max && hi >= q.min) return 'covers'
+  if (lo <= q.max + GAUGE_TOLERANCE && hi >= q.min - GAUGE_TOLERANCE) return 'near'
+  return null
+}
+
+export function searchByGauge(args: {
+  query: GaugeQuery
+  catalogue: YarnRow[]
+  combos: RawCombo[]
+  swatches: RawSwatch[]
+}): { group: GaugeGroup; alternative: Alternative }[] {
+  const { query, catalogue, combos, swatches } = args
+  const byId = new Map(catalogue.map(y => [y.id, y]))
+  const out: { group: GaugeGroup; alternative: Alternative }[] = []
+  const add = (lo: number | null, hi: number | null, alternative: Alternative) => {
+    if (lo === null) return
+    const group = gaugeGroup(Number(lo), Number(hi ?? lo), query)
+    if (group) out.push({ group, alternative })
+  }
+  for (const s of swatches) {
+    const members = resolveMembers(s.members, byId)
+    if (members) add(s.gauge_stitches_10cm, s.gauge_stitches_10cm, { source: 'own_swatch', members, gauge_stitches_10cm: s.gauge_stitches_10cm, gauge_rows_10cm: s.gauge_rows_10cm, needle_mm: s.needle_mm, note: s.notes, source_url: null })
+  }
+  for (const c of combos) {
+    const members = resolveMembers(c.members, byId)
+    if (members) add(c.gauge_stitches_10cm, c.gauge_stitches_10cm, {
+      source: c.source === 'skaberglaede' || c.source === 'yarn_info' ? c.source : 'drops', members,
+      gauge_stitches_10cm: c.gauge_stitches_10cm, gauge_rows_10cm: c.gauge_rows_10cm, needle_mm: c.needle_mm, note: c.note, source_url: c.source_url,
+    })
+  }
+  for (const y of catalogue) {
+    if (!suggestable(y)) continue
+    add(y.gauge_stitches_min, y.gauge_stitches_max, {
+      source: 'same_gauge', members: [{ yarn: y, strands: 1 }],
+      gauge_stitches_10cm: y.gauge_stitches_min, gauge_rows_10cm: null, needle_mm: y.needle_mm_min, note: null, source_url: null,
+    })
+  }
+  const label = (a: Alternative) => a.members.map(m => `${m.yarn.brand} ${m.yarn.name}`).join(' + ')
+  return out
+    .sort((a, b) => GAUGE_GROUPS.indexOf(a.group) - GAUGE_GROUPS.indexOf(b.group)
+      || SOURCE_RANK[a.alternative.source] - SOURCE_RANK[b.alternative.source]
+      || label(a.alternative).localeCompare(label(b.alternative), 'nb'))
+    .filter((x, i, all) => all.findIndex(o => sameSuggestion(o.alternative, x.alternative)) === i)
+}
+
 function sameSuggestion(a: Alternative, b: Alternative): boolean {
   if (a.members.length !== b.members.length) return false
   const key = (alt: Alternative) => alt.members.map(m => `${m.yarn.id}x${m.strands}`).sort().join('+')

@@ -49,7 +49,7 @@ export default function YarnFavoriteStar({ yarnId, favorite, pricePerSkein, onCh
         onChange={e => setPrice(e.target.value)}
         onBlur={commitPrice}
         onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
-        className="w-20 h-7 px-1.5 rounded-md border border-stone-200 bg-white text-xs text-stone-700"
+        className="w-20 h-7 px-1.5 rounded-md border border-stone-200 bg-white text-base sm:text-xs text-stone-700"
       />
     </span>
   )
