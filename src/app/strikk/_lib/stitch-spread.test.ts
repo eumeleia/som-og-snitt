@@ -35,6 +35,18 @@ describe('spreadStitches gives the same answers as Knit and Note', () => {
       '*Strikk 8 masker, strikk 2 sammen* 4 ganger', 'Strikk 4 masker',
     ])
   })
+  // Second round of screenshots: odd and even numbers of long and short gaps.
+  const kn = (before: number, after: number, start: number, a: [number, number], b: [number, number], c: [number, number], end: number) => {
+    const change = after > before ? 'øk 1 maske' : 'strikk 2 sammen'
+    const rep = ([knit, times]: [number, number]) => `*Strikk ${knit} masker, ${change}* ${times} ganger`
+    expect(text(spreadStitches(before, after))).toEqual([`Strikk ${start} masker, ${change}`, rep(a), rep(b), rep(c), `Strikk ${end} masker`])
+  }
+  it('180 + 25', () => kn(180, 205, 3, [7, 10], [8, 5], [7, 9], 4))
+  it('125 + 12', () => kn(125, 137, 5, [10, 3], [11, 5], [10, 3], 5))
+  it('136 + 10', () => kn(136, 146, 6, [14, 3], [13, 3], [14, 3], 7))
+  it('199 − 14', () => kn(199, 185, 6, [12, 5], [13, 3], [12, 5], 6))
+  it('160 − 17: the larger half gap comes first when decreasing', () => kn(160, 143, 4, [7, 5], [8, 7], [7, 4], 3))
+  it('180 − 25', () => kn(180, 155, 3, [5, 10], [6, 5], [5, 9], 2))
   it('140 + 4 and 150 − 10 go up evenly: one repeat', () => {
     expect(text(spreadStitches(140, 144))).toEqual(['*Strikk 35 masker, øk 1 maske* 4 ganger'])
     expect(text(spreadStitches(150, 140))).toEqual(['*Strikk 13 masker, strikk 2 sammen* 10 ganger'])

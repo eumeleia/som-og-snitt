@@ -7,7 +7,7 @@
 // or end, and the gaps in between come as three blocks: one size split at both ends, the
 // other in the middle. That gives at most five short lines. The longer gaps go at the ends
 // when there is an even number of them, otherwise the shorter ones do (as in Knit and Note's
-// 221 → 200). Checked against five answers from Knit and Note in stitch-spread.test.ts.
+// 221 → 200). Checked against eleven answers from Knit and Note in stitch-spread.test.ts.
 
 export type Direction = 'increase' | 'decrease'
 
@@ -43,8 +43,10 @@ export function spreadStitches(before: number, after: number): Spread {
   if (r === 0) {
     lines = [{ knit: q, change: true, times: k }]
   } else {
-    // Half an ordinary gap at each edge; the k−1 gaps in between hold the r longer ones.
-    const start = Math.floor(q / 2), end = q - start
+    // Half an ordinary gap at each edge; the k−1 gaps in between hold the r longer ones. When
+    // q is odd, Knit and Note puts the smaller half first when increasing and the larger
+    // half first when decreasing.
+    const start = direction === 'increase' ? Math.floor(q / 2) : Math.ceil(q / 2), end = q - start
     const long = r, short = k - 1 - r
     const [edgeSize, edgeCount, midSize, midCount] = long % 2 === 0 ? [q + 1, long, q, short] : [q, short, q + 1, long]
     const first = Math.ceil(edgeCount / 2), last = edgeCount - first
