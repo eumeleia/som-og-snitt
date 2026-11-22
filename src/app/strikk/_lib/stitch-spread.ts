@@ -7,7 +7,7 @@
 // or end, and the gaps in between come as three blocks: one size split at both ends, the
 // other in the middle. That gives at most five short lines. The longer gaps go at the ends
 // when there is an even number of them, otherwise the shorter ones do (as in Knit and Note's
-// 221 → 200). Checked against eleven answers from Knit and Note in stitch-spread.test.ts.
+// 221 → 200). Checked against sixteen answers from Knit and Note in stitch-spread.test.ts.
 
 export type Direction = 'increase' | 'decrease'
 

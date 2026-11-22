@@ -47,6 +47,20 @@ describe('spreadStitches gives the same answers as Knit and Note', () => {
   it('199 − 14', () => kn(199, 185, 6, [12, 5], [13, 3], [12, 5], 6))
   it('160 − 17: the larger half gap comes first when decreasing', () => kn(160, 143, 4, [7, 5], [8, 7], [7, 4], 3))
   it('180 − 25', () => kn(180, 155, 3, [5, 10], [6, 5], [5, 9], 2))
+  // Third round: a block of one, and the larger half gap first when decreasing.
+  it('97 + 9: a block of one', () => {
+    expect(text(spreadStitches(97, 106))).toEqual([
+      'Strikk 5 masker, øk 1 maske', 'Strikk 10 masker, øk 1 maske', '*Strikk 11 masker, øk 1 maske* 7 ganger', 'Strikk 5 masker',
+    ])
+  })
+  it('64 + 11: a block of one', () => {
+    expect(text(spreadStitches(64, 75))).toEqual([
+      'Strikk 2 masker, øk 1 maske', 'Strikk 5 masker, øk 1 maske', '*Strikk 6 masker, øk 1 maske* 9 ganger', 'Strikk 3 masker',
+    ])
+  })
+  it('210 + 17', () => kn(210, 227, 6, [13, 3], [12, 10], [13, 3], 6))
+  it('173 − 12', () => kn(173, 161, 6, [12, 3], [13, 5], [12, 3], 6))
+  it('148 − 22', () => kn(148, 126, 2, [5, 8], [4, 5], [5, 8], 2))
   it('140 + 4 and 150 − 10 go up evenly: one repeat', () => {
     expect(text(spreadStitches(140, 144))).toEqual(['*Strikk 35 masker, øk 1 maske* 4 ganger'])
     expect(text(spreadStitches(150, 140))).toEqual(['*Strikk 13 masker, strikk 2 sammen* 10 ganger'])
