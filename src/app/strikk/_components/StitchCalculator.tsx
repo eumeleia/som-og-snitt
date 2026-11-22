@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { lineText, maxChanges, spreadStitches, type Direction, type Mode } from '../_lib/stitch-spread'
+import { lineParts, maxChanges, spreadStitches, type Direction } from '../_lib/stitch-spread'
 
 const toInt = (s: string) => (/^\d+$/.test(s.trim()) ? Number.parseInt(s.trim(), 10) : null)
 
@@ -9,13 +9,12 @@ const toInt = (s: string) => (/^\d+$/.test(s.trim()) ? Number.parseInt(s.trim(),
 // in one round or row (stitch-spread.ts). Used on its own page and in a sheet in recipes.
 export default function StitchCalculator() {
   const [direction, setDirection] = useState<Direction>('increase')
-  const [mode, setMode] = useState<Mode>('round')
   const [beforeText, setBeforeText] = useState('')
   const [afterText, setAfterText] = useState('')
 
   const before = toInt(beforeText), after = toInt(afterText)
   const wrongWay = before !== null && after !== null && after !== before && (direction === 'increase') !== (after > before)
-  const result = before !== null && after !== null && !wrongWay ? spreadStitches(before, after, mode) : null
+  const result = before !== null && after !== null && !wrongWay ? spreadStitches(before, after) : null
   const max = before !== null ? maxChanges(before) : null
 
   const segment = (on: boolean) =>
@@ -47,13 +46,6 @@ export default function StitchCalculator() {
         </p>
       )}
 
-      <div className="flex gap-1 p-1 bg-stone-100 rounded-xl self-start" role="radiogroup" aria-label="Strikkes">
-        <button role="radio" aria-checked={mode === 'round'} onClick={() => setMode('round')}
-          className={`px-3 h-9 rounded-lg text-sm ${mode === 'round' ? 'bg-white text-stone-900 shadow-sm' : 'text-stone-500'}`}>Rundt</button>
-        <button role="radio" aria-checked={mode === 'flat'} onClick={() => setMode('flat')}
-          className={`px-3 h-9 rounded-lg text-sm ${mode === 'flat' ? 'bg-white text-stone-900 shadow-sm' : 'text-stone-500'}`}>Frem og tilbake</button>
-      </div>
-
       {wrongWay && (
         <p data-stitch-error className="text-sm text-stone-800 bg-stone-100 rounded-xl px-3 py-2.5">
           {direction === 'increase'
@@ -67,13 +59,18 @@ export default function StitchCalculator() {
       {result?.ok && (
         <div data-stitch-result className="flex flex-col gap-3">
           <ol className="flex flex-col gap-2 text-base text-stone-900">
-            {result.lines.map((l, i) => <li key={i} className="break-words">{lineText(l, result.direction)}</li>)}
+            {result.lines.map((l, i) => (
+              <li key={i} className="break-words">
+                {lineParts(l, result.direction).map((p, j) => ('text' in p
+                  ? <span key={j}>{p.text}</span>
+                  : <span key={j} className="font-semibold text-[#9B5B4B] tabular-nums">{p.number}</span>))}
+              </li>
+            ))}
           </ol>
           <div className="rounded-2xl bg-[#F0E8E2] px-4 py-3 text-center">
             <p className="text-base text-stone-800">Nå har du {result.direction === 'increase' ? 'økt' : 'felt'} {result.changes} {result.changes === 1 ? 'maske' : 'masker'}</p>
             <p className="text-lg font-semibold text-stone-900">Du har nå {result.after} masker på pinnen</p>
           </div>
-          {mode === 'flat' && <p className="text-xs text-stone-500">Frem og tilbake: begynnelsen og slutten av pinnen deler ett mellomrom, så ingen økning eller felling havner helt i kanten.</p>}
         </div>
       )}
     </div>
